@@ -41,6 +41,16 @@ pub struct AdminStats {
 }
 
 #[derive(Serialize)]
+pub struct AdminInviteRow {
+    pub inviter_id: i64,
+    pub inviter_username: String,
+    pub inviter_code: Option<String>,
+    pub invitee_id: i64,
+    pub invitee_username: String,
+    pub invitee_created_at: String,
+}
+
+#[derive(Serialize)]
 pub struct AdminSystemInfo {
     pub version: &'static str,
     pub db_kind: &'static str,
@@ -308,6 +318,41 @@ async fn delete_user(
     }
 }
 
+async fn list_invites(Extension(installed): Extension<InstalledState>) -> Response {
+    let sql = db::q(
+        installed.kind,
+        "SELECT inviter.id, inviter.username, inviter.invite_code,
+                invitee.id, invitee.username, invitee.created_at
+         FROM users invitee
+         JOIN users inviter ON inviter.id = invitee.invited_by
+         ORDER BY invitee.created_at DESC, invitee.id DESC
+         LIMIT 500",
+    );
+    let rows: Result<Vec<(i64, String, Option<String>, i64, String, String)>, _> =
+        sqlx::query_as(&sql).fetch_all(&installed.pool).await;
+    match rows {
+        Ok(rs) => {
+            let out: Vec<AdminInviteRow> = rs
+                .into_iter()
+                .map(
+                    |(inviter_id, inviter_username, inviter_code, invitee_id, invitee_username, invitee_created_at)| {
+                        AdminInviteRow {
+                            inviter_id,
+                            inviter_username,
+                            inviter_code,
+                            invitee_id,
+                            invitee_username,
+                            invitee_created_at,
+                        }
+                    },
+                )
+                .collect();
+            Json(out).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 async fn get_system_info(
     State(state): State<AppState>,
     Extension(installed): Extension<InstalledState>,
@@ -369,6 +414,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/system", get(get_system_info))
         .route("/admin/users", get(list_users))
         .route("/admin/users/{id}", patch(update_user).delete(delete_user))
+        .route("/admin/invites", get(list_invites))
         .route("/admin/sessions/prune", post(prune_sessions))
         .route_layer(middleware::from_fn(require_admin))
 }

@@ -38,6 +38,15 @@ export type AdminUser = {
   skills: number
 }
 
+export type AdminInviteRow = {
+  inviter_id: number
+  inviter_username: string
+  inviter_code: string | null
+  invitee_id: number
+  invitee_username: string
+  invitee_created_at: string
+}
+
 export type AdminSystemInfo = {
   version: string
   db_kind: string
@@ -81,6 +90,10 @@ export const adminApi = {
       credentials: "same-origin",
     })
     await okOrThrow(res)
+  },
+  async listInvites(): Promise<AdminInviteRow[]> {
+    const res = await fetch("/api/admin/invites", { credentials: "same-origin" })
+    return jsonOrThrow<AdminInviteRow[]>(res)
   },
   async pruneSessions(): Promise<{ removed: number }> {
     const res = await fetch("/api/admin/sessions/prune", {

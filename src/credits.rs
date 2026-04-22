@@ -509,6 +509,7 @@ async fn get_shared_status(
 
 #[derive(Serialize)]
 struct AdminSettingsView {
+    registration_enabled: bool,
     shared_enabled: bool,
     signup_grant: i64,
     cost_chat: i64,
@@ -559,6 +560,7 @@ async fn admin_get_settings(Extension(installed): Extension<InstalledState>) -> 
     }
 
     let view = AdminSettingsView {
+        registration_enabled: get_setting_bool(pool, kind, "registration_enabled", true).await,
         shared_enabled: get_setting_bool(pool, kind, "shared_enabled", false).await,
         signup_grant: get_setting_i64(pool, kind, "signup_grant", 200).await,
         cost_chat: get_setting_i64(pool, kind, "cost_chat", 1).await,
@@ -597,6 +599,7 @@ async fn admin_get_settings(Extension(installed): Extension<InstalledState>) -> 
 
 #[derive(Deserialize)]
 struct AdminSettingsUpdate {
+    registration_enabled: Option<bool>,
     shared_enabled: Option<bool>,
     signup_grant: Option<i64>,
     cost_chat: Option<i64>,
@@ -650,6 +653,7 @@ async fn admin_patch_settings(
     }
 
     let ops: Vec<(&str, Option<String>)> = vec![
+        ("registration_enabled", body.registration_enabled.map(|b| b.to_string())),
         ("shared_enabled", body.shared_enabled.map(|b| b.to_string())),
         ("signup_grant", body.signup_grant.map(|v| v.max(0).to_string())),
         ("cost_chat", body.cost_chat.map(|v| v.max(0).to_string())),

@@ -114,6 +114,16 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const imgMeta = IMAGE_PROTOCOL_META[imageProtocol]
   const canLoadChat = !useShared && Boolean(baseUrl.trim() && apiKey.trim())
   const canLoadImage = !imageUseShared && Boolean(imageBaseUrl.trim() && imageApiKey.trim())
+  const sharedChatModel =
+    protocol === "openai"
+      ? (shared?.chat_openai_model ?? "")
+      : protocol === "claude"
+        ? (shared?.chat_claude_model ?? "")
+        : (shared?.chat_gemini_model ?? "")
+  const sharedImageModel =
+    imageProtocol === "openai"
+      ? (shared?.image_openai_model ?? "")
+      : (shared?.image_gemini_model ?? "")
 
   function pickProtocol(next: Protocol) {
     if (next === protocol) return
@@ -242,7 +252,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             <div className="flex-1">
               <p>
                 <b>站点已开启共享后端。</b>{" "}
-                勾选下方「使用站点共享后端」即可走站点通道，模型可自定义，每次按积分扣费。
+                勾选下方「使用站点共享后端」即可走站点通道，模型由管理员指定，每次按积分扣费。
               </p>
               <p className="mt-0.5 text-muted-foreground">
                 对话 {shared.cost_chat} 分/次，生图 {shared.cost_image} 分/次；当前余额{" "}
@@ -273,7 +283,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                   onChange={(e) => setUseShared(e.target.checked)}
                 />
                 <span>
-                  使用站点共享后端（按积分扣费；无需填写 Base URL / API Key，模型可自由填写）
+                  使用站点共享后端（按积分扣费；无需填写 Base URL / API Key，模型由管理员指定）
                 </span>
               </label>
             )}
@@ -333,18 +343,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               />
             </div>
 
-            <ModelField
-              label="对话模型"
-              value={model}
-              onChange={setModel}
-              models={chatModels}
-              loading={chatLoading}
-              error={chatError}
-              canLoad={canLoadChat}
-              onLoad={loadChatModels}
-              placeholder={meta.defaultModel}
-              datalistId="chat-model-options"
-            />
+            {useShared ? (
+              <SharedModelField label="对话模型" model={sharedChatModel} />
+            ) : (
+              <ModelField
+                label="对话模型"
+                value={model}
+                onChange={setModel}
+                models={chatModels}
+                loading={chatLoading}
+                error={chatError}
+                canLoad={canLoadChat}
+                onLoad={loadChatModels}
+                placeholder={meta.defaultModel}
+                datalistId="chat-model-options"
+              />
+            )}
 
             {!useShared && (
               <label className="flex items-start gap-2 text-sm">
@@ -418,7 +432,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                   onChange={(e) => setImageUseShared(e.target.checked)}
                 />
                 <span>
-                  使用站点共享后端生图（按积分扣费；无需填写 Base URL / API Key，模型可自由填写）
+                  使用站点共享后端生图（按积分扣费；无需填写 Base URL / API Key，模型由管理员指定）
                 </span>
               </label>
             )}
@@ -489,18 +503,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               />
             </div>
 
-            <ModelField
-              label="图像模型"
-              value={imageModel}
-              onChange={setImageModel}
-              models={imageModels}
-              loading={imageLoading}
-              error={imageError}
-              canLoad={canLoadImage}
-              onLoad={loadImageModels}
-              placeholder={imgMeta.defaultModel}
-              datalistId="image-model-options"
-            />
+            {imageUseShared ? (
+              <SharedModelField label="图像模型" model={sharedImageModel} />
+            ) : (
+              <ModelField
+                label="图像模型"
+                value={imageModel}
+                onChange={setImageModel}
+                models={imageModels}
+                loading={imageLoading}
+                error={imageError}
+                canLoad={canLoadImage}
+                onLoad={loadImageModels}
+                placeholder={imgMeta.defaultModel}
+                datalistId="image-model-options"
+              />
+            )}
 
             {!imageUseShared && (
               <label className="flex items-start gap-2 text-sm">
@@ -556,6 +574,24 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function SharedModelField({ label, model }: { label: string; model: string }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+        {model ? (
+          <span className="font-mono">{model}</span>
+        ) : (
+          <span className="text-muted-foreground">（管理员尚未配置模型）</span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        共享后端下由管理员统一指定模型，无法自行修改。
+      </p>
     </div>
   )
 }

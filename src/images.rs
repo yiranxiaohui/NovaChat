@@ -10,7 +10,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rand::RngCore;
 use serde::Serialize;
 
-use crate::{AppState, CurrentUser, credits, header_str, header_truthy};
+use crate::{AppState, CurrentUser, credits, header_truthy, net_guard};
 
 fn trim_slash(s: &str) -> &str {
     s.trim_end_matches('/')
@@ -37,7 +37,9 @@ fn image_endpoint(host: &str, protocol: &str, model: &str, kind: ImageKind) -> S
 }
 
 /// Resolve upstream for an image request.
-/// Returns (endpoint_url, key, used_shared, shared_model).
+/// Returns (endpoint_url, key, used_shared, shared_model). In shared mode the
+/// admin's configured model always wins — any `X-Upstream-Model` the client
+/// sent is ignored, so users can't switch models on shared credits.
 async fn resolve_image_upstream(
     state: &AppState,
     protocol: &str,
@@ -54,7 +56,6 @@ async fn resolve_image_upstream(
             }
         }
     }
-    let client_model = header_str(headers, "x-upstream-model");
     let installed = state.require_installed().await?;
     match credits::read_shared(
         &installed.pool,
@@ -66,25 +67,15 @@ async fn resolve_image_upstream(
     {
         Some(s) => {
             let admin_model = s.model.clone().unwrap_or_default();
-            let model = client_model
-                .clone()
-                .unwrap_or_else(|| admin_model.clone());
-            if model.is_empty() && protocol == "gemini" {
+            if admin_model.is_empty() {
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "shared Gemini image upstream has no model (set X-Upstream-Model or configure an admin default)",
+                    "shared image upstream has no configured model — ask the admin to set one",
                 )
                     .into_response());
             }
-            let url = image_endpoint(&s.url, protocol, &model, kind);
-            // Same convention as chat: only request a body rewrite when we
-            // had to fall back to admin's preset model (legacy empty-key path).
-            let body_override = if client_model.is_some() {
-                None
-            } else {
-                Some(admin_model)
-            };
-            Ok((url, s.key, true, body_override))
+            let url = image_endpoint(&s.url, protocol, &admin_model, kind);
+            Ok((url, s.key, true, Some(admin_model)))
         }
         None => Err((
             StatusCode::BAD_REQUEST,
@@ -193,7 +184,15 @@ async fn decode_openai_image_response(state: &AppState, raw: &[u8]) -> Response 
                 Err(e) => return err(StatusCode::BAD_GATEWAY, format!("b64 decode: {e}")),
             }
         } else if let Some(remote) = item.get("url").and_then(|v| v.as_str()) {
-            match state.http.get(remote).send().await {
+            let (_parsed, host, addrs) = match net_guard::validate_upstream_url(remote).await {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
+            let client = match net_guard::guarded_client(&host, &addrs) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            match client.get(remote).send().await {
                 Ok(r) => r.bytes().await.unwrap_or_default().to_vec(),
                 Err(e) => return err(StatusCode::BAD_GATEWAY, format!("fetch image: {e}")),
             }
@@ -229,6 +228,10 @@ async fn proxy_openai_images(
             Ok(v) => v,
             Err(r) => return r,
         };
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     let body = match (used_shared, shared_model.as_deref()) {
         (true, Some(m)) if !m.is_empty() => override_json_model(&body, m),
         _ => body,
@@ -239,8 +242,7 @@ async fn proxy_openai_images(
         }
     }
 
-    let resp = match state
-        .http
+    let resp = match client
         .post(&url)
         .bearer_auth(&key)
         .header(header::CONTENT_TYPE, "application/json")
@@ -283,6 +285,10 @@ async fn proxy_openai_images_edits(
             Ok(v) => v,
             Err(r) => return r,
         };
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     let content_type = match headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -296,8 +302,7 @@ async fn proxy_openai_images_edits(
         }
     }
 
-    let resp = match state
-        .http
+    let resp = match client
         .post(&url)
         .bearer_auth(&key)
         .header(header::CONTENT_TYPE, content_type)
@@ -348,14 +353,17 @@ async fn proxy_gemini_images(
             Ok(v) => v,
             Err(r) => return r,
         };
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
     if used_shared {
         if let Err(r) = deduct_image_credits(&state, user.id, "gemini").await {
             return r;
         }
     }
 
-    let resp = match state
-        .http
+    let resp = match client
         .post(&url)
         .header("x-goog-api-key", key.as_str())
         .header(header::CONTENT_TYPE, "application/json")

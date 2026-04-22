@@ -7,6 +7,7 @@ mod email;
 mod image_plaza;
 mod images;
 mod invites;
+mod net_guard;
 mod profile;
 mod prompts;
 mod settings;
@@ -133,6 +134,16 @@ async fn register(
         Ok(s) => s,
         Err(r) => return r,
     };
+    let registration_enabled = credits::get_setting_bool(
+        &installed.pool,
+        installed.kind,
+        "registration_enabled",
+        true,
+    )
+    .await;
+    if !registration_enabled {
+        return (StatusCode::FORBIDDEN, "当前站点已关闭注册").into_response();
+    }
     if let Err(msg) = validate_credentials(&creds) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
@@ -609,6 +620,11 @@ async fn proxy_forward(
             Err(r) => return r,
         };
 
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
     // When falling back to shared upstream, override the model in the body
     // (OpenAI / Claude embed it in the JSON payload; Gemini only in URL).
     let body = if used_shared {
@@ -644,8 +660,7 @@ async fn proxy_forward(
         }
     }
 
-    let mut req = state
-        .http
+    let mut req = client
         .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "text/event-stream")
@@ -752,9 +767,9 @@ async fn proxy_get_forward(
     // Otherwise fall back to shared host + construct the models endpoint.
     let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
     let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-    let (url, key) = if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+    let (url, key, used_shared) = if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
         if !u.is_empty() && !k.is_empty() {
-            (u.to_string(), k.to_string())
+            (u.to_string(), k.to_string(), false)
         } else {
             match credits::read_shared(
                 &installed.pool,
@@ -764,7 +779,7 @@ async fn proxy_get_forward(
             )
             .await
             {
-                Some(s) => (models_endpoint(&s.url, protocol), s.key),
+                Some(s) => (models_endpoint(&s.url, protocol), s.key, true),
                 None => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -782,8 +797,12 @@ async fn proxy_get_forward(
             .into_response();
     };
 
-    let mut req = state
-        .http
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    let mut req = client
         .get(&url)
         .header(header::ACCEPT, "application/json");
     req = match protocol {

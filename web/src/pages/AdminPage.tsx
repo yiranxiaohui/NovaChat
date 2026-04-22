@@ -1600,6 +1600,21 @@ function EmailPanel() {
         <div className="flex items-center gap-2">
           <input
             type="checkbox"
+            id="registration-enabled"
+            className="size-4 accent-primary"
+            defaultChecked={cfg.registration_enabled}
+            onChange={(e) => set("registration_enabled", e.target.checked)}
+          />
+          <Label htmlFor="registration-enabled" className="cursor-pointer">
+            允许新用户注册
+          </Label>
+        </div>
+        <p className="mt-2 mb-4 text-xs text-muted-foreground">
+          关闭后，注册接口返回 403；仅管理员可在「用户管理」为新成员手动创建账号时才能加人。建议公开部署在配置完初始管理员后关闭。
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
             id="email-required"
             className="size-4 accent-primary"
             defaultChecked={cfg.email_verification_required}

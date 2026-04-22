@@ -61,6 +61,7 @@ export const creditsApi = {
 }
 
 export type AdminSettings = {
+  registration_enabled: boolean
   shared_enabled: boolean
   signup_grant: number
   cost_chat: number

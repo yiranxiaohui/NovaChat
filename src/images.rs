@@ -122,6 +122,121 @@ async fn proxy_openai_images(
     Json(GeneratedImages { images: out }).into_response()
 }
 
+async fn proxy_gemini_images(
+    State(state): State<AppState>,
+    Extension(_user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
+    };
+    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
+    };
+
+    let resp = match state
+        .http
+        .post(url)
+        .header("x-goog-api-key", key)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+    };
+
+    let status = resp.status();
+    let raw = resp.bytes().await.unwrap_or_default();
+    if !status.is_success() {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
+        );
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("parse: {e}")),
+    };
+
+    // Imagen (:predict) returns { predictions: [{ bytesBase64Encoded, mimeType }] }
+    // Vertex variant uses { predictions: [{ image: { imageBytes } }] }.
+    // Gemini generateContent returns { candidates: [{ content: { parts: [{ inlineData: { data, mimeType } }] } }] }.
+    let mut b64_items: Vec<(String, Option<String>)> = Vec::new();
+
+    if let Some(preds) = parsed.get("predictions").and_then(|d| d.as_array()) {
+        for p in preds {
+            let data = p
+                .get("bytesBase64Encoded")
+                .and_then(|v| v.as_str())
+                .or_else(|| p.pointer("/image/imageBytes").and_then(|v| v.as_str()));
+            if let Some(d) = data {
+                let mime = p
+                    .get("mimeType")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                b64_items.push((d.to_string(), mime));
+            }
+        }
+    } else if let Some(cands) = parsed.get("candidates").and_then(|d| d.as_array()) {
+        for c in cands {
+            let Some(parts) = c.pointer("/content/parts").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for part in parts {
+                let Some(inline) = part.get("inlineData").or_else(|| part.get("inline_data"))
+                else {
+                    continue;
+                };
+                let Some(data) = inline.get("data").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let mime = inline
+                    .get("mimeType")
+                    .or_else(|| inline.get("mime_type"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                b64_items.push((data.to_string(), mime));
+            }
+        }
+    }
+
+    let images_dir = state.data_dir.join("images");
+    if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
+    }
+
+    let mut out = Vec::new();
+    for (b64, mime) in b64_items {
+        let bytes = match STANDARD.decode(&b64) {
+            Ok(b) => b,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, format!("b64 decode: {e}")),
+        };
+        let ext = match mime.as_deref() {
+            Some("image/jpeg") => "jpg",
+            Some("image/webp") => "webp",
+            _ => "png",
+        };
+        let name = format!("{}.{ext}", random_hex(16));
+        let path = images_dir.join(&name);
+        if let Err(e) = tokio::fs::write(&path, &bytes).await {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
+        }
+        out.push(GeneratedImage {
+            path: format!("/api/images/{name}"),
+            revised_prompt: None,
+        });
+    }
+
+    if out.is_empty() {
+        return err(StatusCode::BAD_GATEWAY, "upstream returned no images");
+    }
+    Json(GeneratedImages { images: out }).into_response()
+}
+
 async fn serve_image(
     State(state): State<AppState>,
     Extension(_user): Extension<CurrentUser>,
@@ -146,5 +261,6 @@ async fn serve_image(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/proxy/openai/images", post(proxy_openai_images))
+        .route("/proxy/gemini/images", post(proxy_gemini_images))
         .route("/images/{name}", get(serve_image))
 }

@@ -23,6 +23,8 @@ pub struct UpstreamSettings {
     // Image-generation config. Optional: if absent, image mode is disabled
     // for the user regardless of chat protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_api_key: Option<String>,
@@ -76,6 +78,10 @@ fn validate(s: &UpstreamSettings) -> Result<(), Response> {
     if s.model.len() > 128 {
         return Err(err(StatusCode::BAD_REQUEST, "model too long"));
     }
+    match s.image_protocol.as_deref() {
+        None | Some("openai") | Some("gemini") => {}
+        _ => return Err(err(StatusCode::BAD_REQUEST, "invalid image_protocol")),
+    }
     if s.image_base_url.as_deref().map_or(0, str::len) > 512 {
         return Err(err(StatusCode::BAD_REQUEST, "image_base_url too long"));
     }
@@ -98,7 +104,7 @@ async fn get_settings(
         installed.kind,
         &format!(
             "SELECT protocol, base_url, api_key, model, {proxy_col},
-                    image_base_url, image_api_key, image_model, {image_proxy_col}
+                    image_protocol, image_base_url, image_api_key, image_model, {image_proxy_col}
              FROM user_settings WHERE user_id = ?"
         ),
     );
@@ -131,15 +137,16 @@ async fn put_settings(
             &format!(
                 "INSERT INTO user_settings
                      (user_id, protocol, base_url, api_key, model, use_proxy,
-                      image_base_url, image_api_key, image_model, image_use_proxy,
+                      image_protocol, image_base_url, image_api_key, image_model, image_use_proxy,
                       updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now})
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now})
                  ON CONFLICT(user_id) DO UPDATE SET
                      protocol = EXCLUDED.protocol,
                      base_url = EXCLUDED.base_url,
                      api_key = EXCLUDED.api_key,
                      model = EXCLUDED.model,
                      use_proxy = EXCLUDED.use_proxy,
+                     image_protocol = EXCLUDED.image_protocol,
                      image_base_url = EXCLUDED.image_base_url,
                      image_api_key = EXCLUDED.image_api_key,
                      image_model = EXCLUDED.image_model,
@@ -150,15 +157,16 @@ async fn put_settings(
         DbKind::Mysql => format!(
             "INSERT INTO user_settings
                  (user_id, protocol, base_url, api_key, model, use_proxy,
-                  image_base_url, image_api_key, image_model, image_use_proxy,
+                  image_protocol, image_base_url, image_api_key, image_model, image_use_proxy,
                   updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now})
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now})
              ON DUPLICATE KEY UPDATE
                  protocol = VALUES(protocol),
                  base_url = VALUES(base_url),
                  api_key = VALUES(api_key),
                  model = VALUES(model),
                  use_proxy = VALUES(use_proxy),
+                 image_protocol = VALUES(image_protocol),
                  image_base_url = VALUES(image_base_url),
                  image_api_key = VALUES(image_api_key),
                  image_model = VALUES(image_model),
@@ -174,6 +182,7 @@ async fn put_settings(
         .bind(&body.api_key)
         .bind(&body.model)
         .bind(use_proxy)
+        .bind(&body.image_protocol)
         .bind(&body.image_base_url)
         .bind(&body.image_api_key)
         .bind(&body.image_model)

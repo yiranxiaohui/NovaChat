@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
-  IMAGE_DEFAULTS,
+  IMAGE_PROTOCOL_META,
   PROTOCOL_META,
+  type ImageProtocol,
   type Protocol,
   type UpstreamSettings,
 } from "@/lib/settings"
@@ -22,6 +23,7 @@ type Props = {
 type Tab = "chat" | "image"
 
 const PROTOCOL_OPTIONS: Protocol[] = ["openai", "claude", "gemini"]
+const IMAGE_PROTOCOL_OPTIONS: ImageProtocol[] = ["openai", "gemini"]
 
 export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   // --- Chat state ---
@@ -32,6 +34,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const [useProxy, setUseProxy] = useState(initial.useProxy)
 
   // --- Image state ---
+  const [imageProtocol, setImageProtocol] = useState<ImageProtocol>(initial.imageProtocol)
   const [imageBaseUrl, setImageBaseUrl] = useState(initial.imageBaseUrl)
   const [imageApiKey, setImageApiKey] = useState(initial.imageApiKey)
   const [imageModel, setImageModel] = useState(initial.imageModel)
@@ -56,6 +59,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setApiKey(initial.apiKey)
       setModel(initial.model)
       setUseProxy(initial.useProxy)
+      setImageProtocol(initial.imageProtocol)
       setImageBaseUrl(initial.imageBaseUrl)
       setImageApiKey(initial.imageApiKey)
       setImageModel(initial.imageModel)
@@ -77,11 +81,12 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   useEffect(() => {
     setImageModels([])
     setImageError(null)
-  }, [imageBaseUrl])
+  }, [imageBaseUrl, imageProtocol])
 
   if (!open) return null
 
   const meta = PROTOCOL_META[protocol]
+  const imgMeta = IMAGE_PROTOCOL_META[imageProtocol]
   const canLoadChat = Boolean(baseUrl.trim() && apiKey.trim())
   const canLoadImage = Boolean(imageBaseUrl.trim() && imageApiKey.trim())
 
@@ -95,6 +100,19 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
     }
     if (!model || model === prev.defaultModel) {
       setModel(nextMeta.defaultModel)
+    }
+  }
+
+  function pickImageProtocol(next: ImageProtocol) {
+    if (next === imageProtocol) return
+    const prev = IMAGE_PROTOCOL_META[imageProtocol]
+    setImageProtocol(next)
+    const nextMeta = IMAGE_PROTOCOL_META[next]
+    if (!imageBaseUrl || imageBaseUrl === prev.defaultBaseUrl) {
+      setImageBaseUrl(nextMeta.defaultBaseUrl)
+    }
+    if (!imageModel || imageModel === prev.defaultModel) {
+      setImageModel(nextMeta.defaultModel)
     }
   }
 
@@ -134,16 +152,17 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
     setImageError(null)
     try {
       const list = await listModels({
-        protocol: "openai",
+        protocol: imageProtocol,
         baseUrl: imageBaseUrl.trim(),
         apiKey: imageApiKey.trim(),
         useProxy: imageUseProxy,
         signal: ctrl.signal,
       })
-      // Filter to plausibly image-capable model ids
-      const filtered = list.filter((m) =>
-        /dall-?e|gpt-image|image|flux|sd-?\d/i.test(m)
-      )
+      const filter =
+        imageProtocol === "gemini"
+          ? /imagen|image/i
+          : /dall-?e|gpt-image|image|flux|sd-?\d/i
+      const filtered = list.filter((m) => filter.test(m))
       const pool = filtered.length > 0 ? filtered : list
       setImageModels(pool)
       if (pool.length > 0 && !pool.includes(imageModel)) setImageModel(pool[0])
@@ -159,9 +178,20 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   function copyChatAsImage() {
     if (!baseUrl && !apiKey) return
-    if (!imageBaseUrl) setImageBaseUrl(baseUrl)
-    if (!imageApiKey) setImageApiKey(apiKey)
-    if (!imageModel) setImageModel(IMAGE_DEFAULTS.model)
+    // Only makes sense to copy when the chat protocol is a superset of the
+    // image protocol (OpenAI → OpenAI, Gemini → Gemini).
+    if (protocol === "openai" && imageProtocol === "openai") {
+      if (!imageBaseUrl) setImageBaseUrl(baseUrl)
+      if (!imageApiKey) setImageApiKey(apiKey)
+      if (!imageModel) setImageModel(IMAGE_PROTOCOL_META.openai.defaultModel)
+    } else if (protocol === "gemini" && imageProtocol === "gemini") {
+      if (!imageBaseUrl) setImageBaseUrl(baseUrl)
+      if (!imageApiKey) setImageApiKey(apiKey)
+      if (!imageModel) setImageModel(IMAGE_PROTOCOL_META.gemini.defaultModel)
+    } else {
+      // Different protocols: copy key only (most common: same vendor, diff URL).
+      if (!imageApiKey) setImageApiKey(apiKey)
+    }
   }
 
   return (
@@ -268,7 +298,28 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         ) : (
           <div className="mt-4 flex flex-col gap-3">
             <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              图像生成走 OpenAI 兼容的 <code>/v1/images/generations</code>。可以单独配置（例如聊天走官方 OpenAI、生图走代理服务）。留空则禁用图像模式。
+              图像生成支持 OpenAI（<code>/v1/images/generations</code>）和 Google Imagen（<code>:predict</code>）两种协议。可以独立配置（例如聊天走 Claude、生图走 Imagen）。留空则禁用图像模式。
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label>协议</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {IMAGE_PROTOCOL_OPTIONS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => pickImageProtocol(p)}
+                    className={cn(
+                      "rounded-md border px-3 py-2 text-sm transition-colors",
+                      imageProtocol === p
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-background hover:bg-accent"
+                    )}
+                  >
+                    {IMAGE_PROTOCOL_META[p].label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -286,12 +337,12 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </div>
               <Input
                 id="imageBaseUrl"
-                placeholder={IMAGE_DEFAULTS.baseUrl}
+                placeholder={imgMeta.defaultBaseUrl}
                 value={imageBaseUrl}
                 onChange={(e) => setImageBaseUrl(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                路径自动补 <code>{IMAGE_DEFAULTS.pathHint}</code>。
+                路径自动补 <code>{imgMeta.pathHint}</code>。
               </p>
             </div>
 
@@ -302,7 +353,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="sk-…"
+                placeholder={imageProtocol === "gemini" ? "AIza…" : "sk-…"}
                 value={imageApiKey}
                 onChange={(e) => setImageApiKey(e.target.value)}
               />
@@ -317,7 +368,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               error={imageError}
               canLoad={canLoadImage}
               onLoad={loadImageModels}
-              placeholder={IMAGE_DEFAULTS.model}
+              placeholder={imgMeta.defaultModel}
               datalistId="image-model-options"
             />
 
@@ -357,6 +408,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 apiKey: apiKey.trim(),
                 model: model.trim(),
                 useProxy,
+                imageProtocol,
                 imageBaseUrl: imageBaseUrl.trim(),
                 imageApiKey: imageApiKey.trim(),
                 imageModel: imageModel.trim(),

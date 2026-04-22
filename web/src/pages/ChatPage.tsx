@@ -30,7 +30,7 @@ import {
   settingsApi,
   isImageConfigured,
   PROTOCOL_META,
-  IMAGE_DEFAULTS,
+  IMAGE_PROTOCOL_META,
   type Protocol,
   type UpstreamSettings,
 } from "@/lib/settings"
@@ -193,6 +193,7 @@ export default function ChatPage() {
           apiKey: "",
           model: "",
           useProxy: true,
+          imageProtocol: "openai",
           imageBaseUrl: "",
           imageApiKey: "",
           imageModel: "",
@@ -455,11 +456,13 @@ export default function ChatPage() {
     let genError: Error | null = null
 
     try {
+      const imgMeta = IMAGE_PROTOCOL_META[settings.imageProtocol]
       const imgs = await generateImages({
-        baseUrl: settings.imageBaseUrl || IMAGE_DEFAULTS.baseUrl,
+        protocol: settings.imageProtocol,
+        baseUrl: settings.imageBaseUrl || imgMeta.defaultBaseUrl,
         apiKey: settings.imageApiKey,
         prompt,
-        model: settings.imageModel || IMAGE_DEFAULTS.model,
+        model: settings.imageModel || imgMeta.defaultModel,
         useProxy: settings.imageUseProxy,
         signal: ctrl.signal,
       })

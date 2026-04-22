@@ -1,4 +1,5 @@
 export type Protocol = "openai" | "claude" | "gemini"
+export type ImageProtocol = "openai" | "gemini"
 
 export type UpstreamSettings = {
   // chat (protocol-aware)
@@ -8,7 +9,8 @@ export type UpstreamSettings = {
   model: string
   useProxy: boolean
 
-  // image generation (OpenAI-compatible only; independent config)
+  // image generation (protocol-aware, independent from chat config)
+  imageProtocol: ImageProtocol
   imageBaseUrl: string
   imageApiKey: string
   imageModel: string
@@ -41,10 +43,29 @@ export const PROTOCOL_META: Record<
   },
 }
 
+export const IMAGE_PROTOCOL_META: Record<
+  ImageProtocol,
+  { label: string; defaultBaseUrl: string; defaultModel: string; pathHint: string }
+> = {
+  openai: {
+    label: "OpenAI 兼容",
+    defaultBaseUrl: "https://api.openai.com",
+    defaultModel: "dall-e-3",
+    pathHint: "/v1/images/generations",
+  },
+  gemini: {
+    label: "Google Imagen",
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
+    defaultModel: "imagen-3.0-generate-002",
+    pathHint: "/v1beta/models/{model}:predict",
+  },
+}
+
+// Back-compat alias used in a few places.
 export const IMAGE_DEFAULTS = {
-  baseUrl: "https://api.openai.com",
-  model: "dall-e-3",
-  pathHint: "/v1/images/generations",
+  baseUrl: IMAGE_PROTOCOL_META.openai.defaultBaseUrl,
+  model: IMAGE_PROTOCOL_META.openai.defaultModel,
+  pathHint: IMAGE_PROTOCOL_META.openai.pathHint,
 }
 
 const EMPTY: UpstreamSettings = {
@@ -53,6 +74,7 @@ const EMPTY: UpstreamSettings = {
   apiKey: "",
   model: "",
   useProxy: true,
+  imageProtocol: "openai",
   imageBaseUrl: "",
   imageApiKey: "",
   imageModel: "",
@@ -101,6 +123,7 @@ type CloudPayload = {
   api_key: string
   model: string
   use_proxy: boolean
+  image_protocol?: ImageProtocol | null
   image_base_url?: string | null
   image_api_key?: string | null
   image_model?: string | null
@@ -117,6 +140,7 @@ function toCloud(s: UpstreamSettings): CloudPayload {
     use_proxy: s.useProxy,
     ...(hasImage
       ? {
+          image_protocol: s.imageProtocol,
           image_base_url: s.imageBaseUrl || null,
           image_api_key: s.imageApiKey || null,
           image_model: s.imageModel || null,
@@ -127,12 +151,14 @@ function toCloud(s: UpstreamSettings): CloudPayload {
 }
 
 function fromCloud(p: CloudPayload): Omit<UpstreamSettings, "cloudSync"> {
+  const ip = p.image_protocol === "gemini" ? "gemini" : "openai"
   return {
     protocol: p.protocol,
     baseUrl: p.base_url ?? "",
     apiKey: p.api_key ?? "",
     model: p.model ?? "",
     useProxy: Boolean(p.use_proxy),
+    imageProtocol: ip,
     imageBaseUrl: p.image_base_url ?? "",
     imageApiKey: p.image_api_key ?? "",
     imageModel: p.image_model ?? "",

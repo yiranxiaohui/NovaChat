@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowUp,
+  BookMarked,
   Check,
   Copy,
   ImageIcon,
@@ -24,7 +25,11 @@ import { useAuth } from "@/lib/auth-context"
 import {
   loadSettings,
   saveSettings,
+  loadEffectiveSettings,
+  settingsApi,
+  isImageConfigured,
   PROTOCOL_META,
+  IMAGE_DEFAULTS,
   type Protocol,
   type UpstreamSettings,
 } from "@/lib/settings"
@@ -187,6 +192,11 @@ export default function ChatPage() {
           apiKey: "",
           model: "",
           useProxy: true,
+          imageBaseUrl: "",
+          imageApiKey: "",
+          imageModel: "",
+          imageUseProxy: true,
+          cloudSync: false,
         }
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -205,14 +215,24 @@ export default function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    if (user) setSettings(loadSettings(user.id))
+    if (!user) return
+    setSettings(loadSettings(user.id))
+    let cancelled = false
+    loadEffectiveSettings(user.id).then((s) => {
+      if (!cancelled) setSettings(s)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [user])
 
+  const imageConfigured = isImageConfigured(settings)
+
   useEffect(() => {
-    if (settings.protocol !== "openai" && mode === "image") {
+    if (!imageConfigured && mode === "image") {
       setMode("chat")
     }
-  }, [settings.protocol, mode])
+  }, [imageConfigured, mode])
 
   useEffect(() => {
     if (!conversationId) {
@@ -434,12 +454,11 @@ export default function ChatPage() {
 
     try {
       const imgs = await generateImages({
-        baseUrl: settings.baseUrl,
-        apiKey: settings.apiKey,
+        baseUrl: settings.imageBaseUrl || IMAGE_DEFAULTS.baseUrl,
+        apiKey: settings.imageApiKey,
         prompt,
-        model: /^(dall-e|gpt-image)/.test(settings.model)
-          ? settings.model
-          : "dall-e-3",
+        model: settings.imageModel || IMAGE_DEFAULTS.model,
+        useProxy: settings.imageUseProxy,
         signal: ctrl.signal,
       })
       assistantContent = imgs
@@ -639,7 +658,15 @@ export default function ChatPage() {
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
+              onClick={() => setLibraryOpen(true)}
+              title="提示词库"
+            >
+              <BookMarked />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setSettingsOpen(true)}
               title="设置"
             >
@@ -651,7 +678,6 @@ export default function ChatPage() {
         <SystemPromptBar
           value={systemPrompt}
           onSave={saveSystemPrompt}
-          onOpenLibrary={() => setLibraryOpen(true)}
         />
 
         <div className="nc-scroll flex-1 overflow-y-auto">
@@ -812,9 +838,19 @@ export default function ChatPage() {
         initial={settings}
         onClose={() => setSettingsOpen(false)}
         onSave={(s) => {
+          const prevCloud = settings.cloudSync
           if (user) saveSettings(user.id, s)
           setSettings(s)
           setSettingsOpen(false)
+          if (s.cloudSync) {
+            settingsApi.save(s).catch((e) => {
+              setError(`云端同步失败：${e instanceof Error ? e.message : String(e)}`)
+            })
+          } else if (prevCloud) {
+            settingsApi.remove().catch(() => {
+              // ignore — user turned cloud off, best-effort cleanup
+            })
+          }
         }}
       />
 

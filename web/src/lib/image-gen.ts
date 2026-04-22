@@ -12,6 +12,7 @@ export type GenerateImageOptions = {
   model?: string
   size?: "1024x1024" | "1024x1792" | "1792x1024" | "auto"
   n?: number
+  useProxy?: boolean
   signal?: AbortSignal
 }
 
@@ -26,21 +27,45 @@ export async function generateImages(
     size: o.size ?? "1024x1024",
     response_format: "b64_json",
   }
-  const res = await fetch("/api/proxy/openai/images", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Upstream-Url": upstream,
-      "X-Upstream-Key": o.apiKey,
-    },
-    body: JSON.stringify(body),
-    credentials: "same-origin",
-    signal: o.signal,
-  })
+  const useProxy = o.useProxy !== false
+  const res = useProxy
+    ? await fetch("/api/proxy/openai/images", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Upstream-Url": upstream,
+          "X-Upstream-Key": o.apiKey,
+        },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+        signal: o.signal,
+      })
+    : await fetch(upstream, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${o.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: o.signal,
+      })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(text || `HTTP ${res.status}`)
   }
-  const json = (await res.json()) as { images: GeneratedImage[] }
-  return json.images ?? []
+  // Direct upstream returns { data: [{b64_json} | {url}] }; proxy returns
+  // { images: [{path, revised_prompt}] } where files are already stored.
+  const json = (await res.json()) as
+    | { images: GeneratedImage[] }
+    | { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> }
+  if ("images" in json && Array.isArray(json.images)) return json.images
+  const raw = "data" in json ? (json.data ?? []) : []
+  return raw.map((d) => ({
+    // For direct-mode fallback: we can only show base64 inline as data URL,
+    // or a remote URL. Remote URLs expire; base64 is safer.
+    path: d.b64_json
+      ? `data:image/png;base64,${d.b64_json}`
+      : d.url ?? "",
+    revised_prompt: d.revised_prompt ?? null,
+  }))
 }

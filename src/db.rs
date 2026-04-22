@@ -66,12 +66,18 @@ fn normalize_url(url: &str) -> String {
 
 static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/sqlite/0001_init.sql")),
+    (2, include_str!("../migrations/sqlite/0002_user_settings.sql")),
+    (3, include_str!("../migrations/sqlite/0003_image_settings.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
+    (2, include_str!("../migrations/mysql/0002_user_settings.sql")),
+    (3, include_str!("../migrations/mysql/0003_image_settings.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
+    (2, include_str!("../migrations/postgres/0002_user_settings.sql")),
+    (3, include_str!("../migrations/postgres/0003_image_settings.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {
@@ -223,6 +229,17 @@ pub fn ci_eq(kind: DbKind, col: &str) -> String {
     match kind {
         DbKind::Sqlite => format!("{col} = ?"),
         DbKind::Mysql | DbKind::Postgres => format!("LOWER({col}) = LOWER(?)"),
+    }
+}
+
+/// Select a nullable bool-valued column as an optional integer across backends.
+pub fn opt_bool_as_int(kind: DbKind, col: &str) -> String {
+    match kind {
+        DbKind::Postgres => format!(
+            "CASE WHEN {col} IS NULL THEN NULL WHEN {col} THEN 1 ELSE 0 END AS {}",
+            col_alias(col)
+        ),
+        _ => col.to_string(),
     }
 }
 

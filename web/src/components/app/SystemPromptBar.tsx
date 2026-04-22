@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react"
-import { BookMarked, ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
 type Props = {
   value: string
   onSave: (next: string) => Promise<void> | void
-  onOpenLibrary: () => void
 }
 
-export function SystemPromptBar({ value, onSave, onOpenLibrary }: Props) {
+export function SystemPromptBar({ value, onSave }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
@@ -55,13 +54,6 @@ export function SystemPromptBar({ value, onSave, onOpenLibrary }: Props) {
             {summary}
           </span>
         )}
-        <button
-          type="button"
-          onClick={onOpenLibrary}
-          className="ml-auto flex items-center gap-1 rounded px-1 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <BookMarked className="size-3.5" /> 库
-        </button>
       </div>
       {expanded && (
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-5 pb-3">

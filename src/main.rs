@@ -3,6 +3,7 @@ mod conversations;
 mod db;
 mod images;
 mod prompts;
+mod settings;
 mod setup;
 
 use axum::{
@@ -501,6 +502,7 @@ fn build_router(state: AppState) -> Router {
         .merge(conversations::routes())
         .merge(prompts::routes())
         .merge(images::routes())
+        .merge(settings::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

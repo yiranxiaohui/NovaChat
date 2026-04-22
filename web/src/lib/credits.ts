@@ -135,4 +135,20 @@ export const adminCreditsApi = {
       })
     )
   },
+  async listUpstreamModels(
+    which:
+      | "chat_openai"
+      | "chat_claude"
+      | "chat_gemini"
+      | "image_openai"
+      | "image_gemini"
+  ): Promise<string[]> {
+    const r = await jsonOrThrow<{ models: string[] }>(
+      await fetch(
+        `/api/admin/app-settings/models?which=${encodeURIComponent(which)}`,
+        { credentials: "same-origin" }
+      )
+    )
+    return r.models
+  },
 }

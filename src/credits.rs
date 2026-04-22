@@ -393,8 +393,13 @@ pub async fn read_shared(
     };
     let url = get_setting(pool, kind, &format!("{prefix}{protocol}_url")).await;
     let key = get_setting(pool, kind, &format!("{prefix}{protocol}_key")).await;
+    let model = get_setting(pool, kind, &format!("{prefix}{protocol}_model")).await;
     match (url, key) {
-        (Some(u), Some(k)) if !u.is_empty() && !k.is_empty() => Some(SharedUpstream { url: u, key: k }),
+        (Some(u), Some(k)) if !u.is_empty() && !k.is_empty() => Some(SharedUpstream {
+            url: u,
+            key: k,
+            model: model.filter(|s| !s.is_empty()),
+        }),
         _ => None,
     }
 }
@@ -408,6 +413,7 @@ pub enum SharedFlavor {
 pub struct SharedUpstream {
     pub url: String,
     pub key: String,
+    pub model: Option<String>,
 }
 
 async fn get_shared_status(
@@ -691,9 +697,116 @@ pub fn user_routes() -> Router<AppState> {
         .route("/shared/status", get(get_shared_status))
 }
 
+#[derive(Deserialize)]
+struct ModelsQuery {
+    which: String,
+}
+
+#[derive(Serialize)]
+struct ModelsList {
+    models: Vec<String>,
+}
+
+/// Admin-facing: list models available on a configured shared upstream.
+/// `which` is one of: chat_openai, chat_claude, chat_gemini,
+/// image_openai, image_gemini.
+async fn admin_list_upstream_models(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    axum::extract::Query(q): axum::extract::Query<ModelsQuery>,
+) -> Response {
+    let (flavor, protocol) = match q.which.as_str() {
+        "chat_openai" => (SharedFlavor::Chat, "openai"),
+        "chat_claude" => (SharedFlavor::Chat, "claude"),
+        "chat_gemini" => (SharedFlavor::Chat, "gemini"),
+        "image_openai" => (SharedFlavor::Image, "openai"),
+        "image_gemini" => (SharedFlavor::Image, "gemini"),
+        _ => return (StatusCode::BAD_REQUEST, "unknown which").into_response(),
+    };
+    let Some(shared) = read_shared(&installed.pool, installed.kind, protocol, flavor).await
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "upstream not configured — save URL and API key first",
+        )
+            .into_response();
+    };
+
+    let base = shared.url.trim_end_matches('/');
+    let url = match protocol {
+        "openai" | "claude" => format!("{base}/v1/models"),
+        "gemini" => format!("{base}/v1beta/models?pageSize=200"),
+        _ => unreachable!(),
+    };
+
+    let mut req = state.http.get(&url).header("accept", "application/json");
+    req = match protocol {
+        "openai" => req.bearer_auth(&shared.key),
+        "claude" => req
+            .header("x-api-key", shared.key.as_str())
+            .header("anthropic-version", "2023-06-01"),
+        "gemini" => req.header("x-goog-api-key", shared.key.as_str()),
+        _ => unreachable!(),
+    };
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("upstream: {e}")).into_response(),
+    };
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return (StatusCode::BAD_GATEWAY, format!("upstream {s}: {body}")).into_response();
+    }
+    let v: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("parse: {e}")).into_response(),
+    };
+
+    let mut models: Vec<String> = match protocol {
+        "openai" | "claude" => v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("id").and_then(|x| x.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        "gemini" => v
+            .get("models")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|m| {
+                        m.get("supportedGenerationMethods")
+                            .and_then(|s| s.as_array())
+                            .map(|methods| {
+                                methods
+                                    .iter()
+                                    .any(|x| x.as_str() == Some("generateContent"))
+                            })
+                            .unwrap_or(true)
+                    })
+                    .filter_map(|m| {
+                        m.get("name").and_then(|x| x.as_str()).map(|s| {
+                            s.strip_prefix("models/").unwrap_or(s).to_string()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    models.sort();
+    models.dedup();
+    Json(ModelsList { models }).into_response()
+}
+
 pub fn admin_routes() -> Router<AppState> {
     Router::new()
         .route("/admin/app-settings", get(admin_get_settings).patch(admin_patch_settings))
+        .route("/admin/app-settings/models", get(admin_list_upstream_models))
         .route("/admin/credits", get(admin_list_user_credits))
         .route("/admin/credits/{id}", patch(admin_adjust_credits).post(admin_adjust_credits))
         .route_layer(middleware::from_fn(admin::require_admin))

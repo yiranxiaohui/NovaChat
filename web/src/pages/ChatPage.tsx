@@ -794,8 +794,9 @@ export default function ChatPage() {
                   size="icon"
                   className="shrink-0"
                   aria-label={mode === "image" ? "生成图像" : "发送"}
+                  title={mode === "image" ? "生成图像" : "发送"}
                 >
-                  {mode === "image" ? <ImageIcon /> : <ArrowUp />}
+                  <ArrowUp />
                 </Button>
               )}
             </div>

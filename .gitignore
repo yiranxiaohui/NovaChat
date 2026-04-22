@@ -1,0 +1,8 @@
+/target
+/web/node_modules
+/web/dist
+/data
+# legacy layout
+/novachat.db
+/novachat.db-*
+/novachat.toml

@@ -1,0 +1,10 @@
+.git
+.github
+target
+web/node_modules
+web/dist
+data
+novachat.db
+novachat.db-*
+novachat.toml
+*.log

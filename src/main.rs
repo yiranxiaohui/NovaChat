@@ -1,0 +1,579 @@
+mod auth;
+mod conversations;
+mod db;
+mod prompts;
+mod setup;
+
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::State,
+    http::{HeaderMap, StatusCode, Uri, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use chrono::Utc;
+use rust_embed::RustEmbed;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(RustEmbed)]
+#[folder = "web/dist/"]
+struct Assets;
+
+// ---------------------------------------------------------------------------
+// state + config
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct AppState {
+    pub installed: Arc<RwLock<Option<InstalledState>>>,
+    pub http: reqwest::Client,
+    pub config_path: std::path::PathBuf,
+    pub data_dir: std::path::PathBuf,
+}
+
+#[derive(Clone)]
+pub struct InstalledState {
+    pub pool: db::Pool,
+    pub kind: db::DbKind,
+}
+
+impl AppState {
+    pub async fn require_installed(&self) -> Result<InstalledState, axum::response::Response> {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        match self.installed.read().await.clone() {
+            Some(s) => Ok(s),
+            None => Err((StatusCode::SERVICE_UNAVAILABLE, "system not installed").into_response()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentUser {
+    pub id: i64,
+}
+
+// ---------------------------------------------------------------------------
+// auth endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct Credentials {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct UserDto {
+    id: i64,
+    username: String,
+}
+
+fn validate_credentials(c: &Credentials) -> Result<(), &'static str> {
+    let u = c.username.trim();
+    if u.len() < 3 || u.len() > 32 {
+        return Err("username must be 3-32 characters");
+    }
+    if !u.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+        return Err("username: letters, digits, _ or - only");
+    }
+    if c.password.len() < 6 || c.password.len() > 256 {
+        return Err("password must be 6-256 characters");
+    }
+    Ok(())
+}
+
+fn session_cookie(token: String, max_age_days: i64) -> Cookie<'static> {
+    let mut c = Cookie::new(auth::SESSION_COOKIE, token);
+    c.set_http_only(true);
+    c.set_same_site(SameSite::Lax);
+    c.set_path("/");
+    c.set_max_age(time::Duration::days(max_age_days));
+    c
+}
+
+fn clear_cookie() -> Cookie<'static> {
+    let mut c = Cookie::new(auth::SESSION_COOKIE, "");
+    c.set_http_only(true);
+    c.set_same_site(SameSite::Lax);
+    c.set_path("/");
+    c.set_max_age(time::Duration::ZERO);
+    c
+}
+
+async fn register(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(creds): Json<Credentials>,
+) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(msg) = validate_credentials(&creds) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
+    }
+    let phc = match auth::hash_password(&creds.password) {
+        Ok(h) => h,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let username = creds.username.trim().to_string();
+
+    let base_insert = db::q(
+        installed.kind,
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+    );
+    let user_id = match installed.kind {
+        db::DbKind::Sqlite | db::DbKind::Postgres => {
+            let row: Result<(i64,), _> = sqlx::query_as(&format!("{base_insert} RETURNING id"))
+                .bind(&username)
+                .bind(&phc)
+                .fetch_one(&installed.pool)
+                .await;
+            match row {
+                Ok((id,)) => id,
+                Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
+                    return (StatusCode::CONFLICT, "username already taken").into_response();
+                }
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+        db::DbKind::Mysql => {
+            let mut tx = match installed.pool.begin().await {
+                Ok(t) => t,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            };
+            if let Err(e) = sqlx::query(&base_insert)
+                .bind(&username)
+                .bind(&phc)
+                .execute(&mut *tx)
+                .await
+            {
+                if let sqlx::Error::Database(d) = &e {
+                    if d.is_unique_violation() {
+                        return (StatusCode::CONFLICT, "username already taken").into_response();
+                    }
+                }
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+            let row: Result<(i64,), _> = sqlx::query_as("SELECT LAST_INSERT_ID()")
+                .fetch_one(&mut *tx)
+                .await;
+            let id = match row {
+                Ok((v,)) => v,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            };
+            if let Err(e) = tx.commit().await {
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+            id
+        }
+    };
+
+    match auth::create_session(&installed.pool, installed.kind, user_id).await {
+        Ok((token, _)) => {
+            let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
+            (jar, Json(UserDto { id: user_id, username })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(creds): Json<Credentials>,
+) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let username = creds.username.trim();
+    let sel = db::q(
+        installed.kind,
+        &format!(
+            "SELECT id, username, password_hash FROM users WHERE {}",
+            db::ci_eq(installed.kind, "username")
+        ),
+    );
+    let row: Option<(i64, String, String)> = sqlx::query_as(&sel)
+        .bind(username)
+        .fetch_optional(&installed.pool)
+        .await
+        .unwrap_or(None);
+
+    let Some((id, username, phc)) = row else {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    };
+    if !auth::verify_password(&creds.password, &phc) {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    }
+
+    match auth::create_session(&installed.pool, installed.kind, id).await {
+        Ok((token, _)) => {
+            let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
+            (jar, Json(UserDto { id, username })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
+    if let Ok(installed) = state.require_installed().await {
+        if let Some(c) = jar.get(auth::SESSION_COOKIE) {
+            let _ = auth::delete_session(&installed.pool, installed.kind, c.value()).await;
+        }
+    }
+    let jar = jar.add(clear_cookie());
+    (jar, StatusCode::NO_CONTENT).into_response()
+}
+
+async fn me(State(state): State<AppState>, jar: CookieJar) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Some(c) = jar.get(auth::SESSION_COOKIE) else {
+        return (StatusCode::UNAUTHORIZED, "not logged in").into_response();
+    };
+    match auth::user_for_token(&installed.pool, installed.kind, c.value()).await {
+        Some((id, username)) => Json(UserDto { id, username }).into_response(),
+        None => (StatusCode::UNAUTHORIZED, "session expired").into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// auth middleware (for protected routes)
+// ---------------------------------------------------------------------------
+
+async fn require_auth(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    mut req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Some(c) = jar.get(auth::SESSION_COOKIE) else {
+        return (StatusCode::UNAUTHORIZED, "login required").into_response();
+    };
+    let Some((id, _)) = auth::user_for_token(&installed.pool, installed.kind, c.value()).await
+    else {
+        return (StatusCode::UNAUTHORIZED, "session expired").into_response();
+    };
+    req.extensions_mut().insert(CurrentUser { id });
+    req.extensions_mut().insert(installed);
+    next.run(req).await
+}
+
+// ---------------------------------------------------------------------------
+// chat proxy (optional, for upstreams without CORS)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Protocol {
+    OpenAi,
+    Claude,
+    Gemini,
+}
+
+async fn proxy_forward(
+    state: &AppState,
+    protocol: Protocol,
+    headers: &HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
+        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Url header").into_response();
+    };
+    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
+        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Key header").into_response();
+    };
+
+    let mut req = state
+        .http
+        .post(url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "text/event-stream")
+        .body(body);
+
+    req = match protocol {
+        Protocol::OpenAi => req.bearer_auth(key),
+        Protocol::Claude => req
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        Protocol::Gemini => req.header("x-goog-api-key", key),
+    };
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("upstream connect error: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
+            .into_response();
+    }
+
+    let stream = resp.bytes_stream();
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .unwrap()
+}
+
+async fn proxy_openai(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    proxy_forward(&state, Protocol::OpenAi, &headers, body).await
+}
+
+async fn proxy_claude(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    proxy_forward(&state, Protocol::Claude, &headers, body).await
+}
+
+async fn proxy_gemini(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    proxy_forward(&state, Protocol::Gemini, &headers, body).await
+}
+
+async fn proxy_get_forward(
+    state: &AppState,
+    protocol: Protocol,
+    headers: &HeaderMap,
+) -> Response {
+    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
+        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Url header").into_response();
+    };
+    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
+        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Key header").into_response();
+    };
+
+    let mut req = state.http.get(url).header(header::ACCEPT, "application/json");
+    req = match protocol {
+        Protocol::OpenAi => req.bearer_auth(key),
+        Protocol::Claude => req
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        Protocol::Gemini => req.header("x-goog-api-key", key),
+    };
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("upstream connect error: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = resp.bytes().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
+            .into_response();
+    }
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+async fn proxy_openai_models(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Response {
+    proxy_get_forward(&state, Protocol::OpenAi, &headers).await
+}
+
+async fn proxy_claude_models(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Response {
+    proxy_get_forward(&state, Protocol::Claude, &headers).await
+}
+
+async fn proxy_gemini_models(
+    State(state): State<AppState>,
+    axum::Extension(_user): axum::Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Response {
+    proxy_get_forward(&state, Protocol::Gemini, &headers).await
+}
+
+// ---------------------------------------------------------------------------
+// static + health
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct Health {
+    status: &'static str,
+    version: &'static str,
+    time: String,
+}
+
+async fn health() -> Json<Health> {
+    Json(Health {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        time: Utc::now().to_rfc3339(),
+    })
+}
+
+async fn static_handler(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    if let Some(res) = serve(path) {
+        return res;
+    }
+    if let Some(res) = serve("index.html") {
+        return res;
+    }
+    (StatusCode::NOT_FOUND, "404 Not Found").into_response()
+}
+
+fn serve(path: &str) -> Option<Response> {
+    let file = Assets::get(path)?;
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    Some(
+        Response::builder()
+            .header(header::CONTENT_TYPE, mime.as_ref())
+            .body(Body::from(file.data.into_owned()))
+            .unwrap(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// router
+// ---------------------------------------------------------------------------
+
+fn build_router(state: AppState) -> Router {
+    let protected = Router::new()
+        .route("/proxy/openai", post(proxy_openai))
+        .route("/proxy/claude", post(proxy_claude))
+        .route("/proxy/gemini", post(proxy_gemini))
+        .route("/proxy/openai/models", get(proxy_openai_models))
+        .route("/proxy/claude/models", get(proxy_claude_models))
+        .route("/proxy/gemini/models", get(proxy_gemini_models))
+        .merge(conversations::routes())
+        .merge(prompts::routes())
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let public = Router::new()
+        .route("/health", get(health))
+        .route("/auth/register", post(register))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(me))
+        .merge(setup::routes());
+
+    Router::new()
+        .nest("/api", public.merge(protected))
+        .with_state(state)
+        .fallback(static_handler)
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() {
+    db::install_drivers();
+
+    let data_dir = std::path::PathBuf::from(
+        std::env::var("NOVACHAT_DATA_DIR").unwrap_or_else(|_| "data".into()),
+    );
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("WARNING: failed to create data dir {}: {e}", data_dir.display());
+    }
+    let config_path = std::env::var("NOVACHAT_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| data_dir.join("novachat.toml"));
+
+    // priority: env DATABASE_URL -> config file -> install wizard
+    let env_url = std::env::var("NOVACHAT_DATABASE_URL")
+        .ok()
+        .or_else(|| std::env::var("DATABASE_URL").ok());
+
+    let installed = Arc::new(RwLock::new(None));
+    let state = AppState {
+        installed: installed.clone(),
+        http: reqwest::Client::new(),
+        config_path: config_path.clone(),
+        data_dir: data_dir.clone(),
+    };
+
+    let effective_url = match env_url {
+        Some(u) => {
+            // env wins and also persists to config for cross-restart consistency
+            let _ = setup::save_config(&config_path, &setup::StoredConfig { database_url: u.clone() });
+            Some(u)
+        }
+        None => setup::load_config(&config_path).ok().map(|c| c.database_url),
+    };
+
+    if let Some(url) = effective_url.as_deref() {
+        match setup::boot_installed(url).await {
+            Ok(s) => {
+                *state.installed.write().await = Some(s.clone());
+                println!("  database: {} ({})", s.kind.as_str(), url);
+            }
+            Err(e) => {
+                eprintln!("WARNING: failed to connect to configured database ({e}); falling back to setup wizard");
+            }
+        }
+    }
+
+    let addr = std::env::var("NOVACHAT_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
+    println!("NovaChat listening on http://{addr}");
+    if state.installed.read().await.is_none() {
+        println!("  (not yet installed — open http://{addr}/setup to configure)");
+    }
+    axum::serve(listener, build_router(state))
+        .await
+        .expect("server error");
+}

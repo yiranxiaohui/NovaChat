@@ -6,10 +6,13 @@ import {
   Coins,
   Database,
   Key,
+  Mail,
   Plug,
   RefreshCw,
+  Send,
   Server,
   Shield,
+  Ticket,
   Trash2,
   UserCog,
   Users,
@@ -20,6 +23,7 @@ import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
 import {
   adminApi,
+  type AdminInviteRow,
   type AdminStats,
   type AdminSystemInfo,
   type AdminUser,
@@ -31,13 +35,22 @@ import {
   type AdminUserCredits,
 } from "@/lib/credits"
 
-type Section = "overview" | "users" | "credits" | "shared" | "system"
+type Section =
+  | "overview"
+  | "users"
+  | "credits"
+  | "invites"
+  | "shared"
+  | "email"
+  | "system"
 
 const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "概览", icon: BarChart3 },
   { key: "users", label: "用户管理", icon: Users },
   { key: "credits", label: "积分", icon: Coins },
+  { key: "invites", label: "邀请", icon: Ticket },
   { key: "shared", label: "共享后端", icon: Plug },
+  { key: "email", label: "邮箱 / SMTP", icon: Mail },
   { key: "system", label: "系统信息", icon: Server },
 ]
 
@@ -128,7 +141,9 @@ export default function AdminPage() {
           {section === "overview" && <OverviewPanel />}
           {section === "users" && <UsersPanel currentUserId={currentUser.id} />}
           {section === "credits" && <CreditsPanel />}
+          {section === "invites" && <InvitesPanel />}
           {section === "shared" && <SharedBackendPanel />}
+          {section === "email" && <EmailPanel />}
           {section === "system" && <SystemPanel />}
         </main>
       </div>
@@ -926,6 +941,172 @@ function AdjustCreditsDialog({
   )
 }
 
+function InvitesPanel() {
+  const [rows, setRows] = useState<AdminInviteRow[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState("")
+
+  async function load() {
+    setLoading(true)
+    setError(null)
+    try {
+      setRows(await adminApi.listInvites())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? rows.filter(
+        (r) =>
+          r.inviter_username.toLowerCase().includes(q) ||
+          r.invitee_username.toLowerCase().includes(q) ||
+          (r.inviter_code ?? "").toLowerCase().includes(q)
+      )
+    : rows
+
+  const leaderboard = (() => {
+    const m = new Map<
+      number,
+      { id: number; username: string; code: string | null; count: number }
+    >()
+    for (const r of rows) {
+      const cur = m.get(r.inviter_id)
+      if (cur) cur.count += 1
+      else
+        m.set(r.inviter_id, {
+          id: r.inviter_id,
+          username: r.inviter_username,
+          code: r.inviter_code,
+          count: 1,
+        })
+    }
+    return Array.from(m.values())
+      .sort((a, b) => b.count - a.count || a.username.localeCompare(b.username))
+      .slice(0, 10)
+  })()
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        全站所有成功触发邀请奖励的注册关系。最多展示最近 500 条。
+      </p>
+
+      <div className="flex items-center gap-2">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索邀请人 / 被邀请人 / 邀请码…"
+          className="max-w-xs"
+        />
+        <Button variant="outline" size="sm" onClick={() => void load()}>
+          <RefreshCw /> 刷新
+        </Button>
+        <span className="ml-auto text-xs text-muted-foreground">
+          共 {rows.length} 条
+        </span>
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {leaderboard.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <h2 className="mb-3 text-sm font-semibold">邀请榜 · Top 10</h2>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {leaderboard.map((l, idx) => (
+              <div
+                key={l.id}
+                className="flex items-center justify-between rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="w-5 text-right font-mono text-xs text-muted-foreground">
+                    {idx + 1}
+                  </span>
+                  <span className="truncate font-medium">{l.username}</span>
+                  {l.code && (
+                    <span className="truncate font-mono text-[11px] text-muted-foreground">
+                      {l.code}
+                    </span>
+                  )}
+                </div>
+                <span className="tabular-nums text-sm">
+                  <b>{l.count}</b>{" "}
+                  <span className="text-xs text-muted-foreground">人</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">邀请人</th>
+              <th className="px-3 py-2 text-left font-medium">邀请码</th>
+              <th className="px-3 py-2 text-left font-medium">被邀请人</th>
+              <th className="px-3 py-2 text-left font-medium">注册时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+                  加载中…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+                  暂无邀请记录
+                </td>
+              </tr>
+            )}
+            {filtered.map((r) => (
+              <tr
+                key={`${r.inviter_id}-${r.invitee_id}`}
+                className="border-t border-border hover:bg-accent/30"
+              >
+                <td className="px-3 py-2">
+                  <span className="font-medium">{r.inviter_username}</span>
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    #{r.inviter_id}
+                  </span>
+                </td>
+                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                  {r.inviter_code ?? "—"}
+                </td>
+                <td className="px-3 py-2">
+                  <span className="font-medium">{r.invitee_username}</span>
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    #{r.invitee_id}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {r.invitee_created_at.replace("T", " ").replace("Z", "")}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function SharedBackendPanel() {
   const [cfg, setCfg] = useState<AdminSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1317,6 +1498,243 @@ function UpstreamBlock({
             <p className="text-xs text-muted-foreground">上游未返回模型列表。</p>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function EmailPanel() {
+  const [cfg, setCfg] = useState<AdminSettings | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  const [patch, setPatch] = useState<AdminSettingsUpdate>({})
+  const [testEmail, setTestEmail] = useState("")
+  const [testing, setTesting] = useState(false)
+  const [testMsg, setTestMsg] = useState<string | null>(null)
+  const [testErr, setTestErr] = useState<string | null>(null)
+
+  async function load() {
+    setLoading(true)
+    setError(null)
+    try {
+      const c = await adminCreditsApi.getSettings()
+      setCfg(c)
+      setPatch({})
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  function set<K extends keyof AdminSettingsUpdate>(
+    k: K,
+    v: AdminSettingsUpdate[K]
+  ) {
+    setPatch((p) => ({ ...p, [k]: v }))
+  }
+
+  async function save() {
+    setSaveMsg(null)
+    setError(null)
+    setSaving(true)
+    try {
+      await adminCreditsApi.updateSettings(patch)
+      setSaveMsg("已保存")
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function sendTest() {
+    setTestMsg(null)
+    setTestErr(null)
+    if (!testEmail.trim()) {
+      setTestErr("请输入收件邮箱")
+      return
+    }
+    setTesting(true)
+    try {
+      await adminCreditsApi.sendTestEmail(testEmail.trim())
+      setTestMsg("已发送，请检查收件箱（可能在垃圾邮件中）")
+    } catch (e) {
+      setTestErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  if (loading && !cfg) {
+    return <p className="text-sm text-muted-foreground">加载中…</p>
+  }
+  if (!cfg) {
+    return (
+      <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {error ?? "无法加载设置"}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        配置发信 SMTP 及是否要求新用户注册时通过邮箱验证码验证。密码留空不修改；填 <b>&ldquo;&ndash;&ldquo;</b> 可清除。
+      </p>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">注册策略</h2>
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="email-required"
+            className="size-4 accent-primary"
+            defaultChecked={cfg.email_verification_required}
+            onChange={(e) =>
+              set("email_verification_required", e.target.checked)
+            }
+          />
+          <Label htmlFor="email-required" className="cursor-pointer">
+            注册时要求邮箱验证码
+          </Label>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          开启后，注册页会要求填写邮箱并输入接收到的 6 位验证码（10 分钟有效，60 秒冷却）。
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">SMTP 服务器</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label className="text-xs">主机</Label>
+            <Input
+              defaultValue={cfg.smtp_host}
+              placeholder="smtp.example.com"
+              onChange={(e) => set("smtp_host", e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">端口</Label>
+            <Input
+              type="number"
+              min="1"
+              max="65535"
+              defaultValue={String(cfg.smtp_port)}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n) && n > 0 && n < 65536)
+                  set("smtp_port", Math.trunc(n))
+              }}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">加密方式</Label>
+            <select
+              defaultValue={cfg.smtp_security || "starttls"}
+              onChange={(e) => set("smtp_security", e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="starttls">STARTTLS（推荐，端口 587）</option>
+              <option value="tls">TLS / SSL（端口 465）</option>
+              <option value="none">不加密（仅局域网测试）</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">用户名</Label>
+            <Input
+              defaultValue={cfg.smtp_username}
+              placeholder="通常为发件邮箱"
+              onChange={(e) => set("smtp_username", e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">
+              密码{" "}
+              <span className="text-muted-foreground">
+                （当前 {cfg.smtp_password_set ? "已设置" : "未设置"}；留空不改，填 &ldquo;&ndash;&ldquo; 清除）
+              </span>
+            </Label>
+            <Input
+              type="password"
+              placeholder={
+                cfg.smtp_password_set ? "••••（已设置，留空不修改）" : ""
+              }
+              onChange={(e) =>
+                set("smtp_password", e.target.value === "-" ? "" : e.target.value)
+              }
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">发件人邮箱</Label>
+            <Input
+              type="email"
+              defaultValue={cfg.smtp_from_email}
+              placeholder="noreply@example.com"
+              onChange={(e) => set("smtp_from_email", e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">发件人名称</Label>
+            <Input
+              defaultValue={cfg.smtp_from_name}
+              placeholder="NovaChat"
+              onChange={(e) => set("smtp_from_name", e.target.value)}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <Button onClick={() => void save()} disabled={saving}>
+          {saving ? "保存中…" : "保存设置"}
+        </Button>
+        <Button variant="outline" onClick={() => void load()} disabled={saving}>
+          <RefreshCw /> 重载
+        </Button>
+        {saveMsg && (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">
+            {saveMsg}
+          </span>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">发送测试邮件</h2>
+        <p className="mb-3 text-xs text-muted-foreground">
+          保存 SMTP 配置后，向指定邮箱发送一封测试邮件验证连通性。
+        </p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            type="email"
+            placeholder="收件邮箱"
+            value={testEmail}
+            onChange={(e) => setTestEmail(e.target.value)}
+            className="flex-1"
+          />
+          <Button onClick={() => void sendTest()} disabled={testing}>
+            <Send /> {testing ? "发送中…" : "发送测试邮件"}
+          </Button>
+        </div>
+        {testMsg && (
+          <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+            {testMsg}
+          </p>
+        )}
+        {testErr && <p className="mt-2 text-xs text-destructive">{testErr}</p>}
       </div>
     </div>
   )

@@ -78,6 +78,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (11, include_str!("../migrations/sqlite/0011_credits.sql")),
     (12, include_str!("../migrations/sqlite/0012_plaza_social.sql")),
     (13, include_str!("../migrations/sqlite/0013_invites.sql")),
+    (14, include_str!("../migrations/sqlite/0014_email.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -93,6 +94,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (11, include_str!("../migrations/mysql/0011_credits.sql")),
     (12, include_str!("../migrations/mysql/0012_plaza_social.sql")),
     (13, include_str!("../migrations/mysql/0013_invites.sql")),
+    (14, include_str!("../migrations/mysql/0014_email.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -108,6 +110,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (11, include_str!("../migrations/postgres/0011_credits.sql")),
     (12, include_str!("../migrations/postgres/0012_plaza_social.sql")),
     (13, include_str!("../migrations/postgres/0013_invites.sql")),
+    (14, include_str!("../migrations/postgres/0014_email.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

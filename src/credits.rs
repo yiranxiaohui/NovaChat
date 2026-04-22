@@ -372,6 +372,14 @@ struct SharedStatus {
     gemini_available: bool,
     image_openai_available: bool,
     image_gemini_available: bool,
+    // Admin-configured default models (empty string when not set). The client
+    // renders these as read-only when shared mode is on — users can't pick a
+    // different model on shared credits.
+    chat_openai_model: String,
+    chat_claude_model: String,
+    chat_gemini_model: String,
+    image_openai_model: String,
+    image_gemini_model: String,
     cost_chat: i64,
     cost_image: i64,
     balance: i64,
@@ -455,6 +463,27 @@ async fn get_shared_status(
         .await
         .unwrap_or((0,));
 
+    let chat_openai_model =
+        get_setting(&installed.pool, installed.kind, "shared_chat_openai_model")
+            .await
+            .unwrap_or_default();
+    let chat_claude_model =
+        get_setting(&installed.pool, installed.kind, "shared_chat_claude_model")
+            .await
+            .unwrap_or_default();
+    let chat_gemini_model =
+        get_setting(&installed.pool, installed.kind, "shared_chat_gemini_model")
+            .await
+            .unwrap_or_default();
+    let image_openai_model =
+        get_setting(&installed.pool, installed.kind, "shared_image_openai_model")
+            .await
+            .unwrap_or_default();
+    let image_gemini_model =
+        get_setting(&installed.pool, installed.kind, "shared_image_gemini_model")
+            .await
+            .unwrap_or_default();
+
     Json(SharedStatus {
         enabled,
         openai_available,
@@ -462,6 +491,11 @@ async fn get_shared_status(
         gemini_available,
         image_openai_available,
         image_gemini_available,
+        chat_openai_model,
+        chat_claude_model,
+        chat_gemini_model,
+        image_openai_model,
+        image_gemini_model,
         cost_chat,
         cost_image,
         balance,
@@ -499,6 +533,15 @@ struct AdminSettingsView {
     shared_chat_gemini_key_set: bool,
     shared_image_openai_key_set: bool,
     shared_image_gemini_key_set: bool,
+    // email verification + SMTP
+    email_verification_required: bool,
+    smtp_host: String,
+    smtp_port: i64,
+    smtp_username: String,
+    smtp_from_email: String,
+    smtp_from_name: String,
+    smtp_security: String,
+    smtp_password_set: bool,
 }
 
 async fn admin_get_settings(Extension(installed): Extension<InstalledState>) -> Response {
@@ -537,6 +580,17 @@ async fn admin_get_settings(Extension(installed): Extension<InstalledState>) -> 
         shared_chat_gemini_key_set: has(pool, kind, "shared_chat_gemini_key").await,
         shared_image_openai_key_set: has(pool, kind, "shared_image_openai_key").await,
         shared_image_gemini_key_set: has(pool, kind, "shared_image_gemini_key").await,
+        email_verification_required: get_setting_bool(pool, kind, "email_verification_required", false).await,
+        smtp_host: s(pool, kind, "smtp_host").await,
+        smtp_port: get_setting_i64(pool, kind, "smtp_port", 587).await,
+        smtp_username: s(pool, kind, "smtp_username").await,
+        smtp_from_email: s(pool, kind, "smtp_from_email").await,
+        smtp_from_name: s(pool, kind, "smtp_from_name").await,
+        smtp_security: {
+            let raw = s(pool, kind, "smtp_security").await;
+            if raw.is_empty() { "starttls".into() } else { raw }
+        },
+        smtp_password_set: has(pool, kind, "smtp_password").await,
     };
     Json(view).into_response()
 }
@@ -565,6 +619,15 @@ struct AdminSettingsUpdate {
     shared_chat_gemini_key: Option<String>,
     shared_image_openai_key: Option<String>,
     shared_image_gemini_key: Option<String>,
+    // email verification + SMTP
+    email_verification_required: Option<bool>,
+    smtp_host: Option<String>,
+    smtp_port: Option<i64>,
+    smtp_username: Option<String>,
+    smtp_password: Option<String>,
+    smtp_from_email: Option<String>,
+    smtp_from_name: Option<String>,
+    smtp_security: Option<String>,
 }
 
 async fn admin_patch_settings(
@@ -608,6 +671,14 @@ async fn admin_patch_settings(
         ("shared_chat_gemini_key", body.shared_chat_gemini_key),
         ("shared_image_openai_key", body.shared_image_openai_key),
         ("shared_image_gemini_key", body.shared_image_gemini_key),
+        ("email_verification_required", body.email_verification_required.map(|b| b.to_string())),
+        ("smtp_host", body.smtp_host.map(|s| s.trim().to_string())),
+        ("smtp_port", body.smtp_port.map(|v| v.clamp(1, 65535).to_string())),
+        ("smtp_username", body.smtp_username.map(|s| s.trim().to_string())),
+        ("smtp_password", body.smtp_password),
+        ("smtp_from_email", body.smtp_from_email.map(|s| s.trim().to_string())),
+        ("smtp_from_name", body.smtp_from_name.map(|s| s.trim().to_string())),
+        ("smtp_security", body.smtp_security.map(|s| s.trim().to_lowercase())),
     ];
     for (k, v) in ops {
         if let Err(e) = maybe_set(pool, kind, k, v.as_deref()).await {
@@ -809,5 +880,9 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/app-settings/models", get(admin_list_upstream_models))
         .route("/admin/credits", get(admin_list_user_credits))
         .route("/admin/credits/{id}", patch(admin_adjust_credits).post(admin_adjust_credits))
+        .route(
+            "/admin/email/test",
+            axum::routing::post(crate::email::admin_send_test),
+        )
         .route_layer(middleware::from_fn(admin::require_admin))
 }

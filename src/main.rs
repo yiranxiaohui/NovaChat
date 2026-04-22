@@ -3,6 +3,7 @@ mod auth;
 mod conversations;
 mod credits;
 mod db;
+mod email;
 mod image_plaza;
 mod images;
 mod invites;
@@ -76,6 +77,10 @@ struct Credentials {
     password: String,
     #[serde(default)]
     invite_code: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    email_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -131,6 +136,42 @@ async fn register(
     if let Err(msg) = validate_credentials(&creds) {
         return (StatusCode::BAD_REQUEST, msg).into_response();
     }
+
+    // Email verification gate. When the admin has turned it on, registration
+    // requires a previously-issued code that matches the supplied address.
+    let require_email = credits::get_setting_bool(
+        &installed.pool,
+        installed.kind,
+        "email_verification_required",
+        false,
+    )
+    .await;
+    let normalized_email: Option<String> = creds
+        .email
+        .as_deref()
+        .map(email::normalize_email)
+        .filter(|e| !e.is_empty());
+    if require_email {
+        let Some(e) = normalized_email.as_deref() else {
+            return (StatusCode::BAD_REQUEST, "需要邮箱验证码").into_response();
+        };
+        if !email::valid_email(e) {
+            return (StatusCode::BAD_REQUEST, "邮箱格式不正确").into_response();
+        }
+        let Some(code) = creds.email_code.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            return (StatusCode::BAD_REQUEST, "需要邮箱验证码").into_response();
+        };
+        let ok = email::consume_code(&installed.pool, installed.kind, e, code, "register").await;
+        if !ok {
+            return (StatusCode::BAD_REQUEST, "验证码无效或已过期").into_response();
+        }
+    } else if let Some(e) = normalized_email.as_deref() {
+        // Optional email: accept, but still validate format.
+        if !email::valid_email(e) {
+            return (StatusCode::BAD_REQUEST, "邮箱格式不正确").into_response();
+        }
+    }
+
     let phc = match auth::hash_password(&creds.password) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -139,19 +180,25 @@ async fn register(
 
     let base_insert = db::q(
         installed.kind,
-        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        "INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
     );
     let user_id = match installed.kind {
         db::DbKind::Sqlite | db::DbKind::Postgres => {
             let row: Result<(i64,), _> = sqlx::query_as(&format!("{base_insert} RETURNING id"))
                 .bind(&username)
                 .bind(&phc)
+                .bind(&normalized_email)
                 .fetch_one(&installed.pool)
                 .await;
             match row {
                 Ok((id,)) => id,
                 Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
-                    return (StatusCode::CONFLICT, "username already taken").into_response();
+                    let msg = if d.message().contains("email") {
+                        "该邮箱已注册"
+                    } else {
+                        "username already taken"
+                    };
+                    return (StatusCode::CONFLICT, msg).into_response();
                 }
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
@@ -164,12 +211,18 @@ async fn register(
             if let Err(e) = sqlx::query(&base_insert)
                 .bind(&username)
                 .bind(&phc)
+                .bind(&normalized_email)
                 .execute(&mut *tx)
                 .await
             {
                 if let sqlx::Error::Database(d) = &e {
                     if d.is_unique_violation() {
-                        return (StatusCode::CONFLICT, "username already taken").into_response();
+                        let msg = if d.message().contains("email") {
+                            "该邮箱已注册"
+                        } else {
+                            "username already taken"
+                        };
+                        return (StatusCode::CONFLICT, msg).into_response();
                     }
                 }
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -306,6 +359,34 @@ async fn login(
     }
 }
 
+#[derive(Serialize)]
+struct AuthConfig {
+    email_verification_required: bool,
+}
+
+async fn auth_config(State(state): State<AppState>) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(_) => {
+            return Json(AuthConfig {
+                email_verification_required: false,
+            })
+            .into_response();
+        }
+    };
+    let email_verification_required = credits::get_setting_bool(
+        &installed.pool,
+        installed.kind,
+        "email_verification_required",
+        false,
+    )
+    .await;
+    Json(AuthConfig {
+        email_verification_required,
+    })
+    .into_response()
+}
+
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     if let Ok(installed) = state.require_installed().await {
         if let Some(c) = jar.get(auth::SESSION_COOKIE) {
@@ -429,7 +510,8 @@ pub fn models_endpoint(host: &str, protocol: Protocol) -> String {
 ///
 /// Returned URL is always the fully-qualified endpoint.
 /// When `used_shared=true`, `shared_model` carries the admin's configured
-/// default so callers can rewrite the request body's `model` field.
+/// model — it always wins over any client hint so users can't switch models
+/// on shared credits.
 async fn resolve_chat_upstream(
     installed: &InstalledState,
     protocol: Protocol,
@@ -445,7 +527,6 @@ async fn resolve_chat_upstream(
             }
         }
     }
-    let client_model = header_str(headers, "x-upstream-model");
     match credits::read_shared(
         &installed.pool,
         installed.kind,
@@ -456,29 +537,15 @@ async fn resolve_chat_upstream(
     {
         Some(s) => {
             let admin_model = s.model.clone().unwrap_or_default();
-            // Client-supplied model wins (explicit shared mode lets users pick
-            // any model name); admin's preset is only a fallback for the legacy
-            // empty-key path.
-            let model = client_model
-                .clone()
-                .unwrap_or_else(|| admin_model.clone());
-            if model.is_empty() && matches!(protocol, Protocol::Gemini) {
+            if admin_model.is_empty() {
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "shared Gemini upstream has no model (set X-Upstream-Model or configure an admin default)",
+                    "shared upstream has no configured model — ask the admin to set one",
                 )
                     .into_response());
             }
-            let url = chat_endpoint(&s.url, protocol, &model);
-            // Only ask the caller to rewrite the body's "model" field when we
-            // had to fall back to admin's preset — when the client supplied a
-            // model, the body already carries the user's choice.
-            let body_override = if client_model.is_some() {
-                None
-            } else {
-                Some(admin_model)
-            };
-            Ok((url, s.key, true, body_override))
+            let url = chat_endpoint(&s.url, protocol, &admin_model);
+            Ok((url, s.key, true, Some(admin_model)))
         }
         None => Err((
             StatusCode::BAD_REQUEST,
@@ -852,10 +919,12 @@ fn build_router(state: AppState) -> Router {
 
     let public = Router::new()
         .route("/health", get(health))
+        .route("/auth/config", get(auth_config))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .merge(email::public_routes())
         .merge(setup::routes());
 
     Router::new()

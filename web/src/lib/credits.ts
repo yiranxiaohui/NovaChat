@@ -19,6 +19,14 @@ export type SharedStatus = {
   gemini_available: boolean
   image_openai_available: boolean
   image_gemini_available: boolean
+  // Admin-configured model per protocol (empty string when unset). The
+  // settings dialog shows these as read-only when shared mode is on — the
+  // server always uses the admin's model and ignores any client override.
+  chat_openai_model: string
+  chat_claude_model: string
+  chat_gemini_model: string
+  image_openai_model: string
+  image_gemini_model: string
   cost_chat: number
   cost_image: number
   balance: number
@@ -74,6 +82,14 @@ export type AdminSettings = {
   shared_chat_gemini_key_set: boolean
   shared_image_openai_key_set: boolean
   shared_image_gemini_key_set: boolean
+  email_verification_required: boolean
+  smtp_host: string
+  smtp_port: number
+  smtp_username: string
+  smtp_from_email: string
+  smtp_from_name: string
+  smtp_security: string
+  smtp_password_set: boolean
 }
 
 export type AdminSettingsUpdate = Partial<
@@ -84,12 +100,14 @@ export type AdminSettingsUpdate = Partial<
     | "shared_chat_gemini_key_set"
     | "shared_image_openai_key_set"
     | "shared_image_gemini_key_set"
+    | "smtp_password_set"
   > & {
     shared_chat_openai_key: string
     shared_chat_claude_key: string
     shared_chat_gemini_key: string
     shared_image_openai_key: string
     shared_image_gemini_key: string
+    smtp_password: string
   }
 >
 
@@ -150,5 +168,18 @@ export const adminCreditsApi = {
       )
     )
     return r.models
+  },
+  async sendTestEmail(email: string): Promise<void> {
+    const res = await fetch("/api/admin/email/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      credentials: "same-origin",
+    })
+    if (!res.ok) {
+      throw new Error(
+        (await res.text().catch(() => res.statusText)) || `HTTP ${res.status}`
+      )
+    }
   },
 }

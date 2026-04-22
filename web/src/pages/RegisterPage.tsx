@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,9 +9,12 @@ import { BrandMark } from "@/components/app/BrandMark"
 export default function RegisterPage() {
   const auth = useAuth()
   const nav = useNavigate()
+  const [params] = useSearchParams()
+  const refFromUrl = (params.get("ref") ?? "").trim().toUpperCase()
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [confirm, setConfirm] = useState("")
+  const [inviteCode, setInviteCode] = useState(refFromUrl)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -28,7 +31,11 @@ export default function RegisterPage() {
     }
     setBusy(true)
     try {
-      await auth.register(username.trim(), password)
+      await auth.register(
+        username.trim(),
+        password,
+        inviteCode.trim() || undefined
+      )
       nav("/", { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -82,6 +89,24 @@ export default function RegisterPage() {
               onChange={(e) => setConfirm(e.target.value)}
               required
               minLength={6}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="invite">
+              邀请码{" "}
+              <span className="text-xs text-muted-foreground">
+                （可选，填写可获得额外积分）
+              </span>
+            </Label>
+            <Input
+              id="invite"
+              value={inviteCode}
+              onChange={(e) =>
+                setInviteCode(e.target.value.trim().toUpperCase())
+              }
+              maxLength={16}
+              placeholder="ABC1234"
+              className="font-mono uppercase tracking-wide"
             />
           </div>
           {error && (

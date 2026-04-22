@@ -27,6 +27,15 @@ export const profileApi = {
     })
     return jsonOrThrow<User>(res)
   },
+  async uploadAvatar(file: File): Promise<User> {
+    const res = await fetch("/api/profile/avatar", {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+      credentials: "same-origin",
+    })
+    return jsonOrThrow<User>(res)
+  },
   async changePassword(
     current_password: string,
     new_password: string

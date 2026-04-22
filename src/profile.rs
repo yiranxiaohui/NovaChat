@@ -1,15 +1,19 @@
 use axum::{
     Extension, Json, Router,
-    http::StatusCode,
+    body::Body,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use rand::RngCore;
 use serde::Deserialize;
 
 use crate::{AppState, CurrentUser, InstalledState, UserDto, auth, db};
 
 pub const MAX_DISPLAY_NAME: usize = 64;
 pub const MAX_AVATAR_URL: usize = 512;
+pub const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct UpdateProfile {
@@ -50,11 +54,12 @@ fn normalize_avatar_url(v: &str) -> Result<Option<String>, Response> {
     }
     if !(trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
-        || trimmed.starts_with("data:image/"))
+        || trimmed.starts_with("data:image/")
+        || trimmed.starts_with("/api/avatars/"))
     {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "avatar_url must be an http(s) or data:image URL",
+            "avatar_url must be an http(s), data:image, or /api/avatars URL",
         ));
     }
     Ok(Some(trimmed.to_string()))
@@ -190,8 +195,113 @@ async fn change_password(
     }
 }
 
+fn random_hex(n: usize) -> String {
+    let mut bytes = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn ext_for_image_mime(mime: &str) -> Option<&'static str> {
+    match mime.split(';').next().map(|s| s.trim().to_ascii_lowercase()) {
+        Some(m) => match m.as_str() {
+            "image/png" => Some("png"),
+            "image/jpeg" | "image/jpg" => Some("jpg"),
+            "image/webp" => Some("webp"),
+            "image/gif" => Some("gif"),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+async fn upload_avatar(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let mime = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let Some(ext) = ext_for_image_mime(mime) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "unsupported image type (use png, jpeg, webp, or gif)",
+        );
+    };
+    if body.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "empty upload");
+    }
+    if body.len() > MAX_AVATAR_BYTES {
+        return err(StatusCode::PAYLOAD_TOO_LARGE, "avatar exceeds 2MB limit");
+    }
+
+    let avatars_dir = state.data_dir.join("avatars");
+    if let Err(e) = tokio::fs::create_dir_all(&avatars_dir).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
+    }
+    let filename = format!("{}.{ext}", random_hex(16));
+    let path = avatars_dir.join(&filename);
+    if let Err(e) = tokio::fs::write(&path, &body).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
+    }
+
+    let prev_sql = db::q(installed.kind, "SELECT avatar_url FROM users WHERE id = ?");
+    let prev: Option<(Option<String>,)> = sqlx::query_as(&prev_sql)
+        .bind(user.id)
+        .fetch_optional(&installed.pool)
+        .await
+        .unwrap_or(None);
+
+    let new_url = format!("/api/avatars/{filename}");
+    let upd = db::q(installed.kind, "UPDATE users SET avatar_url = ? WHERE id = ?");
+    if let Err(e) = sqlx::query(&upd)
+        .bind(&new_url)
+        .bind(user.id)
+        .execute(&installed.pool)
+        .await
+    {
+        let _ = tokio::fs::remove_file(&path).await;
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+
+    if let Some((Some(prev_url),)) = prev {
+        if let Some(name) = prev_url.strip_prefix("/api/avatars/") {
+            if !name.contains('/') && !name.contains('\\') && !name.contains("..") {
+                let _ = tokio::fs::remove_file(avatars_dir.join(name)).await;
+            }
+        }
+    }
+
+    match load_user_dto(&installed, user.id).await {
+        Ok(dto) => Json(dto).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn serve_avatar(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let path = state.data_dir.join("avatars").join(&name);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime.as_ref())
+        .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/profile", get(get_profile).put(update_profile))
         .route("/profile/password", post(change_password))
+        .route("/profile/avatar", post(upload_avatar))
+        .route("/avatars/{name}", get(serve_avatar))
 }

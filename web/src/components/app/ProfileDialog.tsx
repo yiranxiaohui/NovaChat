@@ -1,9 +1,15 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { Check, Copy, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
 import { profileApi } from "@/lib/profile"
+import {
+  buildInviteUrl,
+  invitesApi,
+  type InviteInfo,
+} from "@/lib/invites"
 
 type Props = {
   open: boolean
@@ -20,12 +26,18 @@ export function ProfileDialog({ open, onClose }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [uploading, setUploading] = useState(false)
+
   const [pwOpen, setPwOpen] = useState(false)
   const [currentPw, setCurrentPw] = useState("")
   const [newPw, setNewPw] = useState("")
   const [confirmPw, setConfirmPw] = useState("")
   const [pwSaving, setPwSaving] = useState(false)
   const [pwMsg, setPwMsg] = useState<string | null>(null)
+
+  const [invite, setInvite] = useState<InviteInfo | null>(null)
+  const [inviteCopied, setInviteCopied] = useState<"code" | "link" | null>(null)
 
   useEffect(() => {
     if (!open || !user) return
@@ -38,7 +50,35 @@ export function ProfileDialog({ open, onClose }: Props) {
     setNewPw("")
     setConfirmPw("")
     setPwMsg(null)
+    setInviteCopied(null)
+    let cancelled = false
+    invitesApi
+      .me()
+      .then((info) => {
+        if (!cancelled) setInvite(info)
+      })
+      .catch(() => {
+        if (!cancelled) setInvite(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, user])
+
+  async function copyInvite(kind: "code" | "link") {
+    if (!invite) return
+    const text =
+      kind === "code" ? invite.invite_code : buildInviteUrl(invite.invite_code)
+    try {
+      await navigator.clipboard.writeText(text)
+      setInviteCopied(kind)
+      setTimeout(() => {
+        setInviteCopied((x) => (x === kind ? null : x))
+      }, 1200)
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     setAvatarBroken(false)
@@ -68,6 +108,29 @@ export function ProfileDialog({ open, onClose }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function uploadFile(file: File) {
+    setError(null)
+    if (!file.type.startsWith("image/")) {
+      setError("请选择图片文件")
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError("图片不能超过 2MB")
+      return
+    }
+    setUploading(true)
+    try {
+      const updated = await profileApi.uploadAvatar(file)
+      auth.updateUser(updated)
+      setAvatarUrl(updated.avatar_url ?? "")
+      setAvatarBroken(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -124,19 +187,42 @@ export function ProfileDialog({ open, onClose }: Props) {
           </div>
         )}
 
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            e.target.value = ""
+            if (f) void uploadFile(f)
+          }}
+        />
+
         <div className="flex items-center gap-4">
-          {showImage ? (
-            <img
-              src={trimmedAvatar}
-              alt=""
-              className="size-16 shrink-0 rounded-full border border-border object-cover"
-              onError={() => setAvatarBroken(true)}
-            />
-          ) : (
-            <div className="grid size-16 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-xl font-semibold text-primary-foreground">
-              {initial}
+          <button
+            type="button"
+            className="group relative size-16 shrink-0 overflow-hidden rounded-full border border-border"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            title="点击上传头像"
+          >
+            {showImage ? (
+              <img
+                src={trimmedAvatar}
+                alt=""
+                className="size-full object-cover"
+                onError={() => setAvatarBroken(true)}
+              />
+            ) : (
+              <div className="grid size-full place-items-center bg-gradient-to-br from-primary to-chart-5 text-xl font-semibold text-primary-foreground">
+                {initial}
+              </div>
+            )}
+            <div className="absolute inset-0 grid place-items-center bg-black/50 text-[10px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+              {uploading ? "上传中…" : "更换"}
             </div>
-          )}
+          </button>
           <div className="min-w-0 flex-1">
             <p className="text-xs text-muted-foreground">用户名</p>
             <p className="truncate font-medium">{user.username}</p>
@@ -158,16 +244,26 @@ export function ProfileDialog({ open, onClose }: Props) {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="p-avatar">头像 URL</Label>
-          <Input
-            id="p-avatar"
-            value={avatarUrl}
-            onChange={(e) => setAvatarUrl(e.target.value)}
-            maxLength={512}
-            placeholder="https://… 或 data:image/…"
-          />
+          <Label htmlFor="p-avatar">头像</Label>
+          <div className="flex gap-2">
+            <Input
+              id="p-avatar"
+              value={avatarUrl}
+              onChange={(e) => setAvatarUrl(e.target.value)}
+              maxLength={512}
+              placeholder="https://… 或点击右侧上传"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? "上传中…" : "上传图片"}
+            </Button>
+          </div>
           <p className="text-xs text-muted-foreground">
-            支持 http(s) 图片链接或 data:image 编码。留空使用首字母头像。
+            支持上传本地图片（最大 2MB），或填入 http(s) / data:image 链接。留空使用首字母头像。
           </p>
         </div>
 
@@ -223,6 +319,60 @@ export function ProfileDialog({ open, onClose }: Props) {
             </div>
           )}
         </div>
+
+        {invite && (
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+            <div className="flex items-center gap-2">
+              <Users className="size-4 text-primary" />
+              <span className="text-sm font-medium">邀请好友</span>
+              <span className="ml-auto text-xs text-muted-foreground">
+                已邀请 <b className="text-foreground">{invite.invited_count}</b>{" "}
+                · 获得 <b className="text-foreground">{invite.total_earned}</b>{" "}
+                积分
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              好友用你的邀请码注册后，你获得{" "}
+              <b className="text-foreground">{invite.grant_inviter}</b> 积分，
+              对方额外获得{" "}
+              <b className="text-foreground">{invite.grant_invitee}</b> 积分。
+            </p>
+            <div className="flex items-center gap-2">
+              <Input
+                value={invite.invite_code}
+                readOnly
+                className="font-mono tracking-widest"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void copyInvite("code")}
+                title="复制邀请码"
+              >
+                {inviteCopied === "code" ? (
+                  <Check className="text-emerald-500" />
+                ) : (
+                  <Copy />
+                )}
+                码
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void copyInvite("link")}
+                title="复制邀请链接"
+              >
+                {inviteCopied === "link" ? (
+                  <Check className="text-emerald-500" />
+                ) : (
+                  <Copy />
+                )}
+                链接
+              </Button>
+            </div>
+          </div>
+        )}
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose} disabled={saving}>

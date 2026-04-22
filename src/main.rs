@@ -5,6 +5,7 @@ mod credits;
 mod db;
 mod image_plaza;
 mod images;
+mod invites;
 mod profile;
 mod prompts;
 mod settings;
@@ -73,6 +74,8 @@ pub struct CurrentUser {
 struct Credentials {
     username: String,
     password: String,
+    #[serde(default)]
+    invite_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -187,6 +190,51 @@ async fn register(
 
     let is_admin = admin::is_admin(&installed.pool, installed.kind, user_id).await;
     let _ = credits::ensure_account(&installed.pool, installed.kind, user_id).await;
+    let _ = invites::ensure_code(&installed.pool, installed.kind, user_id).await;
+
+    if let Some(raw) = creds.invite_code.as_deref() {
+        if let Some(inviter_id) =
+            invites::resolve_inviter(&installed.pool, installed.kind, raw, user_id).await
+        {
+            let _ =
+                invites::set_invited_by(&installed.pool, installed.kind, user_id, inviter_id).await;
+            let inviter_grant = credits::get_setting_i64(
+                &installed.pool,
+                installed.kind,
+                "invite_grant_inviter",
+                100,
+            )
+            .await;
+            let invitee_grant = credits::get_setting_i64(
+                &installed.pool,
+                installed.kind,
+                "invite_grant_invitee",
+                100,
+            )
+            .await;
+            if inviter_grant > 0 {
+                let _ = credits::grant(
+                    &installed.pool,
+                    installed.kind,
+                    inviter_id,
+                    inviter_grant,
+                    &format!("invite_reward_inviter:{username}"),
+                )
+                .await;
+            }
+            if invitee_grant > 0 {
+                let _ = credits::grant(
+                    &installed.pool,
+                    installed.kind,
+                    user_id,
+                    invitee_grant,
+                    "invite_reward_invitee",
+                )
+                .await;
+            }
+        }
+    }
+
     match auth::create_session(&installed.pool, installed.kind, user_id).await {
         Ok((token, _)) => {
             let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
@@ -667,6 +715,7 @@ fn build_router(state: AppState) -> Router {
         .merge(admin::routes())
         .merge(credits::user_routes())
         .merge(credits::admin_routes())
+        .merge(invites::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

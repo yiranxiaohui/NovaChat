@@ -11,7 +11,11 @@ type AuthState =
 type AuthContextValue = {
   state: AuthState
   login: (username: string, password: string) => Promise<void>
-  register: (username: string, password: string) => Promise<void>
+  register: (
+    username: string,
+    password: string,
+    inviteCode?: string
+  ) => Promise<void>
   logout: () => Promise<void>
   updateUser: (user: User) => void
 }
@@ -45,8 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const u = await api.login(username, password)
       setState({ status: "authed", user: u })
     },
-    async register(username, password) {
-      const u = await api.register(username, password)
+    async register(username, password, inviteCode) {
+      const u = await api.register(username, password, inviteCode)
       setState({ status: "authed", user: u })
     },
     async logout() {

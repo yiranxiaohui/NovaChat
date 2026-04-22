@@ -57,6 +57,8 @@ export type AdminSettings = {
   signup_grant: number
   cost_chat: number
   cost_image: number
+  invite_grant_inviter: number
+  invite_grant_invitee: number
   shared_chat_openai_url: string
   shared_chat_claude_url: string
   shared_chat_gemini_url: string

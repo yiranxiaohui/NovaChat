@@ -1031,6 +1031,25 @@ function SharedBackendPanel() {
         </div>
       </div>
 
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">邀请奖励</h2>
+        <p className="mb-3 text-xs text-muted-foreground">
+          被邀请人注册成功后，邀请人获得「邀请人奖励」积分，被邀请人本人额外获得「被邀请人奖励」（叠加在新用户赠送积分之上）。
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <NumField
+            label="邀请人奖励"
+            initial={cfg.invite_grant_inviter}
+            onChange={(v) => set("invite_grant_inviter", v)}
+          />
+          <NumField
+            label="被邀请人奖励"
+            initial={cfg.invite_grant_invitee}
+            onChange={(v) => set("invite_grant_invitee", v)}
+          />
+        </div>
+      </div>
+
       <UpstreamBlock
         title="对话 · OpenAI 兼容"
         keySet={cfg.shared_chat_openai_key_set}

@@ -6,6 +6,12 @@ export type User = {
   is_admin?: boolean
 }
 
+export type RegisterInput = {
+  username: string
+  password: string
+  invite_code?: string
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -29,11 +35,17 @@ export const api = {
     })
     return jsonOrThrow<User>(res)
   },
-  async register(username: string, password: string): Promise<User> {
+  async register(
+    username: string,
+    password: string,
+    inviteCode?: string
+  ): Promise<User> {
+    const body: Record<string, string> = { username, password }
+    if (inviteCode && inviteCode.trim()) body.invite_code = inviteCode.trim()
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(body),
       credentials: "same-origin",
     })
     return jsonOrThrow<User>(res)

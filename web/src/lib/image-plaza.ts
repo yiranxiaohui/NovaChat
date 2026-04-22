@@ -9,6 +9,7 @@ export type PlazaImage = {
   liked_by_me: number
   created_at: string
   author_username: string
+  author_avatar_url: string | null
 }
 
 export type MyPlazaImage = {
@@ -29,6 +30,7 @@ export type PlazaComment = {
   content: string
   created_at: string
   author_username: string
+  author_avatar_url: string | null
 }
 
 export type PlazaSort = "hot" | "new" | "liked"

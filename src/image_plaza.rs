@@ -28,6 +28,7 @@ pub struct PlazaImage {
     pub liked_by_me: i64,
     pub created_at: String,
     pub author_username: String,
+    pub author_avatar_url: Option<String>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -50,6 +51,7 @@ pub struct PlazaComment {
     pub content: String,
     pub created_at: String,
     pub author_username: String,
+    pub author_avatar_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -142,7 +144,8 @@ async fn list_public(
                        p.clone_count, p.like_count, p.comment_count,
                        CASE WHEN l.user_id IS NULL THEN 0 ELSE 1 END AS liked_by_me,
                        p.created_at,
-                       u.username AS author_username
+                       u.username AS author_username,
+                       u.avatar_url AS author_avatar_url
                 FROM plaza_images p
                 JOIN users u ON u.id = p.user_id
                 LEFT JOIN plaza_image_likes l
@@ -502,7 +505,8 @@ async fn list_comments(
     let sql = db::q(
         installed.kind,
         "SELECT c.id, c.image_id, c.user_id, c.content, c.created_at,
-                u.username AS author_username
+                u.username AS author_username,
+                u.avatar_url AS author_avatar_url
          FROM plaza_image_comments c
          JOIN users u ON u.id = c.user_id
          WHERE c.image_id = ?
@@ -590,7 +594,8 @@ async fn add_comment(
     let sel = db::q(
         installed.kind,
         "SELECT c.id, c.image_id, c.user_id, c.content, c.created_at,
-                u.username AS author_username
+                u.username AS author_username,
+                u.avatar_url AS author_avatar_url
          FROM plaza_image_comments c
          JOIN users u ON u.id = c.user_id
          WHERE c.id = ?",

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Copy,
   Flame,
@@ -7,6 +7,7 @@ import {
   MessageCircle,
   Search,
   Send,
+  Smile,
   Sparkles,
   Trash2,
   Upload,
@@ -620,6 +621,25 @@ function DetailOverlay({
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  function insertEmoji(emoji: string) {
+    const el = textareaRef.current
+    if (!el) {
+      setDraft((d) => d + emoji)
+      return
+    }
+    const start = el.selectionStart ?? draft.length
+    const end = el.selectionEnd ?? draft.length
+    const next = draft.slice(0, start) + emoji + draft.slice(end)
+    setDraft(next)
+    queueMicrotask(() => {
+      el.focus()
+      const pos = start + emoji.length
+      el.setSelectionRange(pos, pos)
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -697,9 +717,14 @@ function DetailOverlay({
         <div className="flex w-full flex-col gap-3 border-t border-border p-4 md:w-[22rem] md:border-l md:border-t-0">
           <div className="flex flex-col gap-1">
             {!isMine && (
-              <p className="text-xs text-muted-foreground">
-                by @{(image as PlazaImage).author_username}
-              </p>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Avatar
+                  name={(image as PlazaImage).author_username}
+                  url={(image as PlazaImage).author_avatar_url}
+                  size={18}
+                />
+                <span>by @{(image as PlazaImage).author_username}</span>
+              </div>
             )}
             <p
               className="whitespace-pre-wrap break-words text-xs"
@@ -753,37 +778,45 @@ function DetailOverlay({
                 {comments.map((c) => (
                   <li
                     key={c.id}
-                    className="flex flex-col gap-0.5 rounded border border-border/60 bg-muted/30 p-2"
+                    className="flex gap-2 rounded border border-border/60 bg-muted/30 p-2"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-medium">
-                        @{c.author_username}
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-muted-foreground">
-                          {formatTime(c.created_at)}
+                    <Avatar
+                      name={c.author_username}
+                      url={c.author_avatar_url}
+                      size={22}
+                    />
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-[11px] font-medium">
+                          @{c.author_username}
                         </span>
-                        {canDeleteComment(c) && (
-                          <button
-                            type="button"
-                            className="text-[10px] text-muted-foreground hover:text-destructive"
-                            onClick={() => void remove(c)}
-                            title="删除评论"
-                          >
-                            <Trash2 className="size-3" />
-                          </button>
-                        )}
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span className="text-[10px] text-muted-foreground">
+                            {formatTime(c.created_at)}
+                          </span>
+                          {canDeleteComment(c) && (
+                            <button
+                              type="button"
+                              className="text-[10px] text-muted-foreground hover:text-destructive"
+                              onClick={() => void remove(c)}
+                              title="删除评论"
+                            >
+                              <Trash2 className="size-3" />
+                            </button>
+                          )}
+                        </div>
                       </div>
+                      <p className="whitespace-pre-wrap break-words text-xs">
+                        {c.content}
+                      </p>
                     </div>
-                    <p className="whitespace-pre-wrap break-words text-xs">
-                      {c.content}
-                    </p>
                   </li>
                 ))}
               </ul>
             </div>
-            <div className="flex items-end gap-2">
+            <div className="relative flex items-end gap-2">
               <Textarea
+                ref={textareaRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="写一条评论…（Ctrl/⌘+Enter 发送）"
@@ -802,16 +835,143 @@ function DetailOverlay({
               />
               <Button
                 size="sm"
+                variant="ghost"
+                onClick={() => setEmojiOpen((v) => !v)}
+                title="插入表情"
+              >
+                <Smile className="size-3.5" />
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => void submit()}
                 disabled={sending || draft.trim().length === 0}
                 title="发送"
               >
                 <Send className="size-3.5" />
               </Button>
+              {emojiOpen && (
+                <EmojiPicker
+                  onPick={(e) => {
+                    insertEmoji(e)
+                  }}
+                  onClose={() => setEmojiOpen(false)}
+                />
+              )}
             </div>
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function Avatar({
+  name,
+  url,
+  size = 22,
+}: {
+  name: string
+  url: string | null
+  size?: number
+}) {
+  const letter = (name?.trim()?.slice(0, 1) || "?").toUpperCase()
+  const dim = { width: size, height: size }
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        style={dim}
+        className="shrink-0 rounded-full border border-border object-cover"
+      />
+    )
+  }
+  return (
+    <div
+      style={{ ...dim, fontSize: Math.max(9, Math.floor(size * 0.45)) }}
+      className="grid shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 font-semibold text-primary-foreground"
+    >
+      {letter}
+    </div>
+  )
+}
+
+const EMOJI_GROUPS: { label: string; items: string[] }[] = [
+  {
+    label: "表情",
+    items: [
+      "😀", "😁", "😂", "🤣", "😊", "😍", "😘", "😎", "🤩", "🥰",
+      "😇", "🙂", "😉", "😌", "😋", "🤗", "🤔", "😴", "🤤", "😪",
+      "😏", "😬", "🫣", "🫢", "🫠", "🙃", "😅", "😆", "😃", "😄",
+      "😮", "😯", "😲", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬",
+      "😱", "😨", "😰", "😥", "🤯", "🫨", "🤒", "🤕", "🤧", "🤮",
+    ],
+  },
+  {
+    label: "手势",
+    items: [
+      "👍", "👎", "👏", "🙌", "🙏", "👋", "🤝", "✌️", "🤞", "🤟",
+      "🤘", "👌", "🤌", "🤏", "💪", "🫡", "🫶", "👀", "👂", "👃",
+    ],
+  },
+  {
+    label: "符号",
+    items: [
+      "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "💔", "💖",
+      "✨", "⭐", "🌟", "🔥", "💯", "🎉", "🎊", "🎁", "🏆", "🥇",
+      "✅", "❌", "❓", "❗", "⚠️", "💡", "💬", "💭", "🫧", "☀️",
+    ],
+  },
+]
+
+function EmojiPicker({
+  onPick,
+  onClose,
+}: {
+  onPick: (emoji: string) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("mousedown", onDown)
+    window.addEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("mousedown", onDown)
+      window.removeEventListener("keydown", onKey)
+    }
+  }, [onClose])
+
+  return (
+    <div
+      ref={ref}
+      className="absolute bottom-full right-0 z-20 mb-2 flex w-64 flex-col gap-2 rounded-md border border-border bg-popover p-2 shadow-lg"
+    >
+      {EMOJI_GROUPS.map((g) => (
+        <div key={g.label} className="flex flex-col gap-1">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {g.label}
+          </p>
+          <div className="grid grid-cols-8 gap-0.5">
+            {g.items.map((e) => (
+              <button
+                key={e}
+                type="button"
+                className="rounded text-lg leading-none hover:bg-accent"
+                onClick={() => onPick(e)}
+                title={e}
+              >
+                {e}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

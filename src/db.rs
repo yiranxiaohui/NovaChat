@@ -70,6 +70,11 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (3, include_str!("../migrations/sqlite/0003_image_settings.sql")),
     (4, include_str!("../migrations/sqlite/0004_image_protocol.sql")),
     (5, include_str!("../migrations/sqlite/0005_prompt_clone_count.sql")),
+    (6, include_str!("../migrations/sqlite/0006_skills.sql")),
+    (7, include_str!("../migrations/sqlite/0007_skills_public.sql")),
+    (8, include_str!("../migrations/sqlite/0008_user_profile.sql")),
+    (9, include_str!("../migrations/sqlite/0009_plaza_images.sql")),
+    (10, include_str!("../migrations/sqlite/0010_admin.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -77,6 +82,11 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (3, include_str!("../migrations/mysql/0003_image_settings.sql")),
     (4, include_str!("../migrations/mysql/0004_image_protocol.sql")),
     (5, include_str!("../migrations/mysql/0005_prompt_clone_count.sql")),
+    (6, include_str!("../migrations/mysql/0006_skills.sql")),
+    (7, include_str!("../migrations/mysql/0007_skills_public.sql")),
+    (8, include_str!("../migrations/mysql/0008_user_profile.sql")),
+    (9, include_str!("../migrations/mysql/0009_plaza_images.sql")),
+    (10, include_str!("../migrations/mysql/0010_admin.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -84,6 +94,11 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (3, include_str!("../migrations/postgres/0003_image_settings.sql")),
     (4, include_str!("../migrations/postgres/0004_image_protocol.sql")),
     (5, include_str!("../migrations/postgres/0005_prompt_clone_count.sql")),
+    (6, include_str!("../migrations/postgres/0006_skills.sql")),
+    (7, include_str!("../migrations/postgres/0007_skills_public.sql")),
+    (8, include_str!("../migrations/postgres/0008_user_profile.sql")),
+    (9, include_str!("../migrations/postgres/0009_plaza_images.sql")),
+    (10, include_str!("../migrations/postgres/0010_admin.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

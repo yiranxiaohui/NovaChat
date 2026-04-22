@@ -1,0 +1,2 @@
+ALTER TABLE users ADD COLUMN display_name VARCHAR(64) NULL;
+ALTER TABLE users ADD COLUMN avatar_url   VARCHAR(512) NULL;

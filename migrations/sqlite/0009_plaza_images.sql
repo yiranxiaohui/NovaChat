@@ -1,0 +1,12 @@
+CREATE TABLE plaza_images (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    filename       TEXT NOT NULL,
+    prompt         TEXT NOT NULL,
+    revised_prompt TEXT,
+    clone_count    INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_plaza_images_user   ON plaza_images(user_id, created_at DESC);
+CREATE INDEX idx_plaza_images_hot    ON plaza_images(clone_count DESC, created_at DESC);
+CREATE UNIQUE INDEX idx_plaza_images_filename ON plaza_images(filename);

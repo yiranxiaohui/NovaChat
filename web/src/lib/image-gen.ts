@@ -132,3 +132,163 @@ export async function generateImages(
     revised_prompt: (d.revised_prompt as string | undefined) ?? null,
   }))
 }
+
+export type EditImageOptions = {
+  protocol?: ImageProtocol
+  baseUrl: string
+  apiKey: string
+  prompt: string
+  image: Blob
+  mask?: Blob
+  model?: string
+  size?: GenerateImageOptions["size"]
+  n?: number
+  useProxy?: boolean
+  signal?: AbortSignal
+}
+
+async function blobToBase64(b: Blob): Promise<string> {
+  const buf = await b.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let bin = ""
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]> {
+  const protocol: ImageProtocol = o.protocol ?? "openai"
+  const useProxy = o.useProxy !== false
+
+  if (protocol === "gemini") {
+    // Gemini edits use :generateContent with image+text parts (image-capable models,
+    // e.g. gemini-2.5-flash-image-preview). Response reuses the existing proxy.
+    const model = o.model ?? "gemini-2.5-flash-image-preview"
+    const upstream = `${trimSlash(o.baseUrl)}/v1beta/models/${encodeURIComponent(model)}:generateContent`
+    const mime = o.image.type || "image/png"
+    const data = await blobToBase64(o.image)
+    const parts: unknown[] = [
+      { text: o.prompt },
+      { inline_data: { mime_type: mime, data } },
+    ]
+    if (o.mask) {
+      const maskMime = o.mask.type || "image/png"
+      const maskData = await blobToBase64(o.mask)
+      parts.push({ inline_data: { mime_type: maskMime, data: maskData } })
+    }
+    const body = {
+      contents: [{ role: "user", parts }],
+      generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
+    }
+    let res: Response
+    if (useProxy) {
+      res = await fetch(`/api/proxy/gemini/images`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Upstream-Url": upstream,
+          "X-Upstream-Key": o.apiKey,
+        },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+        signal: o.signal,
+      })
+    } else {
+      res = await fetch(upstream, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": o.apiKey,
+        },
+        body: JSON.stringify(body),
+        signal: o.signal,
+      })
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(text || `HTTP ${res.status}`)
+    }
+    const json = (await res.json()) as Record<string, unknown>
+    if (Array.isArray((json as { images?: unknown[] }).images)) {
+      return (json as { images: GeneratedImage[] }).images
+    }
+    // Direct mode: normalize generateContent shape.
+    const cands =
+      (json.candidates as Array<Record<string, unknown>> | undefined) ?? []
+    const out: GeneratedImage[] = []
+    for (const c of cands) {
+      const parts =
+        ((c.content as { parts?: Array<Record<string, unknown>> } | undefined)
+          ?.parts as Array<Record<string, unknown>> | undefined) ?? []
+      for (const p of parts) {
+        const inline =
+          (p.inlineData as { data?: string; mimeType?: string } | undefined) ??
+          (p.inline_data as { data?: string; mime_type?: string } | undefined)
+        if (!inline?.data) continue
+        const m =
+          (inline as { mimeType?: string }).mimeType ??
+          (inline as { mime_type?: string }).mime_type ??
+          "image/png"
+        out.push({ path: `data:${m};base64,${inline.data}`, revised_prompt: null })
+      }
+    }
+    return out
+  }
+
+  // OpenAI edits: multipart to /v1/images/edits.
+  const form = new FormData()
+  form.append("model", o.model ?? "gpt-image-1")
+  form.append("prompt", o.prompt)
+  form.append("n", String(o.n ?? 1))
+  form.append("image", o.image, imageFilename(o.image))
+  if (o.mask) form.append("mask", o.mask, imageFilename(o.mask, "mask"))
+  if (o.size && o.size !== "auto") form.append("size", o.size)
+
+  const upstream = `${trimSlash(o.baseUrl)}/v1/images/edits`
+  let res: Response
+  if (useProxy) {
+    res = await fetch(`/api/proxy/openai/images/edits`, {
+      method: "POST",
+      headers: {
+        "X-Upstream-Url": upstream,
+        "X-Upstream-Key": o.apiKey,
+      },
+      body: form,
+      credentials: "same-origin",
+      signal: o.signal,
+    })
+  } else {
+    res = await fetch(upstream, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${o.apiKey}` },
+      body: form,
+      signal: o.signal,
+    })
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+
+  const json = (await res.json()) as Record<string, unknown>
+  if (Array.isArray((json as { images?: unknown[] }).images)) {
+    return (json as { images: GeneratedImage[] }).images
+  }
+  const raw = (json.data as Array<Record<string, unknown>> | undefined) ?? []
+  return raw.map((d) => ({
+    path: d.b64_json
+      ? `data:image/png;base64,${d.b64_json as string}`
+      : ((d.url as string | undefined) ?? ""),
+    revised_prompt: (d.revised_prompt as string | undefined) ?? null,
+  }))
+}
+
+function imageFilename(b: Blob, fallback = "image"): string {
+  const name = (b as File).name
+  if (name) return name
+  const ext = b.type === "image/webp" ? "webp" : b.type === "image/jpeg" ? "jpg" : "png"
+  return `${fallback}.${ext}`
+}

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label"
 import {
   IMAGE_PROTOCOL_META,
   PROTOCOL_META,
+  likelyWebSearchCapable,
   type ImageProtocol,
   type Protocol,
   type UpstreamSettings,
@@ -32,6 +33,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const [apiKey, setApiKey] = useState(initial.apiKey)
   const [model, setModel] = useState(initial.model)
   const [useProxy, setUseProxy] = useState(initial.useProxy)
+  const [webSearch, setWebSearch] = useState(initial.webSearch)
 
   // --- Image state ---
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>(initial.imageProtocol)
@@ -59,6 +61,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setApiKey(initial.apiKey)
       setModel(initial.model)
       setUseProxy(initial.useProxy)
+      setWebSearch(initial.webSearch)
       setImageProtocol(initial.imageProtocol)
       setImageBaseUrl(initial.imageBaseUrl)
       setImageApiKey(initial.imageApiKey)
@@ -294,6 +297,49 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 走服务端转发（推荐：规避浏览器 CORS 限制；key 只在浏览器，仅随每次请求发送）
               </span>
             </label>
+
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={webSearch}
+                onChange={(e) => setWebSearch(e.target.checked)}
+              />
+              <span>
+                启用网页搜索（调用各厂商原生工具：OpenAI{" "}
+                <code>web_search</code>、Claude <code>web_search</code>、Gemini{" "}
+                <code>google_search</code>；需模型支持）
+              </span>
+            </label>
+
+            {webSearch && !likelyWebSearchCapable(protocol, model) && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                ⚠️ 当前模型 <code>{model || "(未填写)"}</code>{" "}
+                可能不支持网页搜索,请求可能返回 400。参考可用模型：
+                {protocol === "openai" && (
+                  <>
+                    {" "}
+                    <code>gpt-4o-search-preview</code>、
+                    <code>gpt-4o-mini-search-preview</code>、<code>gpt-5</code>
+                  </>
+                )}
+                {protocol === "claude" && (
+                  <>
+                    {" "}
+                    Claude 3.5 / 3.7 / 4.x(如{" "}
+                    <code>claude-sonnet-4-6</code>)
+                  </>
+                )}
+                {protocol === "gemini" && (
+                  <>
+                    {" "}
+                    Gemini 2.0+(如 <code>gemini-2.0-flash</code>)
+                  </>
+                )}
+                。判断基于模型名启发式,不一定准确;OpenAI / Google 不在{" "}
+                <code>/models</code> 接口里返回工具能力元数据。
+              </div>
+            )}
           </div>
         ) : (
           <div className="mt-4 flex flex-col gap-3">
@@ -408,6 +454,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 apiKey: apiKey.trim(),
                 model: model.trim(),
                 useProxy,
+                webSearch,
                 imageProtocol,
                 imageBaseUrl: imageBaseUrl.trim(),
                 imageApiKey: imageApiKey.trim(),

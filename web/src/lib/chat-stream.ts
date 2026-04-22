@@ -10,6 +10,7 @@ export type ChatStreamOptions = {
   model: string
   messages: ChatMessage[]
   useProxy?: boolean
+  webSearch?: boolean
   temperature?: number
   maxTokens?: number
   signal?: AbortSignal
@@ -30,6 +31,7 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
       messages: o.messages,
       stream: true,
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+      ...(o.webSearch ? { tools: [{ type: "web_search" }] } : {}),
     },
     directHeaders: {
       Authorization: `Bearer ${o.apiKey}`,
@@ -54,6 +56,17 @@ function prepareClaude(o: ChatStreamOptions): PreparedRequest {
       stream: true,
       ...(system ? { system } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+      ...(o.webSearch
+        ? {
+            tools: [
+              {
+                type: "web_search_20250305",
+                name: "web_search",
+                max_uses: 5,
+              },
+            ],
+          }
+        : {}),
     },
     directHeaders: {
       "x-api-key": o.apiKey,
@@ -89,6 +102,7 @@ function prepareGemini(o: ChatStreamOptions): PreparedRequest {
       contents,
       ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
       ...(generationConfig ? { generationConfig } : {}),
+      ...(o.webSearch ? { tools: [{ google_search: {} }] } : {}),
     },
     directHeaders: {
       "x-goog-api-key": o.apiKey,

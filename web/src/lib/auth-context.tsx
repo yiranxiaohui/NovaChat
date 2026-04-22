@@ -13,6 +13,7 @@ type AuthContextValue = {
   login: (username: string, password: string) => Promise<void>
   register: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  updateUser: (user: User) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -51,6 +52,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async logout() {
       await api.logout()
       setState({ status: "anon" })
+    },
+    updateUser(user) {
+      setState((prev) =>
+        prev.status === "authed" ? { status: "authed", user } : prev
+      )
     },
   }
 

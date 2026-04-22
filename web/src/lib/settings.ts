@@ -8,6 +8,7 @@ export type UpstreamSettings = {
   apiKey: string
   model: string
   useProxy: boolean
+  webSearch: boolean
 
   // image generation (protocol-aware, independent from chat config)
   imageProtocol: ImageProtocol
@@ -74,6 +75,7 @@ const EMPTY: UpstreamSettings = {
   apiKey: "",
   model: "",
   useProxy: true,
+  webSearch: false,
   imageProtocol: "openai",
   imageBaseUrl: "",
   imageApiKey: "",
@@ -111,6 +113,37 @@ export function trimSlash(url: string): string {
 
 export function isImageConfigured(s: UpstreamSettings): boolean {
   return Boolean(s.imageBaseUrl && s.imageApiKey && s.imageModel)
+}
+
+/**
+ * Heuristic — returns `true` when the chosen model is likely to accept a
+ * native web-search tool call. Name-based, not authoritative (each vendor's
+ * /models endpoint does not expose tool-capability metadata). If this returns
+ * `false` but the user leaves the toggle on, the request will still be sent
+ * and the provider may return 400.
+ */
+export function likelyWebSearchCapable(
+  protocol: Protocol,
+  model: string
+): boolean {
+  const m = model.toLowerCase()
+  if (!m) return false
+  switch (protocol) {
+    case "openai":
+      // chat completions: *-search-preview family and gpt-5.x
+      return m.includes("search-preview") || /^gpt-5(\b|-)/.test(m)
+    case "claude":
+      // all Claude 3.5+ / 4.x accept the web_search_20250305 server tool
+      return (
+        /claude-3-5/.test(m) ||
+        /claude-3-7/.test(m) ||
+        /claude-(sonnet|opus|haiku)-4/.test(m) ||
+        /claude-4/.test(m)
+      )
+    case "gemini":
+      // Gemini 2.x uses `google_search`; 1.5 uses a different field we don't send
+      return /gemini-(2|3)/.test(m)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +191,9 @@ function fromCloud(p: CloudPayload): Omit<UpstreamSettings, "cloudSync"> {
     apiKey: p.api_key ?? "",
     model: p.model ?? "",
     useProxy: Boolean(p.use_proxy),
+    // webSearch is a local-only behavior flag for now; cloud sync preserves
+    // prior local value via the spread in loadEffectiveSettings.
+    webSearch: false,
     imageProtocol: ip,
     imageBaseUrl: p.image_base_url ?? "",
     imageApiKey: p.image_api_key ?? "",
@@ -206,7 +242,12 @@ export async function loadEffectiveSettings(
   try {
     const remote = await settingsApi.fetch()
     if (!remote) return local
-    const merged: UpstreamSettings = { ...remote, cloudSync: true }
+    // Preserve local-only flags (e.g. webSearch) when merging cloud data back in.
+    const merged: UpstreamSettings = {
+      ...remote,
+      webSearch: local.webSearch,
+      cloudSync: true,
+    }
     saveSettings(userId, merged)
     return merged
   } catch {

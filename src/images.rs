@@ -33,42 +33,8 @@ fn random_hex(n: usize) -> String {
     hex::encode(bytes)
 }
 
-async fn proxy_openai_images(
-    State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
-    };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
-    };
-
-    let resp = match state
-        .http
-        .post(url)
-        .bearer_auth(key)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
-    };
-
-    let status = resp.status();
-    let raw = resp.bytes().await.unwrap_or_default();
-    if !status.is_success() {
-        return err(
-            StatusCode::BAD_GATEWAY,
-            format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
-        );
-    }
-
-    let parsed: serde_json::Value = match serde_json::from_slice(&raw) {
+async fn decode_openai_image_response(state: &AppState, raw: &[u8]) -> Response {
+    let parsed: serde_json::Value = match serde_json::from_slice(raw) {
         Ok(v) => v,
         Err(e) => return err(StatusCode::BAD_GATEWAY, format!("parse: {e}")),
     };
@@ -120,6 +86,89 @@ async fn proxy_openai_images(
         return err(StatusCode::BAD_GATEWAY, "upstream returned no images");
     }
     Json(GeneratedImages { images: out }).into_response()
+}
+
+async fn proxy_openai_images(
+    State(state): State<AppState>,
+    Extension(_user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
+    };
+    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
+    };
+
+    let resp = match state
+        .http
+        .post(url)
+        .bearer_auth(key)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+    };
+
+    let status = resp.status();
+    let raw = resp.bytes().await.unwrap_or_default();
+    if !status.is_success() {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
+        );
+    }
+
+    decode_openai_image_response(&state, &raw).await
+}
+
+async fn proxy_openai_images_edits(
+    State(state): State<AppState>,
+    Extension(_user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
+    };
+    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
+        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
+    };
+    let content_type = match headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(v) if v.starts_with("multipart/form-data") => v.to_string(),
+        _ => return err(StatusCode::BAD_REQUEST, "expected multipart/form-data body"),
+    };
+
+    let resp = match state
+        .http
+        .post(url)
+        .bearer_auth(key)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+    };
+
+    let status = resp.status();
+    let raw = resp.bytes().await.unwrap_or_default();
+    if !status.is_success() {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
+        );
+    }
+
+    decode_openai_image_response(&state, &raw).await
 }
 
 async fn proxy_gemini_images(
@@ -261,6 +310,7 @@ async fn serve_image(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/proxy/openai/images", post(proxy_openai_images))
+        .route("/proxy/openai/images/edits", post(proxy_openai_images_edits))
         .route("/proxy/gemini/images", post(proxy_gemini_images))
         .route("/images/{name}", get(serve_image))
 }

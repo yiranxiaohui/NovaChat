@@ -6,6 +6,8 @@ import {
   Check,
   Copy,
   ImageIcon,
+  ImagePlus,
+  Images,
   MessageSquare,
   MessageSquareText,
   Pencil,
@@ -13,14 +15,17 @@ import {
   Settings,
   Sparkles,
   Square,
+  Upload,
   User,
+  Wand2,
+  X,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
-import { generateImages } from "@/lib/image-gen"
+import { editImages, generateImages } from "@/lib/image-gen"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import {
@@ -38,7 +43,15 @@ import { SettingsDialog } from "@/components/app/SettingsDialog"
 import { Sidebar } from "@/components/app/Sidebar"
 import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
+import { SkillsDialog } from "@/components/app/SkillsDialog"
+import { ImagePlazaDialog } from "@/components/app/ImagePlazaDialog"
 import { conversationsApi } from "@/lib/conversations"
+import {
+  skillsApi,
+  composeSystemPromptWithSkills,
+  type Skill,
+} from "@/lib/skills"
+import { filenameFromPath, plazaApi } from "@/lib/image-plaza"
 
 type UiMessage = ChatMessage & { id?: number }
 
@@ -96,9 +109,15 @@ function ActionIcon({
 function Bubble({
   message,
   actions,
+  onPublishImage,
+  publishedFilenames,
+  publishingFilename,
 }: {
   message: UiMessage
   actions: BubbleActions
+  onPublishImage?: (filename: string, alt: string) => void
+  publishedFilenames?: Set<string>
+  publishingFilename?: string | null
 }) {
   const isUser = message.role === "user"
   const toolbar = (
@@ -160,7 +179,63 @@ function Bubble({
             "prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.85em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none"
           )}
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={
+              onPublishImage
+                ? {
+                    img: ({ src, alt }) => {
+                      const url = typeof src === "string" ? src : ""
+                      const fname = filenameFromPath(url)
+                      const imgEl = (
+                        <img
+                          src={url}
+                          alt={alt ?? ""}
+                          loading="lazy"
+                        />
+                      )
+                      if (!fname) return imgEl
+                      const published = publishedFilenames?.has(fname)
+                      const busy = publishingFilename === fname
+                      return (
+                        <span className="group/img relative inline-block">
+                          {imgEl}
+                          <button
+                            type="button"
+                            onClick={() => onPublishImage(fname, alt ?? "")}
+                            disabled={busy || published}
+                            title={
+                              published
+                                ? "已发布到广场"
+                                : busy
+                                  ? "发布中…"
+                                  : "发布到图片广场"
+                            }
+                            className={cn(
+                              "absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
+                              "opacity-0 transition-opacity group-hover/img:opacity-100",
+                              published && "cursor-default opacity-100",
+                              !published && !busy && "hover:bg-accent"
+                            )}
+                          >
+                            {published ? (
+                              <>
+                                <Check className="size-3 text-emerald-500" /> 已发布
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="size-3" />{" "}
+                                {busy ? "发布中…" : "发布到广场"}
+                              </>
+                            )}
+                          </button>
+                        </span>
+                      )
+                    },
+                  }
+                : undefined
+            }
+          >
             {message.content || "…"}
           </ReactMarkdown>
         </div>
@@ -198,11 +273,21 @@ export default function ChatPage() {
           imageApiKey: "",
           imageModel: "",
           imageUseProxy: true,
+          webSearch: false,
           cloudSync: false,
         }
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [plazaOpen, setPlazaOpen] = useState(false)
+  const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(
+    new Set()
+  )
+  const [publishingFilename, setPublishingFilename] = useState<string | null>(
+    null
+  )
+  const [attachedSkills, setAttachedSkills] = useState<Skill[]>([])
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
   const [mode, setMode] = useState<"chat" | "image">("chat")
@@ -213,9 +298,26 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarReload, setSidebarReload] = useState(0)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [editImage, setEditImage] = useState<File | null>(null)
+  const [editImageUrl, setEditImageUrl] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editFileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!editImage) {
+      setEditImageUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(editImage)
+    setEditImageUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [editImage])
+
+  useEffect(() => {
+    if (mode !== "image") setEditImage(null)
+  }, [mode])
 
   useEffect(() => {
     if (!user) return
@@ -241,6 +343,7 @@ export default function ChatPage() {
     if (!conversationId) {
       setMessages([])
       setSystemPrompt("")
+      setAttachedSkills([])
       return
     }
     let cancelled = false
@@ -249,14 +352,16 @@ export default function ChatPage() {
     Promise.all([
       conversationsApi.list(),
       conversationsApi.messages(conversationId),
+      skillsApi.listForConversation(conversationId).catch(() => [] as Skill[]),
     ])
-      .then(([convs, rows]) => {
+      .then(([convs, rows, skills]) => {
         if (cancelled) return
         const current = convs.find((c) => c.id === conversationId)
         setSystemPrompt(current?.system_prompt ?? "")
         setMessages(
           rows.map((m) => ({ id: m.id, role: m.role, content: m.content }))
         )
+        setAttachedSkills(skills)
       })
       .catch((e) => {
         if (cancelled) return
@@ -271,6 +376,77 @@ export default function ChatPage() {
       cancelled = true
     }
   }, [conversationId, nav])
+
+  async function refreshAttachedSkills(convId: number) {
+    try {
+      const list = await skillsApi.listForConversation(convId)
+      setAttachedSkills(list)
+    } catch {
+      // leave existing state — dialog will show its own errors
+    }
+  }
+
+  async function publishImage(filename: string, alt: string) {
+    if (publishedFilenames.has(filename) || publishingFilename) return
+    setPublishingFilename(filename)
+    setError(null)
+    try {
+      await plazaApi.publish({
+        filename,
+        prompt: alt || filename,
+      })
+      setPublishedFilenames((s) => new Set(s).add(filename))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/already published|CONFLICT/i.test(msg)) {
+        setPublishedFilenames((s) => new Set(s).add(filename))
+      } else {
+        setError(`发布失败：${msg}`)
+      }
+    } finally {
+      setPublishingFilename(null)
+    }
+  }
+
+  function applyPlazaPrompt(prompt: string) {
+    if (settings.protocol === "openai" && imageConfigured) {
+      setMode("image")
+    }
+    setInput(prompt)
+    textareaRef.current?.focus()
+  }
+
+  async function applyPlazaAsEditBase(filename: string, prompt: string) {
+    if (settings.protocol !== "openai" || !imageConfigured) {
+      setError("请先在设置里配置 OpenAI 图像生成，才能以此图生图")
+      return
+    }
+    try {
+      const resp = await fetch(`/api/images/${filename}`, {
+        credentials: "same-origin",
+      })
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`)
+      }
+      const blob = await resp.blob()
+      const file = new File([blob], filename, {
+        type: blob.type || "image/png",
+      })
+      setMode("image")
+      setEditImage(file)
+      setInput(prompt)
+      textareaRef.current?.focus()
+    } catch (e) {
+      setError(
+        `加载底图失败：${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+  }
+
+  const effectiveSystemPrompt = useMemo(
+    () => composeSystemPromptWithSkills(systemPrompt, attachedSkills),
+    [systemPrompt, attachedSkills]
+  )
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -347,7 +523,8 @@ export default function ChatPage() {
         setError("图像模式仅在 OpenAI 协议下可用")
         return
       }
-      await runImage(text, text)
+      const attached = editImage
+      await runImage(text, text, attached)
       return
     }
 
@@ -368,8 +545,11 @@ export default function ChatPage() {
     let assistantContent = ""
     let streamError: Error | null = null
 
-    const toModel: ChatMessage[] = (systemPrompt
-      ? [{ role: "system", content: systemPrompt } as ChatMessage, ...baseHistory]
+    const toModel: ChatMessage[] = (effectiveSystemPrompt
+      ? [
+          { role: "system", content: effectiveSystemPrompt } as ChatMessage,
+          ...baseHistory,
+        ]
       : (baseHistory as ChatMessage[])
     ).map((m) => ({ role: m.role, content: m.content }))
 
@@ -380,6 +560,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
         onDelta: (delta) => {
@@ -434,18 +615,19 @@ export default function ChatPage() {
     }
   }
 
-  async function runImage(prompt: string, rawInput: string) {
+  async function runImage(prompt: string, rawInput: string, attached?: File | null) {
     const convId = await ensureConversation()
     if (!convId) return
 
     setInput("")
     setError(null)
 
-    const userMsg: UiMessage = { role: "user", content: `🖼 ${rawInput}` }
+    const userPrefix = attached ? "🖼✏️ " : "🖼 "
+    const userMsg: UiMessage = { role: "user", content: `${userPrefix}${rawInput}` }
     setMessages((prev) => [
       ...prev,
       userMsg,
-      { role: "assistant", content: "🎨 生成图像中…" },
+      { role: "assistant", content: attached ? "✏️ 编辑图像中…" : "🎨 生成图像中…" },
     ])
     setStreaming(true)
 
@@ -457,7 +639,7 @@ export default function ChatPage() {
 
     try {
       const imgMeta = IMAGE_PROTOCOL_META[settings.imageProtocol]
-      const imgs = await generateImages({
+      const common = {
         protocol: settings.imageProtocol,
         baseUrl: settings.imageBaseUrl || imgMeta.defaultBaseUrl,
         apiKey: settings.imageApiKey,
@@ -465,7 +647,10 @@ export default function ChatPage() {
         model: settings.imageModel || imgMeta.defaultModel,
         useProxy: settings.imageUseProxy,
         signal: ctrl.signal,
-      })
+      }
+      const imgs = attached
+        ? await editImages({ ...common, image: attached })
+        : await generateImages(common)
       assistantContent = imgs
         .map(
           (i) =>
@@ -504,6 +689,7 @@ export default function ChatPage() {
       ])
       setSidebarReload((x) => x + 1)
       await refetchMessages(convId)
+      if (attached) setEditImage(null)
     } catch (e) {
       setError(
         "图像已生成但消息保存失败：" +
@@ -540,8 +726,8 @@ export default function ChatPage() {
       role: m.role,
       content: m.content,
     }))
-    const toModel: ChatMessage[] = systemPrompt
-      ? [{ role: "system", content: systemPrompt }, ...history]
+    const toModel: ChatMessage[] = effectiveSystemPrompt
+      ? [{ role: "system", content: effectiveSystemPrompt }, ...history]
       : history
 
     try {
@@ -551,6 +737,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
         onDelta: (delta) => {
@@ -618,7 +805,7 @@ export default function ChatPage() {
 
     const keepUntil = messages.findIndex((m) => m.id === target!.id)
     setMessages(keepUntil < 0 ? messages : messages.slice(0, keepUntil))
-    const stripped = target.content.replace(/^🖼 /, "")
+    const stripped = target.content.replace(/^(?:🖼✏️ |🖼 )/, "")
     setInput(stripped)
     setMode("chat")
     setTimeout(() => textareaRef.current?.focus(), 0)
@@ -683,6 +870,32 @@ export default function ChatPage() {
               title="提示词库"
             >
               <BookMarked />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSkillsOpen(true)}
+              title={
+                attachedSkills.length > 0
+                  ? `Skills（已挂载 ${attachedSkills.length}）`
+                  : "Skills"
+              }
+              className="relative"
+            >
+              <Wand2 />
+              {attachedSkills.length > 0 && (
+                <span className="absolute right-1 top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">
+                  {attachedSkills.length}
+                </span>
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setPlazaOpen(true)}
+              title="图片广场"
+            >
+              <Images />
             </Button>
             <Button
               variant="ghost"
@@ -759,6 +972,11 @@ export default function ChatPage() {
                     onEdit:
                       isLastUser || isSecondLastUser ? editLastUser : undefined,
                   }}
+                  onPublishImage={
+                    m.role === "assistant" ? publishImage : undefined
+                  }
+                  publishedFilenames={publishedFilenames}
+                  publishingFilename={publishingFilename}
                 />
               )
             })}
@@ -773,6 +991,41 @@ export default function ChatPage() {
 
         <div className="bg-background px-5 pb-4 pt-2">
           <div className="mx-auto max-w-3xl">
+            {mode === "image" && editImage && editImageUrl && (
+              <div className="mb-2 flex items-center gap-2 rounded-xl border border-border bg-card px-2 py-1.5 text-xs">
+                <img
+                  src={editImageUrl}
+                  alt="待编辑"
+                  className="size-10 shrink-0 rounded-md border border-border object-cover"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{editImage.name}</p>
+                  <p className="text-muted-foreground">
+                    将基于这张图进行编辑 · 需要支持图像编辑的模型（如 gpt-image-1）
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditImage(null)}
+                  className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="移除图片"
+                  title="移除图片"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            )}
+            <input
+              ref={editFileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null
+                setEditImage(f)
+                e.target.value = ""
+              }}
+            />
             <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
               <Button
                 type="button"
@@ -794,6 +1047,24 @@ export default function ChatPage() {
               >
                 {mode === "image" ? <ImageIcon /> : <MessageSquare />}
               </Button>
+              {mode === "image" && (
+                <Button
+                  type="button"
+                  variant={editImage ? "default" : "ghost"}
+                  size="icon"
+                  className="shrink-0"
+                  aria-label="附加图片以编辑"
+                  title={
+                    editImage
+                      ? "已附加图片（点击更换）"
+                      : "附加图片以编辑"
+                  }
+                  disabled={streaming || !imageConfigured}
+                  onClick={() => editFileInputRef.current?.click()}
+                >
+                  <ImagePlus />
+                </Button>
+              )}
               <Textarea
                 ref={textareaRef}
                 value={input}
@@ -812,7 +1083,9 @@ export default function ChatPage() {
                   !configured
                     ? "先在设置中配置 API…"
                     : mode === "image"
-                    ? "描述想要的图像…（DALL·E）"
+                    ? editImage
+                      ? "描述要对这张图做的修改…"
+                      : "描述想要的图像…（留空并附加图片即可编辑）"
                     : "问点什么…"
                 }
                 rows={1}
@@ -834,8 +1107,20 @@ export default function ChatPage() {
                   disabled={!canSend}
                   size="icon"
                   className="shrink-0"
-                  aria-label={mode === "image" ? "生成图像" : "发送"}
-                  title={mode === "image" ? "生成图像" : "发送"}
+                  aria-label={
+                    mode === "image"
+                      ? editImage
+                        ? "编辑图像"
+                        : "生成图像"
+                      : "发送"
+                  }
+                  title={
+                    mode === "image"
+                      ? editImage
+                        ? "编辑图像"
+                        : "生成图像"
+                      : "发送"
+                  }
                 >
                   <ArrowUp />
                 </Button>
@@ -883,6 +1168,34 @@ export default function ChatPage() {
         value={systemPrompt}
         onClose={() => setSystemPromptOpen(false)}
         onSave={saveSystemPrompt}
+      />
+
+      <SkillsDialog
+        open={skillsOpen}
+        conversationId={conversationId}
+        attachedIds={attachedSkills.map((s) => s.id)}
+        onClose={() => {
+          setSkillsOpen(false)
+          if (conversationId) void refreshAttachedSkills(conversationId)
+        }}
+        onAttachedChange={(ids) => {
+          setAttachedSkills((prev) => {
+            const byId = new Map(prev.map((s) => [s.id, s]))
+            return ids
+              .map((id) => byId.get(id))
+              .filter((x): x is Skill => Boolean(x))
+          })
+          if (conversationId) void refreshAttachedSkills(conversationId)
+        }}
+      />
+
+      <ImagePlazaDialog
+        open={plazaOpen}
+        onClose={() => setPlazaOpen(false)}
+        onUsePrompt={applyPlazaPrompt}
+        onUseAsEditBase={(filename, prompt) =>
+          void applyPlazaAsEditBase(filename, prompt)
+        }
       />
     </div>
   )

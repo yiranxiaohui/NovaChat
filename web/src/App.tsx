@@ -4,6 +4,7 @@ import LoginPage from "@/pages/LoginPage"
 import RegisterPage from "@/pages/RegisterPage"
 import ChatPage from "@/pages/ChatPage"
 import SetupPage from "@/pages/SetupPage"
+import AdminPage from "@/pages/AdminPage"
 
 function Loading() {
   return (
@@ -78,6 +79,14 @@ export default function App() {
             element={
               <Protected>
                 <ChatPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <Protected>
+                <AdminPage />
               </Protected>
             }
           />

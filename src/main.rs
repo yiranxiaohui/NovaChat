@@ -1,10 +1,14 @@
+mod admin;
 mod auth;
 mod conversations;
 mod db;
+mod image_plaza;
 mod images;
+mod profile;
 mod prompts;
 mod settings;
 mod setup;
+mod skills;
 
 use axum::{
     Json, Router,
@@ -71,9 +75,12 @@ struct Credentials {
 }
 
 #[derive(Serialize)]
-struct UserDto {
-    id: i64,
-    username: String,
+pub struct UserDto {
+    pub id: i64,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_admin: bool,
 }
 
 fn validate_credentials(c: &Credentials) -> Result<(), &'static str> {
@@ -177,10 +184,21 @@ async fn register(
         }
     };
 
+    let is_admin = admin::is_admin(&installed.pool, installed.kind, user_id).await;
     match auth::create_session(&installed.pool, installed.kind, user_id).await {
         Ok((token, _)) => {
             let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
-            (jar, Json(UserDto { id: user_id, username })).into_response()
+            (
+                jar,
+                Json(UserDto {
+                    id: user_id,
+                    username,
+                    display_name: None,
+                    avatar_url: None,
+                    is_admin,
+                }),
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -196,20 +214,23 @@ async fn login(
         Err(r) => return r,
     };
     let username = creds.username.trim();
+    let admin_col = db::bool_as_int(installed.kind, "is_admin");
     let sel = db::q(
         installed.kind,
         &format!(
-            "SELECT id, username, password_hash FROM users WHERE {}",
+            "SELECT id, username, password_hash, display_name, avatar_url, {admin_col}
+             FROM users WHERE {}",
             db::ci_eq(installed.kind, "username")
         ),
     );
-    let row: Option<(i64, String, String)> = sqlx::query_as(&sel)
-        .bind(username)
-        .fetch_optional(&installed.pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(i64, String, String, Option<String>, Option<String>, i64)> =
+        sqlx::query_as(&sel)
+            .bind(username)
+            .fetch_optional(&installed.pool)
+            .await
+            .unwrap_or(None);
 
-    let Some((id, username, phc)) = row else {
+    let Some((id, username, phc, display_name, avatar_url, is_admin)) = row else {
         return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
     };
     if !auth::verify_password(&creds.password, &phc) {
@@ -219,7 +240,17 @@ async fn login(
     match auth::create_session(&installed.pool, installed.kind, id).await {
         Ok((token, _)) => {
             let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
-            (jar, Json(UserDto { id, username })).into_response()
+            (
+                jar,
+                Json(UserDto {
+                    id,
+                    username,
+                    display_name,
+                    avatar_url,
+                    is_admin: is_admin != 0,
+                }),
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -243,9 +274,34 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> Response {
     let Some(c) = jar.get(auth::SESSION_COOKIE) else {
         return (StatusCode::UNAUTHORIZED, "not logged in").into_response();
     };
-    match auth::user_for_token(&installed.pool, installed.kind, c.value()).await {
-        Some((id, username)) => Json(UserDto { id, username }).into_response(),
-        None => (StatusCode::UNAUTHORIZED, "session expired").into_response(),
+    let Some((id, _)) =
+        auth::user_for_token(&installed.pool, installed.kind, c.value()).await
+    else {
+        return (StatusCode::UNAUTHORIZED, "session expired").into_response();
+    };
+    let admin_col = db::bool_as_int(installed.kind, "is_admin");
+    let sql = db::q(
+        installed.kind,
+        &format!(
+            "SELECT id, username, display_name, avatar_url, {admin_col}
+             FROM users WHERE id = ?"
+        ),
+    );
+    let row: Option<(i64, String, Option<String>, Option<String>, i64)> = sqlx::query_as(&sql)
+        .bind(id)
+        .fetch_optional(&installed.pool)
+        .await
+        .unwrap_or(None);
+    match row {
+        Some((id, username, display_name, avatar_url, is_admin)) => Json(UserDto {
+            id,
+            username,
+            display_name,
+            avatar_url,
+            is_admin: is_admin != 0,
+        })
+        .into_response(),
+        None => (StatusCode::UNAUTHORIZED, "user not found").into_response(),
     }
 }
 
@@ -501,8 +557,12 @@ fn build_router(state: AppState) -> Router {
         .route("/proxy/gemini/models", get(proxy_gemini_models))
         .merge(conversations::routes())
         .merge(prompts::routes())
+        .merge(skills::routes())
         .merge(images::routes())
+        .merge(image_plaza::routes())
         .merge(settings::routes())
+        .merge(profile::routes())
+        .merge(admin::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

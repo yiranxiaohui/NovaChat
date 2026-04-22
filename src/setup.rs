@@ -266,9 +266,12 @@ async fn install(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
 
+    let true_lit = db::bool_true(kind);
     let base_insert = db::q(
         kind,
-        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        &format!(
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, {true_lit})"
+        ),
     );
     let admin_id = match kind {
         db::DbKind::Sqlite | db::DbKind::Postgres => {

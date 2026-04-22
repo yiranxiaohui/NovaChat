@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Shield,
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -15,6 +16,7 @@ import { conversationsApi, type Conversation } from "@/lib/conversations"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import { BrandMark } from "./BrandMark"
+import { ProfileDialog } from "./ProfileDialog"
 
 type Props = {
   reloadKey: number
@@ -47,6 +49,12 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [menuFor, setMenuFor] = useState<number | null>(null)
   const [query, setQuery] = useState("")
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [avatarBroken, setAvatarBroken] = useState(false)
+
+  useEffect(() => {
+    setAvatarBroken(false)
+  }, [user?.avatar_url])
 
   useEffect(() => {
     let cancelled = false
@@ -215,6 +223,15 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
       </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
+        {user?.is_admin && (
+          <Link
+            to="/admin"
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+            title="进入管理控制台"
+          >
+            <Shield className="size-4" /> 管理控制台
+          </Link>
+        )}
         {onOpenLibrary && (
           <button
             type="button"
@@ -224,13 +241,30 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
             <BookMarked className="size-4" /> 提示词库
           </button>
         )}
-        <div className="mt-1 flex items-center justify-between gap-2 rounded-md bg-sidebar-accent/40 px-2 py-1.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <div className="grid size-7 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
-              {(user?.username ?? "?").slice(0, 1).toUpperCase()}
-            </div>
-            <span className="truncate text-xs">{user?.username}</span>
-          </div>
+        <div className="mt-1 flex items-center justify-between gap-2 rounded-md bg-sidebar-accent/40 px-1 py-1">
+          <button
+            type="button"
+            onClick={() => setProfileOpen(true)}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-sidebar-accent/70"
+            title="个人资料"
+          >
+            {user?.avatar_url && !avatarBroken ? (
+              <img
+                src={user.avatar_url}
+                alt=""
+                className="size-7 shrink-0 rounded-full border border-border object-cover"
+                onError={() => setAvatarBroken(true)}
+              />
+            ) : (
+              <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
+                {((user?.display_name?.trim() || user?.username || "?")
+                  .slice(0, 1)).toUpperCase()}
+              </div>
+            )}
+            <span className="truncate text-xs">
+              {user?.display_name?.trim() || user?.username}
+            </span>
+          </button>
           <Button
             variant="ghost"
             size="sm"
@@ -241,6 +275,8 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
           </Button>
         </div>
       </div>
+
+      <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
     </aside>
   )
 }

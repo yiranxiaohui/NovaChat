@@ -1,6 +1,7 @@
 mod auth;
 mod conversations;
 mod db;
+mod images;
 mod prompts;
 mod setup;
 
@@ -499,6 +500,7 @@ fn build_router(state: AppState) -> Router {
         .route("/proxy/gemini/models", get(proxy_gemini_models))
         .merge(conversations::routes())
         .merge(prompts::routes())
+        .merge(images::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

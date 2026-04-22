@@ -1,28 +1,42 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { CheckCircle2, Database, Loader2 } from "lucide-react"
+import { CheckCircle2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { setupApi, type ConnectionForm } from "@/lib/setup"
+import { BrandMark } from "@/components/app/BrandMark"
+import { cn } from "@/lib/utils"
 
 type Kind = "sqlite" | "mysql" | "postgres"
 
-const KIND_META: Record<Kind, { label: string; port: number; placeholder: string }> = {
-  sqlite: { label: "SQLite", port: 0, placeholder: "novachat.db" },
-  mysql: { label: "MySQL", port: 3306, placeholder: "novachat" },
-  postgres: { label: "PostgreSQL", port: 5432, placeholder: "novachat" },
+const KIND_META: Record<Kind, { label: string; badge: string; port: number; placeholder: string; note: string }> = {
+  sqlite: {
+    label: "SQLite",
+    badge: "零依赖",
+    port: 0,
+    placeholder: "novachat.db",
+    note: "最简单。单文件、本机即跑，适合个人或小团队。",
+  },
+  mysql: {
+    label: "MySQL",
+    badge: "生产",
+    port: 3306,
+    placeholder: "novachat",
+    note: "已有 MySQL 的环境选这个。",
+  },
+  postgres: {
+    label: "PostgreSQL",
+    badge: "推荐",
+    port: 5432,
+    placeholder: "novachat",
+    note: "多用户或云部署的更稳选择。",
+  },
 }
 
 export default function SetupPage() {
   const nav = useNavigate()
+  const [step, setStep] = useState<1 | 2>(1)
   const [kind, setKind] = useState<Kind>("sqlite")
   const [sqlitePath, setSqlitePath] = useState("novachat.db")
   const [host, setHost] = useState("localhost")
@@ -41,12 +55,9 @@ export default function SetupPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setupApi
-      .status()
-      .then((s) => {
-        if (s.installed) nav("/login", { replace: true })
-      })
-      .catch(() => {})
+    setupApi.status().then((s) => {
+      if (s.installed) nav("/login", { replace: true })
+    }).catch(() => {})
   }, [nav])
 
   useEffect(() => {
@@ -55,7 +66,7 @@ export default function SetupPage() {
     if (kind === "postgres") setPort(5432)
   }, [kind])
 
-  function buildConnection(): ConnectionForm {
+  const connection = useMemo<ConnectionForm>(() => {
     if (kind === "sqlite") {
       return { kind: "sqlite", sqlite_path: sqlitePath.trim() || "novachat.db" }
     }
@@ -68,14 +79,14 @@ export default function SetupPage() {
       database: database.trim(),
       tls,
     }
-  }
+  }, [kind, sqlitePath, host, port, dbUser, dbPass, database, tls])
 
   async function runTest() {
     setError(null)
     setTesting(true)
     setTestOk(false)
     try {
-      await setupApi.test(buildConnection())
+      await setupApi.test(connection)
       setTestOk(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -94,7 +105,7 @@ export default function SetupPage() {
     setInstalling(true)
     try {
       await setupApi.install({
-        connection: buildConnection(),
+        connection,
         admin_username: adminUser.trim(),
         admin_password: adminPass,
       })
@@ -106,41 +117,59 @@ export default function SetupPage() {
     }
   }
 
+  const step1Complete = kind === "sqlite" || Boolean(database.trim())
+
   return (
-    <div className="min-h-svh bg-background p-4">
-      <div className="mx-auto max-w-xl py-10">
-        <div className="mb-6 flex items-center gap-3">
-          <Database className="size-6" />
-          <h1 className="text-2xl font-semibold">NovaChat 初始化</h1>
+    <div className="bg-auth-grid min-h-svh px-4 py-10">
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-8 flex items-center justify-between">
+          <BrandMark subtitle="首次初始化" />
+          <Stepper step={step} />
         </div>
 
-        <form onSubmit={runInstall} className="flex flex-col gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>1. 选择数据库</CardTitle>
-              <CardDescription>
-                SQLite 零依赖，适合本地/小规模；MySQL / PostgreSQL 适合多用户或生产部署。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="grid grid-cols-3 gap-2">
-                {(Object.keys(KIND_META) as Kind[]).map((k) => (
+        {step === 1 && (
+          <div className="rounded-2xl border border-border bg-card p-6 shadow-panel">
+            <h2 className="text-lg font-semibold">选择数据库</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              三者都可以随时切换，数据不会跟着走。生产环境推荐 PostgreSQL。
+            </p>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {(Object.keys(KIND_META) as Kind[]).map((k) => {
+                const m = KIND_META[k]
+                const active = kind === k
+                return (
                   <button
                     key={k}
                     type="button"
                     onClick={() => setKind(k)}
-                    className={
-                      "rounded-md border px-3 py-2 text-sm transition-colors " +
-                      (kind === k
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "border-border bg-background hover:bg-accent")
-                    }
+                    className={cn(
+                      "group flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-colors",
+                      active
+                        ? "border-primary/50 bg-primary/5 shadow-sm"
+                        : "border-border bg-background hover:border-primary/30 hover:bg-accent"
+                    )}
                   >
-                    {KIND_META[k].label}
+                    <div className="flex w-full items-center justify-between">
+                      <span className="text-sm font-medium">{m.label}</span>
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 py-0.5 text-[10px]",
+                          active
+                            ? "bg-primary/15 text-primary"
+                            : "bg-muted text-muted-foreground"
+                        )}
+                      >
+                        {m.badge}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{m.note}</span>
                   </button>
-                ))}
-              </div>
+                )
+              })}
+            </div>
 
+            <div className="mt-5 flex flex-col gap-3">
               {kind === "sqlite" ? (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="path">数据库文件路径</Label>
@@ -151,27 +180,18 @@ export default function SetupPage() {
                     placeholder={KIND_META.sqlite.placeholder}
                   />
                   <p className="text-xs text-muted-foreground">
-                    相对路径会放到服务端的 <code>data/</code> 目录下；绝对路径原样使用。不存在会自动创建。
+                    相对路径放到服务端 <code>data/</code> 下；不存在会自动创建。
                   </p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="host">主机</Label>
-                    <Input
-                      id="host"
-                      value={host}
-                      onChange={(e) => setHost(e.target.value)}
-                    />
+                    <Input id="host" value={host} onChange={(e) => setHost(e.target.value)} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="port">端口</Label>
-                    <Input
-                      id="port"
-                      type="number"
-                      value={port}
-                      onChange={(e) => setPort(Number(e.target.value))}
-                    />
+                    <Input id="port" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="db">数据库名</Label>
@@ -185,33 +205,20 @@ export default function SetupPage() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="dbuser">用户名</Label>
-                    <Input
-                      id="dbuser"
-                      value={dbUser}
-                      onChange={(e) => setDbUser(e.target.value)}
-                    />
+                    <Input id="dbuser" value={dbUser} onChange={(e) => setDbUser(e.target.value)} />
                   </div>
                   <div className="col-span-2 flex flex-col gap-1.5">
                     <Label htmlFor="dbpass">密码</Label>
-                    <Input
-                      id="dbpass"
-                      type="password"
-                      value={dbPass}
-                      onChange={(e) => setDbPass(e.target.value)}
-                    />
+                    <Input id="dbpass" type="password" value={dbPass} onChange={(e) => setDbPass(e.target.value)} />
                   </div>
                   <label className="col-span-2 flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={tls}
-                      onChange={(e) => setTls(e.target.checked)}
-                    />
+                    <input type="checkbox" checked={tls} onChange={(e) => setTls(e.target.checked)} />
                     <span>启用 TLS</span>
                   </label>
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
+              <div className="mt-1 flex items-center gap-3">
                 <Button
                   type="button"
                   variant="outline"
@@ -228,15 +235,38 @@ export default function SetupPage() {
                   </span>
                 )}
               </div>
-            </CardContent>
-          </Card>
+            </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>2. 创建管理员账号</CardTitle>
-              <CardDescription>首位用户，用于登录系统；稍后可在界面内再注册更多用户。</CardDescription>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-3">
+            {error && (
+              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end">
+              <Button
+                type="button"
+                size="lg"
+                onClick={() => setStep(2)}
+                disabled={!step1Complete}
+              >
+                下一步：创建管理员
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <form
+            onSubmit={runInstall}
+            className="rounded-2xl border border-border bg-card p-6 shadow-panel"
+          >
+            <h2 className="text-lg font-semibold">创建管理员账号</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              这是首位登录 NovaChat 的账号。之后可以在界面里再注册更多用户。
+            </p>
+
+            <div className="mt-5 grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="au">用户名</Label>
                 <Input
@@ -247,6 +277,7 @@ export default function SetupPage() {
                   maxLength={32}
                   pattern="[A-Za-z0-9_\-]+"
                   required
+                  autoFocus
                 />
               </div>
               <div className="flex flex-col gap-1.5">
@@ -260,23 +291,51 @@ export default function SetupPage() {
                   required
                 />
               </div>
-            </CardContent>
-          </Card>
-
-          {error && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
             </div>
-          )}
 
-          <div className="flex justify-end">
-            <Button type="submit" disabled={installing}>
-              {installing ? <Loader2 className="animate-spin" /> : null}
-              {installing ? "初始化中…" : "完成安装"}
-            </Button>
-          </div>
-        </form>
+            {error && (
+              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-between">
+              <Button type="button" variant="ghost" onClick={() => setStep(1)}>
+                上一步
+              </Button>
+              <Button type="submit" size="lg" disabled={installing}>
+                {installing ? <Loader2 className="animate-spin" /> : null}
+                {installing ? "初始化中…" : "完成安装"}
+              </Button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
+  )
+}
+
+function Stepper({ step }: { step: 1 | 2 }) {
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <StepDot active={step >= 1} label="1 · 数据库" />
+      <div className="h-px w-8 bg-border" />
+      <StepDot active={step >= 2} label="2 · 管理员" />
+    </div>
+  )
+}
+
+function StepDot({ active, label }: { active: boolean; label: string }) {
+  return (
+    <span
+      className={cn(
+        "rounded-full border px-2 py-0.5 transition-colors",
+        active
+          ? "border-primary/40 bg-primary/10 text-foreground"
+          : "border-border bg-background"
+      )}
+    >
+      {label}
+    </span>
   )
 }

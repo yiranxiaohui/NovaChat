@@ -2,6 +2,10 @@
 /web/node_modules
 /web/dist
 /data
+# docker compose bind mounts
+/novachat_data
+/novachat_mysql
+/novachat_postgres
 # legacy layout
 /novachat.db
 /novachat.db-*

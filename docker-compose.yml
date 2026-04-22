@@ -20,7 +20,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - novachat_data:/data
+      - ./novachat_data:/data
     environment:
       NOVACHAT_BIND: 0.0.0.0:3000
       NOVACHAT_DATA_DIR: /data
@@ -47,7 +47,7 @@ services:
       MYSQL_PASSWORD: novachat
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     volumes:
-      - novachat_mysql:/var/lib/mysql
+      - ./novachat_mysql:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
       interval: 10s
@@ -64,14 +64,9 @@ services:
       POSTGRES_USER: novachat
       POSTGRES_PASSWORD: novachat
     volumes:
-      - novachat_postgres:/var/lib/postgresql/data
+      - ./novachat_postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U novachat -d novachat"]
       interval: 10s
       timeout: 5s
       retries: 10
-
-volumes:
-  novachat_data:
-  novachat_mysql:
-  novachat_postgres:

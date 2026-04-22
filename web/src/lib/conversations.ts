@@ -85,4 +85,15 @@ export const conversationsApi = {
       })
     )
   },
+  async truncate(id: number, fromMessageId: number): Promise<void> {
+    await okOrThrow(
+      await fetch(
+        `/api/conversations/${id}/messages?from=${fromMessageId}`,
+        {
+          method: "DELETE",
+          credentials: "same-origin",
+        }
+      )
+    )
+  },
 }

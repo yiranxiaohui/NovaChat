@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json, Router,
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, patch},
@@ -41,6 +41,11 @@ pub struct UpdateConversation {
 #[derive(Deserialize)]
 pub struct AppendMessages {
     pub messages: Vec<NewMessage>,
+}
+
+#[derive(Deserialize)]
+pub struct TruncateQuery {
+    pub from: i64,
 }
 
 #[derive(Deserialize)]
@@ -342,6 +347,42 @@ async fn append_messages(
     StatusCode::NO_CONTENT.into_response()
 }
 
+async fn truncate_messages(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+    Query(q): Query<TruncateQuery>,
+) -> Response {
+    if let Err(r) = ensure_owner(&installed.pool, installed.kind, id, user.id).await {
+        return r;
+    }
+    if q.from <= 0 {
+        return err(StatusCode::BAD_REQUEST, "from must be > 0");
+    }
+    let now = db::now_expr(installed.kind);
+    let sql = db::q(
+        installed.kind,
+        "DELETE FROM messages WHERE conversation_id = ? AND id >= ?",
+    );
+    let r = sqlx::query(&sql)
+        .bind(id)
+        .bind(q.from)
+        .execute(&installed.pool)
+        .await;
+    if let Err(e) = r {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    let touch = db::q(
+        installed.kind,
+        &format!("UPDATE conversations SET updated_at = {now} WHERE id = ?"),
+    );
+    let _ = sqlx::query(&touch)
+        .bind(id)
+        .execute(&installed.pool)
+        .await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/conversations", get(list_conversations).post(create_conversation))
@@ -351,6 +392,6 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/conversations/{id}/messages",
-            get(list_messages).post(append_messages),
+            get(list_messages).post(append_messages).delete(truncate_messages),
         )
 }

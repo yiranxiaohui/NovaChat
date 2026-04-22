@@ -7,6 +7,7 @@ import {
   Copy,
   ImageIcon,
   MessageSquare,
+  MessageSquareText,
   Pencil,
   RefreshCcw,
   Settings,
@@ -35,7 +36,7 @@ import {
 } from "@/lib/settings"
 import { SettingsDialog } from "@/components/app/SettingsDialog"
 import { Sidebar } from "@/components/app/Sidebar"
-import { SystemPromptBar } from "@/components/app/SystemPromptBar"
+import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
 import { conversationsApi } from "@/lib/conversations"
 
@@ -201,6 +202,7 @@ export default function ChatPage() {
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
   const [mode, setMode] = useState<"chat" | "image">("chat")
   const [systemPrompt, setSystemPrompt] = useState("")
@@ -653,9 +655,24 @@ export default function ChatPage() {
             <h1 className="truncate text-base font-semibold tracking-tight">
               {conversationId ? `会话 #${conversationId}` : "新对话"}
             </h1>
-            <ModelBadge protocol={settings.protocol} model={settings.model} />
+            <ModelBadge
+              protocol={mode === "image" ? "openai" : settings.protocol}
+              model={mode === "image" ? settings.imageModel : settings.model}
+            />
           </div>
           <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSystemPromptOpen(true)}
+              title={systemPrompt ? "系统提示词（已设置）" : "系统提示词"}
+              className="relative"
+            >
+              <MessageSquareText />
+              {systemPrompt && (
+                <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
+              )}
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -674,11 +691,6 @@ export default function ChatPage() {
             </Button>
           </div>
         </header>
-
-        <SystemPromptBar
-          value={systemPrompt}
-          onSave={saveSystemPrompt}
-        />
 
         <div className="nc-scroll flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-6">
@@ -861,6 +873,13 @@ export default function ChatPage() {
           void saveSystemPrompt(content)
           setLibraryOpen(false)
         }}
+      />
+
+      <SystemPromptDialog
+        open={systemPromptOpen}
+        value={systemPrompt}
+        onClose={() => setSystemPromptOpen(false)}
+        onSave={saveSystemPrompt}
       />
     </div>
   )

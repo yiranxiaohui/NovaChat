@@ -545,7 +545,10 @@ async fn main() {
     let installed = Arc::new(RwLock::new(None));
     let state = AppState {
         installed: installed.clone(),
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .expect("reqwest client"),
         config_path: config_path.clone(),
         data_dir: data_dir.clone(),
     };

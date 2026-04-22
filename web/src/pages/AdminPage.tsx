@@ -3,8 +3,10 @@ import { Link, Navigate } from "react-router-dom"
 import {
   ArrowLeft,
   BarChart3,
+  Coins,
   Database,
   Key,
+  Plug,
   RefreshCw,
   Server,
   Shield,
@@ -22,12 +24,20 @@ import {
   type AdminSystemInfo,
   type AdminUser,
 } from "@/lib/admin"
+import {
+  adminCreditsApi,
+  type AdminSettings,
+  type AdminSettingsUpdate,
+  type AdminUserCredits,
+} from "@/lib/credits"
 
-type Section = "overview" | "users" | "system"
+type Section = "overview" | "users" | "credits" | "shared" | "system"
 
 const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "概览", icon: BarChart3 },
   { key: "users", label: "用户管理", icon: Users },
+  { key: "credits", label: "积分", icon: Coins },
+  { key: "shared", label: "共享后端", icon: Plug },
   { key: "system", label: "系统信息", icon: Server },
 ]
 
@@ -117,6 +127,8 @@ export default function AdminPage() {
         <main className="mx-auto w-full max-w-5xl px-6 py-6">
           {section === "overview" && <OverviewPanel />}
           {section === "users" && <UsersPanel currentUserId={currentUser.id} />}
+          {section === "credits" && <CreditsPanel />}
+          {section === "shared" && <SharedBackendPanel />}
           {section === "system" && <SystemPanel />}
         </main>
       </div>
@@ -654,6 +666,525 @@ function InfoRow({
       >
         {value}
       </dd>
+    </div>
+  )
+}
+
+function CreditsPanel() {
+  const [rows, setRows] = useState<AdminUserCredits[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState("")
+  const [editing, setEditing] = useState<AdminUserCredits | null>(null)
+
+  async function load() {
+    setLoading(true)
+    setError(null)
+    try {
+      setRows(await adminCreditsApi.listUserCredits())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? rows.filter((r) => r.username.toLowerCase().includes(q))
+    : rows
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">
+        用户在未填自己 API Key 时会消耗站点共享额度；每次对话按「每次消耗」配置扣积分，图像按图像配置扣。上游报错会自动退款。
+      </p>
+
+      <div className="flex items-center gap-2">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="按用户名搜索…"
+          className="max-w-xs"
+        />
+        <Button variant="outline" size="sm" onClick={() => void load()}>
+          <RefreshCw /> 刷新
+        </Button>
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">ID</th>
+              <th className="px-3 py-2 text-left font-medium">用户</th>
+              <th className="px-3 py-2 text-right font-medium">余额</th>
+              <th className="px-3 py-2 text-right font-medium">历史消耗</th>
+              <th className="px-3 py-2 text-right font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                  加载中…
+                </td>
+              </tr>
+            )}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                  没有匹配的用户
+                </td>
+              </tr>
+            )}
+            {filtered.map((r) => (
+              <tr key={r.user_id} className="border-t border-border hover:bg-accent/30">
+                <td className="px-3 py-2 tabular-nums text-muted-foreground">{r.user_id}</td>
+                <td className="px-3 py-2 font-medium">{r.username}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{r.balance}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {r.lifetime_used}
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex justify-end">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => setEditing(r)}
+                    >
+                      <Coins /> 调整
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <AdjustCreditsDialog
+          row={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            void load()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function AdjustCreditsDialog({
+  row,
+  onClose,
+  onSaved,
+}: {
+  row: AdminUserCredits
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [mode, setMode] = useState<"delta" | "balance">("delta")
+  const [delta, setDelta] = useState("100")
+  const [balance, setBalance] = useState(String(row.balance))
+  const [reason, setReason] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save() {
+    setError(null)
+    setSaving(true)
+    try {
+      if (mode === "delta") {
+        const n = Number(delta)
+        if (!Number.isFinite(n) || n === 0) {
+          setError("增减值需为非零整数（正数充值，负数扣减）")
+          setSaving(false)
+          return
+        }
+        await adminCreditsApi.adjust(row.user_id, {
+          delta: Math.trunc(n),
+          reason: reason.trim() || undefined,
+        })
+      } else {
+        const n = Number(balance)
+        if (!Number.isFinite(n) || n < 0) {
+          setError("余额需为 >= 0 的整数")
+          setSaving(false)
+          return
+        }
+        await adminCreditsApi.adjust(row.user_id, {
+          balance: Math.trunc(n),
+          reason: reason.trim() || undefined,
+        })
+      }
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div>
+          <h2 className="text-lg font-semibold">调整积分 · {row.username}</h2>
+          <p className="text-sm text-muted-foreground">
+            当前余额 {row.balance}，累计消耗 {row.lifetime_used}。所有改动都会写入流水。
+          </p>
+        </div>
+
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center rounded-md border border-border p-0.5">
+          <Button
+            size="sm"
+            variant={mode === "delta" ? "secondary" : "ghost"}
+            className="flex-1"
+            onClick={() => setMode("delta")}
+          >
+            增减
+          </Button>
+          <Button
+            size="sm"
+            variant={mode === "balance" ? "secondary" : "ghost"}
+            className="flex-1"
+            onClick={() => setMode("balance")}
+          >
+            设置余额
+          </Button>
+        </div>
+
+        {mode === "delta" ? (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="adj-delta">增减值（正数充值、负数扣减）</Label>
+            <Input
+              id="adj-delta"
+              type="number"
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+              placeholder="例如 500 或 -100"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="adj-bal">新余额</Label>
+            <Input
+              id="adj-bal"
+              type="number"
+              min="0"
+              value={balance}
+              onChange={(e) => setBalance(e.target.value)}
+            />
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="adj-reason">备注（可选）</Label>
+          <Input
+            id="adj-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={80}
+            placeholder="例：活动奖励、异常扣减补偿"
+          />
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={saving}>
+            取消
+          </Button>
+          <Button onClick={() => void save()} disabled={saving}>
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SharedBackendPanel() {
+  const [cfg, setCfg] = useState<AdminSettings | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+
+  // form overrides
+  const [patch, setPatch] = useState<AdminSettingsUpdate>({})
+
+  async function load() {
+    setLoading(true)
+    setError(null)
+    try {
+      const c = await adminCreditsApi.getSettings()
+      setCfg(c)
+      setPatch({})
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  function set<K extends keyof AdminSettingsUpdate>(
+    k: K,
+    v: AdminSettingsUpdate[K]
+  ) {
+    setPatch((p) => ({ ...p, [k]: v }))
+  }
+
+  async function save() {
+    setSaveMsg(null)
+    setError(null)
+    setSaving(true)
+    try {
+      await adminCreditsApi.updateSettings(patch)
+      setSaveMsg("已保存")
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading && !cfg) {
+    return <p className="text-sm text-muted-foreground">加载中…</p>
+  }
+  if (!cfg) {
+    return (
+      <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {error ?? "无法加载设置"}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        当用户没填自己的 API Key 时，请求会落到下面这组上游，每次按「积分」配置扣费。Key 字段留空不改；填 <b>&ldquo;&ndash;&ldquo;</b> 可清除。
+      </p>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">积分规则</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="shared-on"
+              className="size-4 accent-primary"
+              defaultChecked={cfg.shared_enabled}
+              onChange={(e) => set("shared_enabled", e.target.checked)}
+            />
+            <Label htmlFor="shared-on" className="cursor-pointer">
+              启用共享后端
+            </Label>
+          </div>
+          <NumField
+            label="新用户赠送积分"
+            initial={cfg.signup_grant}
+            onChange={(v) => set("signup_grant", v)}
+          />
+          <NumField
+            label="每次对话消耗"
+            initial={cfg.cost_chat}
+            onChange={(v) => set("cost_chat", v)}
+          />
+          <NumField
+            label="每次生图消耗"
+            initial={cfg.cost_image}
+            onChange={(v) => set("cost_image", v)}
+          />
+        </div>
+      </div>
+
+      <UpstreamBlock
+        title="对话 · OpenAI 兼容"
+        keySet={cfg.shared_chat_openai_key_set}
+        url={cfg.shared_chat_openai_url}
+        model={cfg.shared_chat_openai_model}
+        onUrl={(v) => set("shared_chat_openai_url", v)}
+        onModel={(v) => set("shared_chat_openai_model", v)}
+        onKey={(v) => set("shared_chat_openai_key", v)}
+      />
+      <UpstreamBlock
+        title="对话 · Anthropic Claude"
+        keySet={cfg.shared_chat_claude_key_set}
+        url={cfg.shared_chat_claude_url}
+        model={cfg.shared_chat_claude_model}
+        onUrl={(v) => set("shared_chat_claude_url", v)}
+        onModel={(v) => set("shared_chat_claude_model", v)}
+        onKey={(v) => set("shared_chat_claude_key", v)}
+      />
+      <UpstreamBlock
+        title="对话 · Google Gemini"
+        keySet={cfg.shared_chat_gemini_key_set}
+        url={cfg.shared_chat_gemini_url}
+        model={cfg.shared_chat_gemini_model}
+        onUrl={(v) => set("shared_chat_gemini_url", v)}
+        onModel={(v) => set("shared_chat_gemini_model", v)}
+        onKey={(v) => set("shared_chat_gemini_key", v)}
+      />
+      <UpstreamBlock
+        title="图像 · OpenAI"
+        keySet={cfg.shared_image_openai_key_set}
+        url={cfg.shared_image_openai_url}
+        model={cfg.shared_image_openai_model}
+        onUrl={(v) => set("shared_image_openai_url", v)}
+        onModel={(v) => set("shared_image_openai_model", v)}
+        onKey={(v) => set("shared_image_openai_key", v)}
+      />
+      <UpstreamBlock
+        title="图像 · Gemini / Imagen"
+        keySet={cfg.shared_image_gemini_key_set}
+        url={cfg.shared_image_gemini_url}
+        model={cfg.shared_image_gemini_model}
+        onUrl={(v) => set("shared_image_gemini_url", v)}
+        onModel={(v) => set("shared_image_gemini_model", v)}
+        onKey={(v) => set("shared_image_gemini_key", v)}
+      />
+
+      <div className="flex items-center gap-3">
+        <Button onClick={() => void save()} disabled={saving}>
+          {saving ? "保存中…" : "保存设置"}
+        </Button>
+        <Button variant="outline" onClick={() => void load()} disabled={saving}>
+          <RefreshCw /> 重载
+        </Button>
+        {saveMsg && (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400">
+            {saveMsg}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NumField({
+  label,
+  initial,
+  onChange,
+}: {
+  label: string
+  initial: number
+  onChange: (v: number) => void
+}) {
+  const [s, setS] = useState(String(initial))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs">{label}</Label>
+      <Input
+        type="number"
+        min="0"
+        value={s}
+        onChange={(e) => {
+          setS(e.target.value)
+          const n = Number(e.target.value)
+          if (Number.isFinite(n) && n >= 0) onChange(Math.trunc(n))
+        }}
+      />
+    </div>
+  )
+}
+
+function UpstreamBlock({
+  title,
+  keySet,
+  url,
+  model,
+  onUrl,
+  onModel,
+  onKey,
+}: {
+  title: string
+  keySet: boolean
+  url: string
+  model: string
+  onUrl: (v: string) => void
+  onModel: (v: string) => void
+  onKey: (v: string) => void
+}) {
+  const [u, setU] = useState(url)
+  const [m, setM] = useState(model)
+  const [k, setK] = useState("")
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="flex flex-col gap-1.5 sm:col-span-2">
+          <Label className="text-xs">Base URL（含具体 endpoint）</Label>
+          <Input
+            value={u}
+            onChange={(e) => {
+              setU(e.target.value)
+              onUrl(e.target.value)
+            }}
+            placeholder="https://api.example.com/v1/chat/completions"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">默认模型</Label>
+          <Input
+            value={m}
+            onChange={(e) => {
+              setM(e.target.value)
+              onModel(e.target.value)
+            }}
+            placeholder="如 gpt-4o-mini"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5 sm:col-span-3">
+          <Label className="text-xs">
+            API Key{" "}
+            <span className="text-muted-foreground">
+              （当前 {keySet ? "已设置" : "未设置"}；留空不改，填 &ldquo;&ndash;&ldquo; 清除）
+            </span>
+          </Label>
+          <Input
+            type="password"
+            value={k}
+            onChange={(e) => {
+              setK(e.target.value)
+              onKey(e.target.value === "-" ? "" : e.target.value)
+            }}
+            placeholder={keySet ? "••••（已设置，留空不修改）" : "sk-…"}
+          />
+        </div>
+      </div>
     </div>
   )
 }

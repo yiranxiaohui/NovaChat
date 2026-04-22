@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ImageIcon, MessageSquare, RefreshCw } from "lucide-react"
+import { Coins, ImageIcon, MessageSquare, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,6 +13,7 @@ import {
 } from "@/lib/settings"
 import { listModels } from "@/lib/models"
 import { cn } from "@/lib/utils"
+import { creditsApi, type SharedStatus } from "@/lib/credits"
 
 type Props = {
   open: boolean
@@ -44,6 +45,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   const [cloudSync, setCloudSync] = useState(initial.cloudSync)
   const [tab, setTab] = useState<Tab>("chat")
+  const [shared, setShared] = useState<SharedStatus | null>(null)
 
   const [chatModels, setChatModels] = useState<string[]>([])
   const [chatLoading, setChatLoading] = useState(false)
@@ -75,6 +77,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setImageError(null)
     }
   }, [open, initial])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    creditsApi
+      .sharedStatus()
+      .then((s) => {
+        if (!cancelled) setShared(s)
+      })
+      .catch(() => {
+        if (!cancelled) setShared(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   useEffect(() => {
     setChatModels([])
@@ -213,6 +231,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             ? "☁️ 已开启云端同步：所有字段会保存到服务器，登录后自动恢复。"
             : "仅保存在当前浏览器 (localStorage)，不会上传到服务器。"}
         </p>
+
+        {shared?.enabled && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+            <Coins className="mt-0.5 size-3.5 text-primary" />
+            <div className="flex-1">
+              <p>
+                <b>站点已开启共享后端。</b>{" "}
+                留空 API Key（对话或图像任一）即可使用站点提供的通道，每次按积分扣费。
+              </p>
+              <p className="mt-0.5 text-muted-foreground">
+                对话 {shared.cost_chat} 分/次，生图 {shared.cost_image} 分/次；当前余额{" "}
+                <b>{shared.balance}</b> 分。
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="mt-4 inline-flex rounded-lg border border-border bg-muted/40 p-1 text-sm">

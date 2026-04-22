@@ -1,6 +1,7 @@
 mod admin;
 mod auth;
 mod conversations;
+mod credits;
 mod db;
 mod image_plaza;
 mod images;
@@ -185,6 +186,7 @@ async fn register(
     };
 
     let is_admin = admin::is_admin(&installed.pool, installed.kind, user_id).await;
+    let _ = credits::ensure_account(&installed.pool, installed.kind, user_id).await;
     match auth::create_session(&installed.pool, installed.kind, user_id).await {
         Ok((token, _)) => {
             let jar = jar.add(session_cookie(token, auth::SESSION_TTL_DAYS));
@@ -336,43 +338,125 @@ async fn require_auth(
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum Protocol {
+pub enum Protocol {
     OpenAi,
     Claude,
     Gemini,
 }
 
+impl Protocol {
+    fn name(self) -> &'static str {
+        match self {
+            Protocol::OpenAi => "openai",
+            Protocol::Claude => "claude",
+            Protocol::Gemini => "gemini",
+        }
+    }
+}
+
+/// Resolve upstream URL+key for a chat request. Prefers client-supplied
+/// headers; falls back to admin-configured shared upstream if enabled.
+/// Returns (url, key, used_shared).
+async fn resolve_chat_upstream(
+    installed: &InstalledState,
+    protocol: Protocol,
+    headers: &HeaderMap,
+) -> Result<(String, String, bool), Response> {
+    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
+            return Ok((u.to_string(), k.to_string(), false));
+        }
+    }
+    match credits::read_shared(
+        &installed.pool,
+        installed.kind,
+        protocol.name(),
+        credits::SharedFlavor::Chat,
+    )
+    .await
+    {
+        Some(s) => Ok((s.url, s.key, true)),
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            "missing X-Upstream-Url/Key header (and no shared backend configured)",
+        )
+            .into_response()),
+    }
+}
+
 async fn proxy_forward(
     state: &AppState,
+    user: CurrentUser,
     protocol: Protocol,
     headers: &HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Url header").into_response();
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
     };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Key header").into_response();
-    };
+
+    let (url, key, used_shared) =
+        match resolve_chat_upstream(&installed, protocol, headers).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+
+    if used_shared {
+        let cost = credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
+        match credits::try_deduct(
+            &installed.pool,
+            installed.kind,
+            user.id,
+            cost,
+            &format!("chat_{}", protocol.name()),
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(bal) => {
+                return (
+                    StatusCode::PAYMENT_REQUIRED,
+                    format!("积分不足：当前 {bal}，每次请求需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"),
+                )
+                    .into_response();
+            }
+        }
+    }
 
     let mut req = state
         .http
-        .post(url)
+        .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "text/event-stream")
         .body(body);
 
     req = match protocol {
-        Protocol::OpenAi => req.bearer_auth(key),
+        Protocol::OpenAi => req.bearer_auth(&key),
         Protocol::Claude => req
-            .header("x-api-key", key)
+            .header("x-api-key", key.as_str())
             .header("anthropic-version", "2023-06-01"),
-        Protocol::Gemini => req.header("x-goog-api-key", key),
+        Protocol::Gemini => req.header("x-goog-api-key", key.as_str()),
     };
 
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
+            if used_shared {
+                // refund on connect failure
+                let cost =
+                    credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
+                let _ = credits::grant(
+                    &installed.pool,
+                    installed.kind,
+                    user.id,
+                    cost,
+                    "refund_connect_error",
+                )
+                .await;
+            }
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("upstream connect error: {e}"),
@@ -384,6 +468,18 @@ async fn proxy_forward(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        if used_shared {
+            let cost =
+                credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
+            let _ = credits::grant(
+                &installed.pool,
+                installed.kind,
+                user.id,
+                cost,
+                "refund_upstream_error",
+            )
+            .await;
+        }
         return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
             .into_response();
     }
@@ -399,29 +495,29 @@ async fn proxy_forward(
 
 async fn proxy_openai(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    axum::Extension(user): axum::Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, Protocol::OpenAi, &headers, body).await
+    proxy_forward(&state, user, Protocol::OpenAi, &headers, body).await
 }
 
 async fn proxy_claude(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    axum::Extension(user): axum::Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, Protocol::Claude, &headers, body).await
+    proxy_forward(&state, user, Protocol::Claude, &headers, body).await
 }
 
 async fn proxy_gemini(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    axum::Extension(user): axum::Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, Protocol::Gemini, &headers, body).await
+    proxy_forward(&state, user, Protocol::Gemini, &headers, body).await
 }
 
 async fn proxy_get_forward(
@@ -429,20 +525,26 @@ async fn proxy_get_forward(
     protocol: Protocol,
     headers: &HeaderMap,
 ) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Url header").into_response();
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
     };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return (StatusCode::BAD_REQUEST, "missing X-Upstream-Key header").into_response();
-    };
+    let (url, key, _used_shared) =
+        match resolve_chat_upstream(&installed, protocol, headers).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
 
-    let mut req = state.http.get(url).header(header::ACCEPT, "application/json");
+    let mut req = state
+        .http
+        .get(&url)
+        .header(header::ACCEPT, "application/json");
     req = match protocol {
-        Protocol::OpenAi => req.bearer_auth(key),
+        Protocol::OpenAi => req.bearer_auth(&key),
         Protocol::Claude => req
-            .header("x-api-key", key)
+            .header("x-api-key", key.as_str())
             .header("anthropic-version", "2023-06-01"),
-        Protocol::Gemini => req.header("x-goog-api-key", key),
+        Protocol::Gemini => req.header("x-goog-api-key", key.as_str()),
     };
 
     let resp = match req.send().await {
@@ -563,6 +665,8 @@ fn build_router(state: AppState) -> Router {
         .merge(settings::routes())
         .merge(profile::routes())
         .merge(admin::routes())
+        .merge(credits::user_routes())
+        .merge(credits::admin_routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

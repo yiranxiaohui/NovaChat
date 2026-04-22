@@ -10,7 +10,66 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rand::RngCore;
 use serde::Serialize;
 
-use crate::{AppState, CurrentUser};
+use crate::{AppState, CurrentUser, credits};
+
+/// Resolve upstream URL + key + whether we used shared credentials.
+/// Client headers win; falls back to admin-configured shared upstream if enabled.
+async fn resolve_image_upstream(
+    state: &AppState,
+    protocol: &str,
+    headers: &HeaderMap,
+) -> Result<(String, String, bool), Response> {
+    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
+            return Ok((u.to_string(), k.to_string(), false));
+        }
+    }
+    let installed = state
+        .require_installed()
+        .await
+        .map_err(|r| r)?;
+    match credits::read_shared(&installed.pool, installed.kind, protocol, credits::SharedFlavor::Image).await {
+        Some(s) => Ok((s.url, s.key, true)),
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            "missing X-Upstream-Url/Key header (and no shared image backend configured)",
+        )
+            .into_response()),
+    }
+}
+
+async fn deduct_image_credits(state: &AppState, user_id: i64, protocol: &str) -> Result<(), Response> {
+    let installed = state.require_installed().await.map_err(|r| r)?;
+    let cost = credits::get_setting_i64(&installed.pool, installed.kind, "cost_image", 5).await;
+    match credits::try_deduct(
+        &installed.pool,
+        installed.kind,
+        user_id,
+        cost,
+        &format!("image_{protocol}"),
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(bal) => Err((
+            StatusCode::PAYMENT_REQUIRED,
+            format!(
+                "积分不足：当前 {bal}，每次生图需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"
+            ),
+        )
+            .into_response()),
+    }
+}
+
+async fn refund_image_credits(state: &AppState, user_id: i64, reason: &str) {
+    let Ok(installed) = state.require_installed().await else {
+        return;
+    };
+    let cost = credits::get_setting_i64(&installed.pool, installed.kind, "cost_image", 5).await;
+    let _ = credits::grant(&installed.pool, installed.kind, user_id, cost, reason).await;
+}
 
 #[derive(Serialize)]
 struct GeneratedImages {
@@ -90,33 +149,44 @@ async fn decode_openai_image_response(state: &AppState, raw: &[u8]) -> Response 
 
 async fn proxy_openai_images(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
+    let (url, key, used_shared) = match resolve_image_upstream(&state, "openai", &headers).await {
+        Ok(v) => v,
+        Err(r) => return r,
     };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
-    };
+    if used_shared {
+        if let Err(r) = deduct_image_credits(&state, user.id, "openai").await {
+            return r;
+        }
+    }
 
     let resp = match state
         .http
-        .post(url)
-        .bearer_auth(key)
+        .post(&url)
+        .bearer_auth(&key)
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await
     {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+        Err(e) => {
+            if used_shared {
+                refund_image_credits(&state, user.id, "refund_connect_error").await;
+            }
+            return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}"));
+        }
     };
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
+        if used_shared {
+            refund_image_credits(&state, user.id, "refund_upstream_error").await;
+        }
         return err(
             StatusCode::BAD_GATEWAY,
             format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
@@ -128,15 +198,13 @@ async fn proxy_openai_images(
 
 async fn proxy_openai_images_edits(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
-    };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
+    let (url, key, used_shared) = match resolve_image_upstream(&state, "openai", &headers).await {
+        Ok(v) => v,
+        Err(r) => return r,
     };
     let content_type = match headers
         .get(header::CONTENT_TYPE)
@@ -145,23 +213,36 @@ async fn proxy_openai_images_edits(
         Some(v) if v.starts_with("multipart/form-data") => v.to_string(),
         _ => return err(StatusCode::BAD_REQUEST, "expected multipart/form-data body"),
     };
+    if used_shared {
+        if let Err(r) = deduct_image_credits(&state, user.id, "openai").await {
+            return r;
+        }
+    }
 
     let resp = match state
         .http
-        .post(url)
-        .bearer_auth(key)
+        .post(&url)
+        .bearer_auth(&key)
         .header(header::CONTENT_TYPE, content_type)
         .body(body)
         .send()
         .await
     {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+        Err(e) => {
+            if used_shared {
+                refund_image_credits(&state, user.id, "refund_connect_error").await;
+            }
+            return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}"));
+        }
     };
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
+        if used_shared {
+            refund_image_credits(&state, user.id, "refund_upstream_error").await;
+        }
         return err(
             StatusCode::BAD_GATEWAY,
             format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
@@ -173,33 +254,44 @@ async fn proxy_openai_images_edits(
 
 async fn proxy_gemini_images(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(url) = headers.get("x-upstream-url").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Url header");
+    let (url, key, used_shared) = match resolve_image_upstream(&state, "gemini", &headers).await {
+        Ok(v) => v,
+        Err(r) => return r,
     };
-    let Some(key) = headers.get("x-upstream-key").and_then(|v| v.to_str().ok()) else {
-        return err(StatusCode::BAD_REQUEST, "missing X-Upstream-Key header");
-    };
+    if used_shared {
+        if let Err(r) = deduct_image_credits(&state, user.id, "gemini").await {
+            return r;
+        }
+    }
 
     let resp = match state
         .http
-        .post(url)
-        .header("x-goog-api-key", key)
+        .post(&url)
+        .header("x-goog-api-key", key.as_str())
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await
     {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+        Err(e) => {
+            if used_shared {
+                refund_image_credits(&state, user.id, "refund_connect_error").await;
+            }
+            return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}"));
+        }
     };
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
+        if used_shared {
+            refund_image_credits(&state, user.id, "refund_upstream_error").await;
+        }
         return err(
             StatusCode::BAD_GATEWAY,
             format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),

@@ -52,6 +52,7 @@ import {
   type Skill,
 } from "@/lib/skills"
 import { filenameFromPath, plazaApi } from "@/lib/image-plaza"
+import { creditsApi, type CreditsMe, type SharedStatus } from "@/lib/credits"
 
 type UiMessage = ChatMessage & { id?: number }
 
@@ -287,6 +288,8 @@ export default function ChatPage() {
   const [publishingFilename, setPublishingFilename] = useState<string | null>(
     null
   )
+  const [creditsMe, setCreditsMe] = useState<CreditsMe | null>(null)
+  const [sharedStatus, setSharedStatus] = useState<SharedStatus | null>(null)
   const [attachedSkills, setAttachedSkills] = useState<Skill[]>([])
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
@@ -326,10 +329,34 @@ export default function ChatPage() {
     loadEffectiveSettings(user.id).then((s) => {
       if (!cancelled) setSettings(s)
     })
+    creditsApi
+      .sharedStatus()
+      .then((s) => {
+        if (cancelled) return
+        setSharedStatus(s)
+        setCreditsMe({
+          balance: s.balance,
+          lifetime_used: 0,
+          cost_chat: s.cost_chat,
+          cost_image: s.cost_image,
+        })
+      })
+      .catch(() => {
+        /* non-fatal */
+      })
     return () => {
       cancelled = true
     }
   }, [user])
+
+  async function refreshCredits() {
+    try {
+      const me = await creditsApi.me()
+      setCreditsMe(me)
+    } catch {
+      /* ignore */
+    }
+  }
 
   const imageConfigured = isImageConfigured(settings)
 
@@ -585,6 +612,7 @@ export default function ChatPage() {
     } finally {
       setStreaming(false)
       abortRef.current = null
+      void refreshCredits()
     }
 
     if (streamError) {
@@ -670,6 +698,7 @@ export default function ChatPage() {
     } finally {
       setStreaming(false)
       abortRef.current = null
+      void refreshCredits()
     }
 
     if (genError) {
@@ -851,6 +880,15 @@ export default function ChatPage() {
             />
           </div>
           <div className="flex items-center gap-1">
+            {sharedStatus?.enabled && creditsMe && (
+              <span
+                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs tabular-nums"
+                title={`剩余积分 ${creditsMe.balance}｜对话 ${creditsMe.cost_chat} 分/次，生图 ${creditsMe.cost_image} 分/次（仅在未填自己 API Key 时消耗）`}
+              >
+                <span className="text-muted-foreground">积分</span>
+                <span className="font-medium">{creditsMe.balance}</span>
+              </span>
+            )}
             <Button
               variant="ghost"
               size="icon"

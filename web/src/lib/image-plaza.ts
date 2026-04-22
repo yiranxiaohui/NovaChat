@@ -4,6 +4,9 @@ export type PlazaImage = {
   prompt: string
   revised_prompt: string | null
   clone_count: number
+  like_count: number
+  comment_count: number
+  liked_by_me: number
   created_at: string
   author_username: string
 }
@@ -14,10 +17,26 @@ export type MyPlazaImage = {
   prompt: string
   revised_prompt: string | null
   clone_count: number
+  like_count: number
+  comment_count: number
   created_at: string
 }
 
-export type PlazaSort = "hot" | "new"
+export type PlazaComment = {
+  id: number
+  image_id: number
+  user_id: number
+  content: string
+  created_at: string
+  author_username: string
+}
+
+export type PlazaSort = "hot" | "new" | "liked"
+
+export type LikeResponse = {
+  liked: boolean
+  like_count: number
+}
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -92,6 +111,47 @@ export const plazaApi = {
     await okOrThrow(
       await fetch(`/api/plaza/images/${id}/clone`, {
         method: "POST",
+        credentials: "same-origin",
+      })
+    )
+  },
+  async like(id: number): Promise<LikeResponse> {
+    return jsonOrThrow(
+      await fetch(`/api/plaza/images/${id}/like`, {
+        method: "POST",
+        credentials: "same-origin",
+      })
+    )
+  },
+  async unlike(id: number): Promise<LikeResponse> {
+    return jsonOrThrow(
+      await fetch(`/api/plaza/images/${id}/like`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      })
+    )
+  },
+  async listComments(id: number): Promise<PlazaComment[]> {
+    return jsonOrThrow(
+      await fetch(`/api/plaza/images/${id}/comments`, {
+        credentials: "same-origin",
+      })
+    )
+  },
+  async addComment(id: number, content: string): Promise<PlazaComment> {
+    return jsonOrThrow(
+      await fetch(`/api/plaza/images/${id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+        credentials: "same-origin",
+      })
+    )
+  },
+  async deleteComment(commentId: number): Promise<void> {
+    await okOrThrow(
+      await fetch(`/api/plaza/comments/${commentId}`, {
+        method: "DELETE",
         credentials: "same-origin",
       })
     )

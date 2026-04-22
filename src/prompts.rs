@@ -37,6 +37,7 @@ pub struct PublicPrompt {
     pub content: String,
     pub author_username: String,
     pub created_at: String,
+    pub clone_count: i64,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +67,7 @@ pub struct UpdatePrefs {
 pub struct PublicQuery {
     pub search: Option<String>,
     pub page: Option<i64>,
+    pub sort: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -416,16 +418,20 @@ async fn list_public(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let public_true = db::bool_true(installed.kind);
+    let order_by = match q.sort.as_deref() {
+        Some("new") => "p.created_at DESC, p.id DESC",
+        _ => "p.clone_count DESC, p.created_at DESC, p.id DESC",
+    };
 
     let rows: Result<Vec<PublicPrompt>, _> = if let Some(s) = search {
         let pattern = format!("%{s}%");
         let sql = db::q(
             installed.kind,
             &format!(
-                "SELECT p.id, p.name, p.content, u.username AS author_username, p.created_at
+                "SELECT p.id, p.name, p.content, u.username AS author_username, p.created_at, p.clone_count
                  FROM prompts p JOIN users u ON u.id = p.user_id
                  WHERE p.is_public = {public_true} AND (p.name LIKE ? OR p.content LIKE ?)
-                 ORDER BY p.created_at DESC
+                 ORDER BY {order_by}
                  LIMIT ? OFFSET ?"
             ),
         );
@@ -440,10 +446,10 @@ async fn list_public(
         let sql = db::q(
             installed.kind,
             &format!(
-                "SELECT p.id, p.name, p.content, u.username AS author_username, p.created_at
+                "SELECT p.id, p.name, p.content, u.username AS author_username, p.created_at, p.clone_count
                  FROM prompts p JOIN users u ON u.id = p.user_id
                  WHERE p.is_public = {public_true}
-                 ORDER BY p.created_at DESC
+                 ORDER BY {order_by}
                  LIMIT ? OFFSET ?"
             ),
         );
@@ -468,10 +474,10 @@ async fn clone_public(
     let sel = db::q(
         installed.kind,
         &format!(
-            "SELECT name, content FROM prompts WHERE id = ? AND is_public = {public_true}"
+            "SELECT name, content, user_id FROM prompts WHERE id = ? AND is_public = {public_true}"
         ),
     );
-    let row: Option<(String, String)> = match sqlx::query_as(&sel)
+    let row: Option<(String, String, i64)> = match sqlx::query_as(&sel)
         .bind(id)
         .fetch_optional(&installed.pool)
         .await
@@ -479,13 +485,22 @@ async fn clone_public(
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
-    let Some((name, content)) = row else {
+    let Some((name, content, author_id)) = row else {
         return err(StatusCode::NOT_FOUND, "public prompt not found");
     };
-    match insert_prompt(&installed.pool, installed.kind, user.id, &name, &content).await {
-        Ok(p) => Json(p).into_response(),
-        Err(r) => r,
+    let inserted =
+        match insert_prompt(&installed.pool, installed.kind, user.id, &name, &content).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+    if author_id != user.id {
+        let bump = db::q(
+            installed.kind,
+            "UPDATE prompts SET clone_count = clone_count + 1 WHERE id = ?",
+        );
+        let _ = sqlx::query(&bump).bind(id).execute(&installed.pool).await;
     }
+    Json(inserted).into_response()
 }
 
 async fn export_prompts(

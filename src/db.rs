@@ -69,18 +69,21 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (2, include_str!("../migrations/sqlite/0002_user_settings.sql")),
     (3, include_str!("../migrations/sqlite/0003_image_settings.sql")),
     (4, include_str!("../migrations/sqlite/0004_image_protocol.sql")),
+    (5, include_str!("../migrations/sqlite/0005_prompt_clone_count.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
     (2, include_str!("../migrations/mysql/0002_user_settings.sql")),
     (3, include_str!("../migrations/mysql/0003_image_settings.sql")),
     (4, include_str!("../migrations/mysql/0004_image_protocol.sql")),
+    (5, include_str!("../migrations/mysql/0005_prompt_clone_count.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
     (2, include_str!("../migrations/postgres/0002_user_settings.sql")),
     (3, include_str!("../migrations/postgres/0003_image_settings.sql")),
     (4, include_str!("../migrations/postgres/0004_image_protocol.sql")),
+    (5, include_str!("../migrations/postgres/0005_prompt_clone_count.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

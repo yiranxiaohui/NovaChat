@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
-import { CopyPlus, Search } from "lucide-react"
+import { CopyPlus, Flame, Search, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { promptsApi, type PublicPrompt } from "@/lib/prompts"
+import { promptsApi, type PublicPrompt, type PublicSort } from "@/lib/prompts"
 
 type Props = {
   open: boolean
@@ -16,6 +16,7 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
+  const [sort, setSort] = useState<PublicSort>("hot")
   const [cloningId, setCloningId] = useState<number | null>(null)
   const [clonedIds, setClonedIds] = useState<Set<number>>(new Set())
 
@@ -25,7 +26,7 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
     setLoading(true)
     setError(null)
     promptsApi
-      .listPublic({ search: search.trim() || undefined, page })
+      .listPublic({ search: search.trim() || undefined, page, sort })
       .then((r) => {
         if (!cancelled) setItems(r)
       })
@@ -38,7 +39,7 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
     return () => {
       cancelled = true
     }
-  }, [open, search, page])
+  }, [open, search, page, sort])
 
   useEffect(() => {
     if (open) {
@@ -52,6 +53,11 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
     try {
       await promptsApi.clonePublic(p.id)
       setClonedIds((s) => new Set(s).add(p.id))
+      setItems((list) =>
+        list.map((it) =>
+          it.id === p.id ? { ...it, clone_count: it.clone_count + 1 } : it
+        )
+      )
       onCloned?.()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -79,8 +85,8 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[12rem] flex-1">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-8"
@@ -91,6 +97,30 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
                 setPage(1)
               }}
             />
+          </div>
+          <div className="flex items-center rounded-md border border-border p-0.5">
+            <Button
+              size="sm"
+              variant={sort === "hot" ? "secondary" : "ghost"}
+              className="h-7 px-2"
+              onClick={() => {
+                setSort("hot")
+                setPage(1)
+              }}
+            >
+              <Flame className="size-3.5" /> 热门
+            </Button>
+            <Button
+              size="sm"
+              variant={sort === "new" ? "secondary" : "ghost"}
+              className="h-7 px-2"
+              onClick={() => {
+                setSort("new")
+                setPage(1)
+              }}
+            >
+              <Sparkles className="size-3.5" /> 最新
+            </Button>
           </div>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <Button
@@ -133,10 +163,17 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
                 className="flex items-start gap-3 rounded-md border border-border bg-background p-3"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className="truncate font-medium">{p.name}</span>
                     <span className="text-xs text-muted-foreground">
                       by @{p.author_username}
+                    </span>
+                    <span
+                      className="inline-flex items-center gap-0.5 text-xs text-muted-foreground"
+                      title={`已被克隆 ${p.clone_count} 次`}
+                    >
+                      <Flame className="size-3" />
+                      {p.clone_count}
                     </span>
                   </div>
                   <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">

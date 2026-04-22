@@ -13,7 +13,10 @@ export type PublicPrompt = {
   content: string
   author_username: string
   created_at: string
+  clone_count: number
 }
+
+export type PublicSort = "hot" | "new"
 
 export type Prefs = {
   default_prompt_id: number | null
@@ -69,10 +72,13 @@ export const promptsApi = {
       })
     )
   },
-  async listPublic(opts: { search?: string; page?: number } = {}): Promise<PublicPrompt[]> {
+  async listPublic(
+    opts: { search?: string; page?: number; sort?: PublicSort } = {}
+  ): Promise<PublicPrompt[]> {
     const params = new URLSearchParams()
     if (opts.search) params.set("search", opts.search)
     if (opts.page) params.set("page", String(opts.page))
+    if (opts.sort) params.set("sort", opts.sort)
     const qs = params.toString() ? `?${params.toString()}` : ""
     return jsonOrThrow(
       await fetch(`/api/prompts/public${qs}`, { credentials: "same-origin" })

@@ -1,0 +1,77 @@
+# NovaChat — default stack: just the app with a persistent data volume.
+#
+#   docker compose up -d                 # SQLite (walk the /setup wizard)
+#   docker compose --profile mysql up -d # NovaChat + MySQL
+#   docker compose --profile postgres up -d
+#
+# When using the mysql/postgres profiles the app is preconfigured via
+# NOVACHAT_DATABASE_URL so the install wizard skips the DB step; you still
+# create the admin user from /setup on first visit.
+
+services:
+  novachat:
+    image: ghcr.io/yiranxiaohui/novachat:latest
+    # To build locally instead, comment out `image:` above and uncomment:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: novachat
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - novachat_data:/data
+    environment:
+      NOVACHAT_BIND: 0.0.0.0:3000
+      NOVACHAT_DATA_DIR: /data
+      # Uncomment for MySQL profile:
+      # NOVACHAT_DATABASE_URL: mysql://novachat:novachat@mysql:3306/novachat
+      # Uncomment for Postgres profile:
+      # NOVACHAT_DATABASE_URL: postgres://novachat:novachat@postgres:5432/novachat
+    healthcheck:
+      test: ["CMD", "bash", "-c", ":>/dev/tcp/127.0.0.1/3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  mysql:
+    profiles: ["mysql"]
+    image: mysql:8
+    container_name: novachat-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: novachat
+      MYSQL_USER: novachat
+      MYSQL_PASSWORD: novachat
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - novachat_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    container_name: novachat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: novachat
+      POSTGRES_USER: novachat
+      POSTGRES_PASSWORD: novachat
+    volumes:
+      - novachat_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novachat -d novachat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  novachat_data:
+  novachat_mysql:
+  novachat_postgres:

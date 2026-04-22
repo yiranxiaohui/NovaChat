@@ -148,7 +148,9 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             <Label htmlFor="apiKey">API Key</Label>
             <Input
               id="apiKey"
-              type="password"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
               placeholder={protocol === "gemini" ? "AIza…" : "sk-…"}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}

@@ -8,25 +8,33 @@ RUN bun install --frozen-lockfile
 COPY web ./
 RUN bun run build
 
-# ---- Stage 2: build the Rust binary --------------------------------------
-FROM rust:1-bookworm AS rustbuilder
+# ---- Stage 2a: cargo-chef planner — derive a dep-only "recipe" ------------
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /app
-# Prime the dependency cache.
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main(){}' > src/main.rs && \
-    cargo build --release --locked && \
-    rm -rf src target/release/deps/novachat*
 
-# Now copy the real sources and the prebuilt web assets.
-# NOTE: we do NOT copy web/package.json into the rust build context — this
-# makes build.rs short-circuit and skip its embedded `bun run build` call.
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY migrations ./migrations
-COPY build.rs ./
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ---- Stage 2b: cook deps (cached unless recipe.json changes) -------------
+FROM chef AS rustbuilder
+# Compile only the external crates. This layer is reused on every code-only
+# change. It invalidates only when Cargo.toml / Cargo.lock actually change.
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Now bring in the real sources and the prebuilt web assets and build the bin.
+# We intentionally do NOT copy web/package.json into the rust build context so
+# build.rs short-circuits and skips its embedded `bun run build` call.
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+COPY migrations ./migrations
 COPY --from=webbuilder /app/web/dist ./web/dist
 
-RUN cargo build --release --locked && \
-    strip target/release/novachat || true
+RUN cargo build --release --locked \
+    && strip target/release/novachat
 
 # ---- Stage 3: minimal runtime image --------------------------------------
 FROM debian:bookworm-slim AS runtime

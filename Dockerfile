@@ -31,16 +31,18 @@ RUN cargo build --release --locked && \
 # ---- Stage 3: minimal runtime image --------------------------------------
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ca-certificates tini gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/sbin/gosu /usr/local/bin/su-exec
 
 RUN useradd --system --uid 10001 --home /data novachat \
     && mkdir -p /data \
     && chown -R novachat:novachat /data
 
 COPY --from=rustbuilder /app/target/release/novachat /usr/local/bin/novachat
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER novachat
 WORKDIR /data
 VOLUME ["/data"]
 
@@ -49,4 +51,4 @@ ENV NOVACHAT_BIND=0.0.0.0:3000 \
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/novachat"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -10,6 +10,9 @@ export type ChatStreamOptions = {
   model: string
   messages: ChatMessage[]
   useProxy?: boolean
+  // When true, route through the server proxy targeting the site-shared
+  // backend (admin-configured URL/Key); baseUrl/apiKey are ignored.
+  useShared?: boolean
   webSearch?: boolean
   temperature?: number
   maxTokens?: number
@@ -151,7 +154,21 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   const payload = JSON.stringify(prepared.body)
 
   let res: Response
-  if (o.useProxy) {
+  if (o.useShared) {
+    // Site-shared backend: server reads admin URL/Key, we just hand over
+    // the user's chosen model (Gemini needs it in the URL it builds).
+    res = await fetch(`/api/proxy/${o.protocol}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Use-Shared": "1",
+        "X-Upstream-Model": o.model,
+      },
+      body: payload,
+      credentials: "same-origin",
+      signal: o.signal,
+    })
+  } else if (o.useProxy) {
     res = await fetch(`/api/proxy/${o.protocol}`, {
       method: "POST",
       headers: {

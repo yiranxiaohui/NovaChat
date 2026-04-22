@@ -14,6 +14,9 @@ export type GenerateImageOptions = {
   size?: "1024x1024" | "1024x1792" | "1792x1024" | "auto"
   n?: number
   useProxy?: boolean
+  // When true, server uses the admin-configured shared image backend; baseUrl/
+  // apiKey are ignored. Forces useProxy.
+  useShared?: boolean
   signal?: AbortSignal
 }
 
@@ -64,7 +67,19 @@ export async function generateImages(
     protocol === "gemini" ? geminiRequest(o) : openaiRequest(o)
 
   let res: Response
-  if (useProxy) {
+  if (o.useShared) {
+    res = await fetch(`/api/proxy/${protocol}/images`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Use-Shared": "1",
+        "X-Upstream-Model": o.model ?? "",
+      },
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+      signal: o.signal,
+    })
+  } else if (useProxy) {
     res = await fetch(`/api/proxy/${protocol}/images`, {
       method: "POST",
       headers: {
@@ -144,6 +159,7 @@ export type EditImageOptions = {
   size?: GenerateImageOptions["size"]
   n?: number
   useProxy?: boolean
+  useShared?: boolean
   signal?: AbortSignal
 }
 
@@ -183,7 +199,19 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
       generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
     }
     let res: Response
-    if (useProxy) {
+    if (o.useShared) {
+      res = await fetch(`/api/proxy/gemini/images`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Use-Shared": "1",
+          "X-Upstream-Model": model,
+        },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+        signal: o.signal,
+      })
+    } else if (useProxy) {
       res = await fetch(`/api/proxy/gemini/images`, {
         method: "POST",
         headers: {
@@ -248,7 +276,18 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
 
   const upstream = `${trimSlash(o.baseUrl)}/v1/images/edits`
   let res: Response
-  if (useProxy) {
+  if (o.useShared) {
+    res = await fetch(`/api/proxy/openai/images/edits`, {
+      method: "POST",
+      headers: {
+        "X-Use-Shared": "1",
+        "X-Upstream-Model": o.model ?? "",
+      },
+      body: form,
+      credentials: "same-origin",
+      signal: o.signal,
+    })
+  } else if (useProxy) {
     res = await fetch(`/api/proxy/openai/images/edits`, {
       method: "POST",
       headers: {

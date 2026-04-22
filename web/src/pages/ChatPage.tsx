@@ -5,6 +5,7 @@ import {
   BookMarked,
   Check,
   Copy,
+  Globe,
   ImageIcon,
   ImagePlus,
   Images,
@@ -34,6 +35,7 @@ import {
   loadEffectiveSettings,
   settingsApi,
   isImageConfigured,
+  likelyWebSearchCapable,
   PROTOCOL_META,
   IMAGE_PROTOCOL_META,
   type Protocol,
@@ -121,6 +123,24 @@ function Bubble({
   publishingFilename?: string | null
 }) {
   const isUser = message.role === "user"
+  const [preview, setPreview] = useState<{ src: string; alt: string } | null>(
+    null
+  )
+
+  useEffect(() => {
+    if (!preview) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreview(null)
+    }
+    window.addEventListener("keydown", onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [preview])
+
   const toolbar = (
     <div
       className={cn(
@@ -182,66 +202,91 @@ function Bubble({
         >
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
-            components={
-              onPublishImage
-                ? {
-                    img: ({ src, alt }) => {
-                      const url = typeof src === "string" ? src : ""
-                      const fname = filenameFromPath(url)
-                      const imgEl = (
-                        <img
-                          src={url}
-                          alt={alt ?? ""}
-                          loading="lazy"
-                        />
-                      )
-                      if (!fname) return imgEl
-                      const published = publishedFilenames?.has(fname)
-                      const busy = publishingFilename === fname
-                      return (
-                        <span className="group/img relative inline-block">
-                          {imgEl}
-                          <button
-                            type="button"
-                            onClick={() => onPublishImage(fname, alt ?? "")}
-                            disabled={busy || published}
-                            title={
-                              published
-                                ? "已发布到广场"
-                                : busy
-                                  ? "发布中…"
-                                  : "发布到图片广场"
-                            }
-                            className={cn(
-                              "absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
-                              "opacity-0 transition-opacity group-hover/img:opacity-100",
-                              published && "cursor-default opacity-100",
-                              !published && !busy && "hover:bg-accent"
-                            )}
-                          >
-                            {published ? (
-                              <>
-                                <Check className="size-3 text-emerald-500" /> 已发布
-                              </>
-                            ) : (
-                              <>
-                                <Upload className="size-3" />{" "}
-                                {busy ? "发布中…" : "发布到广场"}
-                              </>
-                            )}
-                          </button>
-                        </span>
-                      )
-                    },
-                  }
-                : undefined
-            }
+            components={{
+              img: ({ src, alt }) => {
+                const url = typeof src === "string" ? src : ""
+                const altText = alt ?? ""
+                const fname = filenameFromPath(url)
+                const published = fname
+                  ? publishedFilenames?.has(fname)
+                  : false
+                const busy = fname ? publishingFilename === fname : false
+                const imgEl = (
+                  <img
+                    src={url}
+                    alt={altText}
+                    loading="lazy"
+                    onClick={() => setPreview({ src: url, alt: altText })}
+                    className="!my-0 max-h-80 w-auto cursor-zoom-in"
+                  />
+                )
+                return (
+                  <span className="group/img relative inline-block">
+                    {imgEl}
+                    {onPublishImage && fname && (
+                      <button
+                        type="button"
+                        onClick={() => onPublishImage(fname, altText)}
+                        disabled={busy || published}
+                        title={
+                          published
+                            ? "已发布到广场"
+                            : busy
+                              ? "发布中…"
+                              : "发布到图片广场"
+                        }
+                        className={cn(
+                          "absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
+                          "opacity-0 transition-opacity group-hover/img:opacity-100",
+                          published && "cursor-default opacity-100",
+                          !published && !busy && "hover:bg-accent"
+                        )}
+                      >
+                        {published ? (
+                          <>
+                            <Check className="size-3 text-emerald-500" /> 已发布
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="size-3" />{" "}
+                            {busy ? "发布中…" : "发布到广场"}
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </span>
+                )
+              },
+            }}
           >
             {message.content || "…"}
           </ReactMarkdown>
         </div>
       </div>
       <div className="pl-9">{toolbar}</div>
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
+          onClick={() => setPreview(null)}
+          role="dialog"
+          aria-label="图片预览"
+        >
+          <img
+            src={preview.src}
+            alt={preview.alt}
+            className="max-h-[95vh] max-w-[95vw] rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setPreview(null)}
+            aria-label="关闭预览"
+            className="absolute right-4 top-4 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -269,11 +314,13 @@ export default function ChatPage() {
           apiKey: "",
           model: "",
           useProxy: true,
+          useShared: false,
           imageProtocol: "openai",
           imageBaseUrl: "",
           imageApiKey: "",
           imageModel: "",
           imageUseProxy: true,
+          imageUseShared: false,
           webSearch: false,
           cloudSync: false,
         }
@@ -355,6 +402,17 @@ export default function ChatPage() {
       setCreditsMe(me)
     } catch {
       /* ignore */
+    }
+  }
+
+  function toggleWebSearch() {
+    const next = { ...settings, webSearch: !settings.webSearch }
+    setSettings(next)
+    if (user) saveSettings(user.id, next)
+    if (next.cloudSync) {
+      settingsApi.save(next).catch(() => {
+        /* non-fatal */
+      })
     }
   }
 
@@ -479,7 +537,9 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, streaming])
 
-  const configured = Boolean(settings.baseUrl && settings.apiKey && settings.model)
+  const configured =
+    settings.useShared ||
+    Boolean(settings.baseUrl && settings.apiKey && settings.model)
   const canSend = input.trim().length > 0 && !streaming && configured
 
   const banner = useMemo(() => {
@@ -587,6 +647,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        useShared: settings.useShared,
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
@@ -674,6 +735,7 @@ export default function ChatPage() {
         prompt,
         model: settings.imageModel || imgMeta.defaultModel,
         useProxy: settings.imageUseProxy,
+        useShared: settings.imageUseShared,
         signal: ctrl.signal,
       }
       const imgs = attached
@@ -766,6 +828,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        useShared: settings.useShared,
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
@@ -1085,6 +1148,30 @@ export default function ChatPage() {
               >
                 {mode === "image" ? <ImageIcon /> : <MessageSquare />}
               </Button>
+              {mode === "chat" && (
+                <Button
+                  type="button"
+                  variant={settings.webSearch ? "default" : "ghost"}
+                  size="icon"
+                  className="shrink-0"
+                  aria-label={
+                    settings.webSearch ? "关闭联网搜索" : "开启联网搜索"
+                  }
+                  title={
+                    !likelyWebSearchCapable(settings.protocol, settings.model)
+                      ? `当前模型可能不支持联网搜索（${
+                          settings.model || "未选择"
+                        }）；点击仍可切换，请求失败请改选支持的模型`
+                      : settings.webSearch
+                        ? "联网搜索：开启（点击关闭）"
+                        : "联网搜索：关闭（点击开启）"
+                  }
+                  disabled={streaming}
+                  onClick={toggleWebSearch}
+                >
+                  <Globe />
+                </Button>
+              )}
               {mode === "image" && (
                 <Button
                   type="button"

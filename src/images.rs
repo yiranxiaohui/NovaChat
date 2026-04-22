@@ -10,33 +10,104 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rand::RngCore;
 use serde::Serialize;
 
-use crate::{AppState, CurrentUser, credits};
+use crate::{AppState, CurrentUser, credits, header_str, header_truthy};
 
-/// Resolve upstream URL + key + whether we used shared credentials.
-/// Client headers win; falls back to admin-configured shared upstream if enabled.
+fn trim_slash(s: &str) -> &str {
+    s.trim_end_matches('/')
+}
+
+#[derive(Clone, Copy)]
+enum ImageKind {
+    Generate,
+    Edit,
+}
+
+fn image_endpoint(host: &str, protocol: &str, model: &str, kind: ImageKind) -> String {
+    let base = trim_slash(host);
+    match (protocol, kind) {
+        ("openai", ImageKind::Generate) => format!("{base}/v1/images/generations"),
+        ("openai", ImageKind::Edit) => format!("{base}/v1/images/edits"),
+        // Gemini/Imagen: model path form. generateContent is the image-edit/
+        // inpaint path used by gemini-2.5-flash-image-preview; :predict is for
+        // Imagen text-to-image.
+        ("gemini", ImageKind::Generate) => format!("{base}/v1beta/models/{model}:predict"),
+        ("gemini", ImageKind::Edit) => format!("{base}/v1beta/models/{model}:generateContent"),
+        _ => format!("{base}/"),
+    }
+}
+
+/// Resolve upstream for an image request.
+/// Returns (endpoint_url, key, used_shared, shared_model).
 async fn resolve_image_upstream(
     state: &AppState,
     protocol: &str,
+    kind: ImageKind,
     headers: &HeaderMap,
-) -> Result<(String, String, bool), Response> {
-    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
-    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-        if !u.is_empty() && !k.is_empty() {
-            return Ok((u.to_string(), k.to_string(), false));
+) -> Result<(String, String, bool, Option<String>), Response> {
+    let want_shared = header_truthy(headers, "x-use-shared");
+    if !want_shared {
+        let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+        let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+            if !u.is_empty() && !k.is_empty() {
+                return Ok((u.to_string(), k.to_string(), false, None));
+            }
         }
     }
-    let installed = state
-        .require_installed()
-        .await
-        .map_err(|r| r)?;
-    match credits::read_shared(&installed.pool, installed.kind, protocol, credits::SharedFlavor::Image).await {
-        Some(s) => Ok((s.url, s.key, true)),
+    let client_model = header_str(headers, "x-upstream-model");
+    let installed = state.require_installed().await?;
+    match credits::read_shared(
+        &installed.pool,
+        installed.kind,
+        protocol,
+        credits::SharedFlavor::Image,
+    )
+    .await
+    {
+        Some(s) => {
+            let admin_model = s.model.clone().unwrap_or_default();
+            let model = client_model
+                .clone()
+                .unwrap_or_else(|| admin_model.clone());
+            if model.is_empty() && protocol == "gemini" {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shared Gemini image upstream has no model (set X-Upstream-Model or configure an admin default)",
+                )
+                    .into_response());
+            }
+            let url = image_endpoint(&s.url, protocol, &model, kind);
+            // Same convention as chat: only request a body rewrite when we
+            // had to fall back to admin's preset model (legacy empty-key path).
+            let body_override = if client_model.is_some() {
+                None
+            } else {
+                Some(admin_model)
+            };
+            Ok((url, s.key, true, body_override))
+        }
         None => Err((
             StatusCode::BAD_REQUEST,
             "missing X-Upstream-Url/Key header (and no shared image backend configured)",
         )
             .into_response()),
+    }
+}
+
+/// Rewrite `model` field of a JSON body. Used for OpenAI image generations
+/// when falling back to shared.
+fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return axum::body::Bytes::copy_from_slice(body);
+    };
+    if let Some(map) = v.as_object_mut() {
+        if map.contains_key("model") {
+            map.insert("model".into(), serde_json::Value::String(new_model.into()));
+        }
+    }
+    match serde_json::to_vec(&v) {
+        Ok(b) => axum::body::Bytes::from(b),
+        Err(_) => axum::body::Bytes::copy_from_slice(body),
     }
 }
 
@@ -153,9 +224,14 @@ async fn proxy_openai_images(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let (url, key, used_shared) = match resolve_image_upstream(&state, "openai", &headers).await {
-        Ok(v) => v,
-        Err(r) => return r,
+    let (url, key, used_shared, shared_model) =
+        match resolve_image_upstream(&state, "openai", ImageKind::Generate, &headers).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let body = match (used_shared, shared_model.as_deref()) {
+        (true, Some(m)) if !m.is_empty() => override_json_model(&body, m),
+        _ => body,
     };
     if used_shared {
         if let Err(r) = deduct_image_credits(&state, user.id, "openai").await {
@@ -202,10 +278,11 @@ async fn proxy_openai_images_edits(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let (url, key, used_shared) = match resolve_image_upstream(&state, "openai", &headers).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
+    let (url, key, used_shared, _shared_model) =
+        match resolve_image_upstream(&state, "openai", ImageKind::Edit, &headers).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
     let content_type = match headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -258,10 +335,19 @@ async fn proxy_gemini_images(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let (url, key, used_shared) = match resolve_image_upstream(&state, "gemini", &headers).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
+    // The client distinguishes generateContent (edit) vs :predict (generate)
+    // by URL suffix. Detect that to compose the right fallback endpoint.
+    let kind = headers
+        .get("x-upstream-url")
+        .and_then(|v| v.to_str().ok())
+        .filter(|u| u.contains(":generateContent"))
+        .map(|_| ImageKind::Edit)
+        .unwrap_or(ImageKind::Generate);
+    let (url, key, used_shared, _shared_model) =
+        match resolve_image_upstream(&state, "gemini", kind, &headers).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
     if used_shared {
         if let Err(r) = deduct_image_credits(&state, user.id, "gemini").await {
             return r;

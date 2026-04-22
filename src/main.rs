@@ -402,21 +402,50 @@ impl Protocol {
     }
 }
 
-/// Resolve upstream URL+key for a chat request. Prefers client-supplied
-/// headers; falls back to admin-configured shared upstream if enabled.
-/// Returns (url, key, used_shared).
+fn trim_slash(s: &str) -> &str {
+    s.trim_end_matches('/')
+}
+
+pub fn chat_endpoint(host: &str, protocol: Protocol, model: &str) -> String {
+    let base = trim_slash(host);
+    match protocol {
+        Protocol::OpenAi => format!("{base}/v1/chat/completions"),
+        Protocol::Claude => format!("{base}/v1/messages"),
+        Protocol::Gemini => format!("{base}/v1beta/models/{model}:streamGenerateContent"),
+    }
+}
+
+pub fn models_endpoint(host: &str, protocol: Protocol) -> String {
+    let base = trim_slash(host);
+    match protocol {
+        Protocol::OpenAi | Protocol::Claude => format!("{base}/v1/models"),
+        Protocol::Gemini => format!("{base}/v1beta/models?pageSize=200"),
+    }
+}
+
+/// Resolve the upstream for a chat request. Prefers client-supplied headers;
+/// falls back to admin-configured shared upstream (host-only, model stored
+/// separately) when enabled.
+///
+/// Returned URL is always the fully-qualified endpoint.
+/// When `used_shared=true`, `shared_model` carries the admin's configured
+/// default so callers can rewrite the request body's `model` field.
 async fn resolve_chat_upstream(
     installed: &InstalledState,
     protocol: Protocol,
     headers: &HeaderMap,
-) -> Result<(String, String, bool), Response> {
-    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
-    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-        if !u.is_empty() && !k.is_empty() {
-            return Ok((u.to_string(), k.to_string(), false));
+) -> Result<(String, String, bool, Option<String>), Response> {
+    let want_shared = header_truthy(headers, "x-use-shared");
+    if !want_shared {
+        let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+        let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+            if !u.is_empty() && !k.is_empty() {
+                return Ok((u.to_string(), k.to_string(), false, None));
+            }
         }
     }
+    let client_model = header_str(headers, "x-upstream-model");
     match credits::read_shared(
         &installed.pool,
         installed.kind,
@@ -425,12 +454,73 @@ async fn resolve_chat_upstream(
     )
     .await
     {
-        Some(s) => Ok((s.url, s.key, true)),
+        Some(s) => {
+            let admin_model = s.model.clone().unwrap_or_default();
+            // Client-supplied model wins (explicit shared mode lets users pick
+            // any model name); admin's preset is only a fallback for the legacy
+            // empty-key path.
+            let model = client_model
+                .clone()
+                .unwrap_or_else(|| admin_model.clone());
+            if model.is_empty() && matches!(protocol, Protocol::Gemini) {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shared Gemini upstream has no model (set X-Upstream-Model or configure an admin default)",
+                )
+                    .into_response());
+            }
+            let url = chat_endpoint(&s.url, protocol, &model);
+            // Only ask the caller to rewrite the body's "model" field when we
+            // had to fall back to admin's preset — when the client supplied a
+            // model, the body already carries the user's choice.
+            let body_override = if client_model.is_some() {
+                None
+            } else {
+                Some(admin_model)
+            };
+            Ok((url, s.key, true, body_override))
+        }
         None => Err((
             StatusCode::BAD_REQUEST,
             "missing X-Upstream-Url/Key header (and no shared backend configured)",
         )
             .into_response()),
+    }
+}
+
+pub fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+pub fn header_truthy(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| matches!(s.trim(), "1" | "true" | "TRUE" | "True"))
+        .unwrap_or(false)
+}
+
+/// Rewrite the `model` field of a JSON body, returning the new bytes.
+/// OpenAI and Claude chat bodies have `{"model": "...", ...}`; Gemini does
+/// not (model lives in URL). Image generations (`/v1/images/generations`)
+/// also have `{"model": "..."}`. Image edits are multipart — don't rewrite.
+fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return axum::body::Bytes::copy_from_slice(body);
+    };
+    if let Some(map) = v.as_object_mut() {
+        if map.contains_key("model") {
+            map.insert("model".into(), serde_json::Value::String(new_model.into()));
+        }
+    }
+    match serde_json::to_vec(&v) {
+        Ok(b) => axum::body::Bytes::from(b),
+        Err(_) => axum::body::Bytes::copy_from_slice(body),
     }
 }
 
@@ -446,11 +536,24 @@ async fn proxy_forward(
         Err(r) => return r,
     };
 
-    let (url, key, used_shared) =
+    let (url, key, used_shared, shared_model) =
         match resolve_chat_upstream(&installed, protocol, headers).await {
             Ok(v) => v,
             Err(r) => return r,
         };
+
+    // When falling back to shared upstream, override the model in the body
+    // (OpenAI / Claude embed it in the JSON payload; Gemini only in URL).
+    let body = if used_shared {
+        match (protocol, shared_model.as_deref()) {
+            (Protocol::OpenAi | Protocol::Claude, Some(m)) if !m.is_empty() => {
+                override_json_model(&body, m)
+            }
+            _ => body,
+        }
+    } else {
+        body
+    };
 
     if used_shared {
         let cost = credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
@@ -577,11 +680,40 @@ async fn proxy_get_forward(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let (url, key, _used_shared) =
-        match resolve_chat_upstream(&installed, protocol, headers).await {
-            Ok(v) => v,
-            Err(r) => return r,
-        };
+
+    // Client-supplied URL wins (it already points at /v1/models etc.).
+    // Otherwise fall back to shared host + construct the models endpoint.
+    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+    let (url, key) = if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
+            (u.to_string(), k.to_string())
+        } else {
+            match credits::read_shared(
+                &installed.pool,
+                installed.kind,
+                protocol.name(),
+                credits::SharedFlavor::Chat,
+            )
+            .await
+            {
+                Some(s) => (models_endpoint(&s.url, protocol), s.key),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "missing X-Upstream-Url/Key header (and no shared backend configured)",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "missing X-Upstream-Url/Key header",
+        )
+            .into_response();
+    };
 
     let mut req = state
         .http

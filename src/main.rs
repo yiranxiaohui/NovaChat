@@ -18,7 +18,7 @@ mod skills;
 use axum::{
     Json, Router,
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -952,6 +952,7 @@ fn build_router(state: AppState) -> Router {
 
     Router::new()
         .nest("/api", public.merge(protected))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
         .fallback(static_handler)
 }

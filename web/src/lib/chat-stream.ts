@@ -18,15 +18,6 @@ export type ChatStreamOptions = {
   maxTokens?: number
   signal?: AbortSignal
   onDelta: (delta: string) => void
-  // When set (OpenAI-protocol only), declares a `generate_image` function
-  // tool in the /v1/responses request. Invoked when the model emits a
-  // `function_call` for that function. Should return a markdown snippet
-  // (e.g. `![prompt](/api/images/xxx.png)`) to splice into the assistant
-  // message as if it were streamed text.
-  onImageToolCall?: (args: {
-    prompt: string
-    size?: string
-  }) => Promise<string>
 }
 
 type PreparedRequest = {
@@ -43,30 +34,6 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
   const input = o.messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role, content: m.content }))
-  const tools: unknown[] = []
-  if (o.webSearch) tools.push({ type: "web_search" })
-  if (o.onImageToolCall) {
-    tools.push({
-      type: "function",
-      name: "generate_image",
-      description:
-        "Generate an image from a text prompt. Call this when the user asks to draw, create, or edit an image.",
-      parameters: {
-        type: "object",
-        properties: {
-          prompt: {
-            type: "string",
-            description: "A detailed English prompt describing the image.",
-          },
-          size: {
-            type: "string",
-            description: "Image dimensions in WxH format, e.g. 1024x1024.",
-          },
-        },
-        required: ["prompt"],
-      },
-    })
-  }
   return {
     url: `${trimSlash(o.baseUrl)}/v1/responses`,
     body: {
@@ -75,7 +42,7 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
       stream: true,
       ...(system ? { instructions: system } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
-      ...(tools.length ? { tools } : {}),
+      ...(o.webSearch ? { tools: [{ type: "web_search" }] } : {}),
     },
     directHeaders: {
       Authorization: `Bearer ${o.apiKey}`,
@@ -250,12 +217,6 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   const decoder = new TextDecoder()
   let buffer = ""
 
-  // Pending function-call invocations collected during the stream. We run
-  // them after the stream ends so we don't stall the reader (some upstreams
-  // buffer the final [DONE] until the client drains all bytes).
-  type PendingCall = { name: string; args: string }
-  const pendingCalls: PendingCall[] = []
-
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
@@ -270,72 +231,12 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
         const data = line.slice(5).trim()
         if (!data || data === "[DONE]") continue
         try {
-          const json = JSON.parse(data) as Record<string, unknown>
-          if (
-            o.protocol === "openai" &&
-            json.type === "response.function_call_arguments.done"
-          ) {
-            // Some relays send the function name on the output_item.added
-            // event; others repeat it here. Resolve it from whichever
-            // field is present.
-            const name =
-              (json.name as string | undefined) ??
-              ((json.item as { name?: string } | undefined)?.name ?? "")
-            const args = (json.arguments as string | undefined) ?? ""
-            pendingCalls.push({ name, args })
-            continue
-          }
-          if (
-            o.protocol === "openai" &&
-            json.type === "response.output_item.done"
-          ) {
-            // Fallback: some streams only surface the full function_call on
-            // output_item.done, not on arguments.done.
-            const item = json.item as
-              | { type?: string; name?: string; arguments?: string }
-              | undefined
-            if (item?.type === "function_call" && item.name && item.arguments) {
-              pendingCalls.push({ name: item.name, args: item.arguments })
-            }
-            continue
-          }
+          const json = JSON.parse(data)
           const delta = extractDelta(o.protocol, json)
           if (delta) o.onDelta(delta)
         } catch {
           // tolerate keep-alive / non-json frames
         }
-      }
-    }
-  }
-
-  // Execute any collected function calls sequentially. Each returns a
-  // markdown snippet we splice in via onDelta so the UI renders it inline.
-  if (pendingCalls.length && o.onImageToolCall) {
-    const seen = new Set<string>()
-    for (const c of pendingCalls) {
-      if (c.name !== "generate_image") continue
-      // Dedupe — function_call_arguments.done and output_item.done often
-      // both fire for the same call.
-      const key = `${c.name}:${c.args}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      let parsed: { prompt?: string; size?: string } = {}
-      try {
-        parsed = JSON.parse(c.args) as { prompt?: string; size?: string }
-      } catch {
-        continue
-      }
-      if (!parsed.prompt) continue
-      try {
-        const md = await o.onImageToolCall({
-          prompt: parsed.prompt,
-          size: parsed.size,
-        })
-        if (md) o.onDelta(md)
-      } catch (e) {
-        o.onDelta(
-          `\n\n> 图像生成失败：${e instanceof Error ? e.message : String(e)}`
-        )
       }
     }
   }

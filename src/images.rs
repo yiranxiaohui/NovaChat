@@ -1075,36 +1075,25 @@ async fn start_openai_responses_job(
             return;
         }
 
-        // Use a client-implemented function tool instead of the hosted
-        // `image_generation` tool — third-party relays almost never implement
-        // the hosted variant, but they all support plain function calling +
-        // /v1/images/generations. When the model emits a `function_call` with
-        // name `generate_image`, we execute it ourselves below.
-        let tool = json!({
-            "type": "function",
-            "name": "generate_image",
-            "description": "Generate an image from a text prompt. Always call this when the user asks for an image to be drawn, created, or edited.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "A detailed English prompt describing the image to generate."
-                    },
-                    "size": {
-                        "type": "string",
-                        "description": "Image dimensions in WxH format, e.g. 1024x1024.",
-                    }
-                },
-                "required": ["prompt"]
+        // OpenAI's built-in `image_generation` hosted tool. Size/quality are
+        // accepted on gpt-image-1 per OpenAI docs; relay behavior varies.
+        let mut tool = serde_json::Map::new();
+        tool.insert("type".into(), json!("image_generation"));
+        if let Some(s) = size.as_deref() {
+            if !s.is_empty() && s != "auto" {
+                tool.insert("size".into(), json!(s));
             }
-        });
+        }
+        if let Some(q) = quality.as_deref() {
+            if !q.is_empty() && q != "auto" {
+                tool.insert("quality".into(), json!(q));
+            }
+        }
 
         let payload = json!({
             "model": model,
             "input": input,
             "tools": [ tool ],
-            "tool_choice": "auto",
         });
 
         let client = match net_guard::client_for_upstream_with_timeout(
@@ -1181,15 +1170,12 @@ async fn start_openai_responses_job(
 
         let mut out_images: Vec<GeneratedImage> = Vec::new();
         let mut text_out = String::new();
-        let mut fn_calls: Vec<(String, String)> = Vec::new();
 
         if let Some(items) = parsed.get("output").and_then(|v| v.as_array()) {
             for it in items {
                 let ty = it.get("type").and_then(|v| v.as_str()).unwrap_or_default();
                 match ty {
                     "image_generation_call" => {
-                        // Still honor the hosted tool if the relay happens
-                        // to implement it — harmless fallback.
                         let Some(b64) = extract_responses_image_b64(it) else {
                             continue;
                         };
@@ -1210,35 +1196,6 @@ async fn start_openai_responses_job(
                                 .map(String::from),
                         });
                     }
-                    "function_call" => {
-                        let fname = it.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        if fname != "generate_image" {
-                            continue;
-                        }
-                        let args_s = it
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("{}");
-                        let args: serde_json::Value =
-                            serde_json::from_str(args_s).unwrap_or(json!({}));
-                        let fp = args
-                            .get("prompt")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if fp.is_empty() {
-                            continue;
-                        }
-                        let fsize = args
-                            .get("size")
-                            .and_then(|v| v.as_str())
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty() && *s != "auto")
-                            .map(String::from)
-                            .or_else(|| size.clone().filter(|s| !s.is_empty() && s != "auto"))
-                            .unwrap_or_else(|| "1024x1024".into());
-                        fn_calls.push((fp, fsize));
-                    }
                     "message" => {
                         if let Some(t) = extract_responses_text(it) {
                             if !text_out.is_empty() {
@@ -1248,47 +1205,6 @@ async fn start_openai_responses_job(
                         }
                     }
                     _ => {}
-                }
-            }
-        }
-
-        // Execute any generate_image function calls by POSTing to the
-        // upstream's plain /v1/images/generations endpoint (derived from the
-        // Responses URL by swapping the path suffix).
-        if !fn_calls.is_empty() {
-            let img_url = url.replace("/v1/responses", "/v1/images/generations");
-            for (fp, fsize) in &fn_calls {
-                let mut body_obj = serde_json::Map::new();
-                body_obj.insert("model".into(), json!(model));
-                body_obj.insert("prompt".into(), json!(fp));
-                body_obj.insert("n".into(), json!(1));
-                body_obj.insert("size".into(), json!(fsize));
-                body_obj.insert("response_format".into(), json!("b64_json"));
-                if let Some(q) = quality.as_deref() {
-                    if !q.is_empty() && q != "auto" {
-                        body_obj.insert("quality".into(), json!(q));
-                    }
-                }
-                let bvec = serde_json::to_vec(&serde_json::Value::Object(body_obj))
-                    .unwrap_or_default();
-                match call_openai_json(
-                    &state_c,
-                    OpenAiJsonReq {
-                        url: img_url.clone(),
-                        key: key.clone(),
-                        used_shared,
-                        body: bvec,
-                    },
-                )
-                .await
-                {
-                    Ok(mut g) => out_images.append(&mut g.images),
-                    Err(e) => {
-                        if !text_out.is_empty() {
-                            text_out.push('\n');
-                        }
-                        text_out.push_str(&format!("图像生成失败：{}", e.0));
-                    }
                 }
             }
         }

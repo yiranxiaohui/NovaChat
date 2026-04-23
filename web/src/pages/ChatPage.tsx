@@ -282,105 +282,6 @@ function ActionIcon({
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8
 
-/// Build the `onImageToolCall` callback for streamChat. When the chat model
-/// emits a `generate_image` function call, we run the image through the
-/// user's configured image upstream (same settings used in image mode) and
-/// return a markdown `![prompt](/api/images/xxx.png)` snippet that the
-/// stream loop splices into the assistant message. While the image is being
-/// generated, we show a ticking "生成图像中…（已等 Ns）" placeholder on the
-/// assistant message — UI-only, never persisted.
-function buildImageToolCall(opts: {
-  settings: UpstreamSettings
-  signal?: AbortSignal
-  setMessages: React.Dispatch<React.SetStateAction<UiMessage[]>>
-}): ((args: { prompt: string; size?: string }) => Promise<string>) | undefined {
-  const s = opts.settings
-  // Same constraints as image mode: only OpenAI-protocol image upstreams
-  // support /v1/images/generations.
-  if (s.imageProtocol !== "openai") return undefined
-  const imgMeta = IMAGE_PROTOCOL_META[s.imageProtocol]
-  return async (args) => {
-    const size = normalizeSize(args.size)
-
-    // Snapshot whatever text the model has already streamed into the
-    // assistant bubble — we'll restore to it before appending the final
-    // image markdown, so the tick line doesn't linger.
-    let prefix = ""
-    opts.setMessages((prev) => {
-      const last = prev[prev.length - 1]
-      if (last?.role === "assistant") prefix = last.content
-      const sep = prefix ? "\n\n" : ""
-      const copy = prev.slice()
-      if (last?.role === "assistant") {
-        copy[copy.length - 1] = {
-          ...last,
-          content: `${prefix}${sep}🎨 生成图像中…（已等 0s）`,
-        }
-      }
-      return copy
-    })
-
-    const start = Date.now()
-    const timer = window.setInterval(() => {
-      const secs = Math.floor((Date.now() - start) / 1000)
-      opts.setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        if (last?.role !== "assistant") return prev
-        const sep = prefix ? "\n\n" : ""
-        const copy = prev.slice()
-        copy[copy.length - 1] = {
-          ...last,
-          content: `${prefix}${sep}🎨 生成图像中…（已等 ${secs}s）`,
-        }
-        return copy
-      })
-    }, 1000)
-
-    try {
-      const imgs = await generateImages({
-        protocol: s.imageProtocol,
-        baseUrl: s.imageBaseUrl || imgMeta.defaultBaseUrl,
-        apiKey: s.imageApiKey,
-        prompt: args.prompt,
-        model: s.imageModel || imgMeta.defaultModel,
-        size,
-        useProxy: s.imageUseProxy,
-        useShared: s.imageUseShared,
-        signal: opts.signal,
-      })
-      const md = imgs
-        .filter((i) => i.path)
-        .map(
-          (i) =>
-            `![${(i.revised_prompt || args.prompt).replace(/[\[\]]/g, "")}](${i.path})`
-        )
-        .join("\n\n")
-      // Restore the prefix so the stream layer can splice `md` via onDelta
-      // without doubling it up.
-      opts.setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        if (last?.role !== "assistant") return prev
-        const copy = prev.slice()
-        copy[copy.length - 1] = { ...last, content: prefix }
-        return copy
-      })
-      return prefix ? `\n\n${md}` : md
-    } finally {
-      window.clearInterval(timer)
-    }
-  }
-}
-
-function normalizeSize(
-  raw: string | undefined
-): "1024x1024" | "1024x1792" | "1792x1024" | "auto" {
-  if (!raw) return "1024x1024"
-  const s = raw.trim().toLowerCase()
-  if (s === "1024x1792" || s === "1792x1024") return s
-  if (s === "auto") return "auto"
-  return "1024x1024"
-}
-
 /// Models known to support the Responses API `image_generation` tool. When
 /// the user has picked one of these, we send the full conversation history
 /// so the model can edit prior outputs in place. Other (legacy) models fall
@@ -1304,11 +1205,6 @@ export default function ChatPage() {
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
-        onImageToolCall: buildImageToolCall({
-          settings,
-          signal: ctrl.signal,
-          setMessages,
-        }),
         onDelta: (delta) => {
           assistantContent += delta
           setMessages((prev) => {
@@ -1512,11 +1408,6 @@ export default function ChatPage() {
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
-        onImageToolCall: buildImageToolCall({
-          settings,
-          signal: ctrl.signal,
-          setMessages,
-        }),
         onDelta: (delta) => {
           assistantContent += delta
           setMessages((prev) => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   ArrowLeft,
+  ArrowLeftToLine,
   Check,
   Copy,
   Download,
@@ -632,25 +633,41 @@ export default function ImageStudioPage() {
 
       {/* Right: preview + history */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-border bg-background/70 px-6 py-3 backdrop-blur">
-          <div className="flex items-center gap-2">
-            <ImageIcon className="size-4 text-muted-foreground" />
-            <h1 className="text-base font-semibold">图像工作室</h1>
-            <span className="text-xs text-muted-foreground">
+        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="打开参数面板"
+            >
+              <Menu />
+            </Button>
+            <ImageIcon className="size-4 shrink-0 text-muted-foreground" />
+            <h1 className="truncate text-base font-semibold">图像工作室</h1>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
               单图生成 · 可发布到广场
             </span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setPlazaOpen(true)}
               title="图片广场"
             >
-              <Images className="size-3.5" /> 图片广场
+              <Images className="size-3.5" />
+              <span className="hidden sm:inline">图片广场</span>
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => void loadHistory()}>
-              <RefreshCw className="size-3.5" /> 刷新历史
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void loadHistory()}
+              title="刷新历史"
+            >
+              <RefreshCw className="size-3.5" />
+              <span className="hidden sm:inline">刷新历史</span>
             </Button>
           </div>
         </header>
@@ -670,7 +687,7 @@ export default function ImageStudioPage() {
             </div>
           )}
 
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6">
+          <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-3 py-4 md:px-6 md:py-6">
             {/* Main preview slot */}
             <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
               {submitting && (

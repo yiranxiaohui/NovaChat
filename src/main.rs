@@ -1006,7 +1006,7 @@ async fn main() {
     let state = AppState {
         installed: installed.clone(),
         http: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
+            .timeout(std::time::Duration::from_secs(600))
             .build()
             .expect("reqwest client"),
         image_http: reqwest::Client::builder()

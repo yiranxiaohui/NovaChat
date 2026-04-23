@@ -5,6 +5,7 @@ import {
   BookMarked,
   Check,
   Copy,
+  Download,
   Globe,
   ImageIcon,
   ImagePlus,
@@ -255,14 +256,28 @@ function ImagePreview({
         </button>
       </div>
 
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="关闭预览"
-        className="absolute right-4 top-4 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+      <div
+        className="absolute right-4 top-4 flex items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
       >
-        <X className="size-5" />
-      </button>
+        <a
+          href={src}
+          download={filenameFromPath(src) || "image"}
+          aria-label="下载图片"
+          title="下载图片"
+          className="inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+        >
+          <Download className="size-5" />
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="关闭预览"
+          className="inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+        >
+          <X className="size-5" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -367,37 +382,55 @@ function Bubble({
                 return (
                   <span className="group/img relative inline-block">
                     {imgEl}
-                    {onPublishImage && fname && (
-                      <button
-                        type="button"
-                        onClick={() => onPublishImage(fname, altText)}
-                        disabled={busy || published}
-                        title={
-                          published
-                            ? "已发布到广场"
-                            : busy
-                              ? "发布中…"
-                              : "发布到图片广场"
-                        }
-                        className={cn(
-                          "absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
-                          "opacity-0 transition-opacity group-hover/img:opacity-100",
-                          published && "cursor-default opacity-100",
-                          !published && !busy && "hover:bg-accent"
-                        )}
-                      >
-                        {published ? (
-                          <>
-                            <Check className="size-3 text-emerald-500" /> 已发布
-                          </>
-                        ) : (
-                          <>
-                            <Upload className="size-3" />{" "}
-                            {busy ? "发布中…" : "发布到广场"}
-                          </>
-                        )}
-                      </button>
-                    )}
+                    <div
+                      className={cn(
+                        "absolute bottom-2 right-2 z-10 flex items-center gap-1",
+                        "opacity-0 transition-opacity group-hover/img:opacity-100",
+                        published && "opacity-100"
+                      )}
+                    >
+                      {url && (
+                        <a
+                          href={url}
+                          download={fname || "image"}
+                          title="下载图片"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur hover:bg-accent"
+                        >
+                          <Download className="size-3" /> 下载
+                        </a>
+                      )}
+                      {onPublishImage && fname && (
+                        <button
+                          type="button"
+                          onClick={() => onPublishImage(fname, altText)}
+                          disabled={busy || published}
+                          title={
+                            published
+                              ? "已发布到广场"
+                              : busy
+                                ? "发布中…"
+                                : "发布到图片广场"
+                          }
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
+                            published && "cursor-default",
+                            !published && !busy && "hover:bg-accent"
+                          )}
+                        >
+                          {published ? (
+                            <>
+                              <Check className="size-3 text-emerald-500" /> 已发布
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="size-3" />{" "}
+                              {busy ? "发布中…" : "发布到广场"}
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </span>
                 )
               },

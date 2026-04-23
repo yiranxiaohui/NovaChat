@@ -42,6 +42,7 @@ import {
   type UpstreamSettings,
 } from "@/lib/settings"
 import { SettingsDialog } from "@/components/app/SettingsDialog"
+import { RechargeDialog } from "@/components/app/RechargeDialog"
 import { Sidebar } from "@/components/app/Sidebar"
 import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
@@ -326,6 +327,7 @@ export default function ChatPage() {
         }
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [rechargeOpen, setRechargeOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [plazaOpen, setPlazaOpen] = useState(false)
@@ -973,13 +975,16 @@ export default function ChatPage() {
           </div>
           <div className="flex items-center gap-1">
             {sharedStatus?.enabled && creditsMe && (
-              <span
-                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs tabular-nums"
-                title={`剩余积分 ${creditsMe.balance}｜对话 ${creditsMe.cost_chat} 分/次，生图 ${creditsMe.cost_image} 分/次（仅在未填自己 API Key 时消耗）`}
+              <button
+                type="button"
+                onClick={() => setRechargeOpen(true)}
+                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs tabular-nums transition-colors hover:border-primary/60 hover:bg-primary/10"
+                title={`剩余积分 ${creditsMe.balance}｜对话 ${creditsMe.cost_chat} 分/次，生图 ${creditsMe.cost_image} 分/次。点击充值。`}
               >
                 <span className="text-muted-foreground">积分</span>
                 <span className="font-medium">{creditsMe.balance}</span>
-              </span>
+                <span className="text-muted-foreground">+</span>
+              </button>
             )}
             <Button
               variant="ghost"
@@ -1306,6 +1311,12 @@ export default function ChatPage() {
             })
           }
         }}
+      />
+
+      <RechargeDialog
+        open={rechargeOpen}
+        onClose={() => setRechargeOpen(false)}
+        onPaid={() => void refreshCredits()}
       />
 
       <PromptLibrary

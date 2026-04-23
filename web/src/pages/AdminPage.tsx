@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BarChart3,
   Coins,
+  CreditCard,
   Database,
   Key,
   Mail,
@@ -34,11 +35,18 @@ import {
   type AdminSettingsUpdate,
   type AdminUserCredits,
 } from "@/lib/credits"
+import {
+  adminPaymentsApi,
+  type AdminOrder,
+  type AdminPaymentConfig,
+  type AdminPaymentConfigUpdate,
+} from "@/lib/payments"
 
 type Section =
   | "overview"
   | "users"
   | "credits"
+  | "payments"
   | "invites"
   | "shared"
   | "email"
@@ -48,6 +56,7 @@ const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?
   { key: "overview", label: "概览", icon: BarChart3 },
   { key: "users", label: "用户管理", icon: Users },
   { key: "credits", label: "积分", icon: Coins },
+  { key: "payments", label: "支付 / 充值", icon: CreditCard },
   { key: "invites", label: "邀请", icon: Ticket },
   { key: "shared", label: "共享后端", icon: Plug },
   { key: "email", label: "邮箱 / SMTP", icon: Mail },
@@ -141,6 +150,7 @@ export default function AdminPage() {
           {section === "overview" && <OverviewPanel />}
           {section === "users" && <UsersPanel currentUserId={currentUser.id} />}
           {section === "credits" && <CreditsPanel />}
+          {section === "payments" && <PaymentsPanel />}
           {section === "invites" && <InvitesPanel />}
           {section === "shared" && <SharedBackendPanel />}
           {section === "email" && <EmailPanel />}
@@ -1759,5 +1769,313 @@ function EmailPanel() {
         {testErr && <p className="mt-2 text-xs text-destructive">{testErr}</p>}
       </div>
     </div>
+  )
+}
+
+function PaymentsPanel() {
+  const [cfg, setCfg] = useState<AdminPaymentConfig | null>(null)
+  const [patch, setPatch] = useState<AdminPaymentConfigUpdate>({})
+  const [orders, setOrders] = useState<AdminOrder[]>([])
+  const [statusFilter, setStatusFilter] = useState<"" | "pending" | "paid" | "failed">("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+
+  async function loadAll() {
+    setLoading(true)
+    setError(null)
+    try {
+      const [c, o] = await Promise.all([
+        adminPaymentsApi.getConfig(),
+        adminPaymentsApi.listOrders(
+          statusFilter ? { status: statusFilter } : {}
+        ),
+      ])
+      setCfg(c)
+      setOrders(o)
+      setPatch({})
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void loadAll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter])
+
+  function set<K extends keyof AdminPaymentConfigUpdate>(
+    k: K,
+    v: AdminPaymentConfigUpdate[K]
+  ) {
+    setPatch((p) => ({ ...p, [k]: v }))
+  }
+
+  async function save() {
+    setSaveMsg(null)
+    setError(null)
+    setSaving(true)
+    try {
+      await adminPaymentsApi.updateConfig(patch)
+      setSaveMsg("已保存")
+      await loadAll()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading && !cfg) {
+    return <p className="text-sm text-muted-foreground">加载中…</p>
+  }
+  if (!cfg) {
+    return (
+      <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {error ?? "无法加载支付配置"}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        当前对接 <b>易支付</b>（epay）通用协议。用户在充值弹窗下单后会跳转到
+        <code>API URL</code> 完成支付，支付平台异步回调 <code>notify_url</code>，回调里的
+        <code>MD5</code> 签名用「商户密钥」校验，成功即按「1 元 = N 积分」比例入账。
+      </p>
+
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold">网关配置</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="flex items-center gap-2 sm:col-span-2">
+            <input
+              type="checkbox"
+              id="epay-on"
+              className="size-4 accent-primary"
+              defaultChecked={cfg.enabled}
+              onChange={(e) => set("enabled", e.target.checked)}
+            />
+            <Label htmlFor="epay-on" className="cursor-pointer">
+              启用充值入口（关闭时，前端不显示「充值」按钮，API 拒绝下单）
+            </Label>
+          </div>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label className="text-xs">
+              API URL <span className="text-muted-foreground">（如 https://pay.example.com/submit.php）</span>
+            </Label>
+            <Input
+              defaultValue={cfg.api_url}
+              onChange={(e) => set("api_url", e.target.value.trim())}
+              placeholder="https://pay.example.com/submit.php"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">商户 ID (pid)</Label>
+            <Input
+              defaultValue={cfg.pid}
+              onChange={(e) => set("pid", e.target.value.trim())}
+              placeholder="1000"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">
+              商户密钥{" "}
+              <span className="text-muted-foreground">
+                （当前 {cfg.key_set ? "已设置" : "未设置"}；留空不改，填
+                &ldquo;&ndash;&ldquo; 清除）
+              </span>
+            </Label>
+            <Input
+              type="password"
+              onChange={(e) =>
+                set("key", e.target.value === "-" ? "" : e.target.value)
+              }
+              placeholder={cfg.key_set ? "••••（已设置，留空不修改）" : ""}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label className="text-xs">
+              异步通知地址 notify_url{" "}
+              <span className="text-muted-foreground">
+                （必须是公网可达的绝对 URL，指向本站 /api/payments/epay/notify）
+              </span>
+            </Label>
+            <Input
+              defaultValue={cfg.notify_url}
+              onChange={(e) => set("notify_url", e.target.value.trim())}
+              placeholder="https://your-domain.com/api/payments/epay/notify"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label className="text-xs">
+              同步回跳地址 return_url{" "}
+              <span className="text-muted-foreground">
+                （用户支付后浏览器跳回此地址，指向本站
+                /api/payments/epay/return）
+              </span>
+            </Label>
+            <Input
+              defaultValue={cfg.return_url}
+              onChange={(e) => set("return_url", e.target.value.trim())}
+              placeholder="https://your-domain.com/api/payments/epay/return"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">1 元 = 多少积分</Label>
+            <Input
+              type="number"
+              min="1"
+              defaultValue={cfg.credits_per_yuan}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n) && n >= 1) set("credits_per_yuan", Math.trunc(n))
+              }}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">商品名称</Label>
+            <Input
+              defaultValue={cfg.product_name}
+              onChange={(e) => set("product_name", e.target.value)}
+              placeholder="NovaChat 积分充值"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">最小金额（元）</Label>
+            <Input
+              type="number"
+              min="1"
+              defaultValue={cfg.min_yuan}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n) && n >= 1) set("min_yuan", Math.trunc(n))
+              }}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">最大金额（元）</Label>
+            <Input
+              type="number"
+              min="1"
+              defaultValue={cfg.max_yuan}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (Number.isFinite(n) && n >= 1) set("max_yuan", Math.trunc(n))
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={() => void save()} disabled={saving}>
+            {saving ? "保存中…" : "保存配置"}
+          </Button>
+          <Button variant="outline" onClick={() => void loadAll()} disabled={saving}>
+            <RefreshCw /> 重载
+          </Button>
+          {saveMsg && (
+            <span className="text-xs text-emerald-600 dark:text-emerald-400">
+              {saveMsg}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">充值订单</h2>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              value={statusFilter}
+              onChange={(e) =>
+                setStatusFilter(e.target.value as typeof statusFilter)
+              }
+            >
+              <option value="">全部状态</option>
+              <option value="pending">待支付</option>
+              <option value="paid">已支付</option>
+              <option value="failed">已关闭</option>
+            </select>
+            <Button variant="outline" size="sm" onClick={() => void loadAll()}>
+              <RefreshCw /> 刷新
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-border">
+          <table className="w-full text-xs">
+            <thead className="bg-muted/40 text-[10px] uppercase text-muted-foreground">
+              <tr>
+                <th className="px-2 py-2 text-left font-medium">订单号</th>
+                <th className="px-2 py-2 text-left font-medium">用户</th>
+                <th className="px-2 py-2 text-left font-medium">方式</th>
+                <th className="px-2 py-2 text-right font-medium">金额</th>
+                <th className="px-2 py-2 text-right font-medium">积分</th>
+                <th className="px-2 py-2 text-left font-medium">状态</th>
+                <th className="px-2 py-2 text-left font-medium">创建</th>
+                <th className="px-2 py-2 text-left font-medium">支付时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-2 py-6 text-center text-muted-foreground">
+                    暂无订单
+                  </td>
+                </tr>
+              )}
+              {orders.map((o) => (
+                <tr key={o.id} className="border-t border-border">
+                  <td className="px-2 py-1.5 font-mono text-[11px]">
+                    {o.out_trade_no}
+                  </td>
+                  <td className="px-2 py-1.5">{o.username}</td>
+                  <td className="px-2 py-1.5">{o.payway}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    ¥{(o.amount_cents / 100).toFixed(2)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    +{o.credits}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <OrderStatus status={o.status} />
+                  </td>
+                  <td className="px-2 py-1.5 text-muted-foreground">
+                    {o.created_at}
+                  </td>
+                  <td className="px-2 py-1.5 text-muted-foreground">
+                    {o.paid_at ?? "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OrderStatus({ status }: { status: "pending" | "paid" | "failed" }) {
+  const map = {
+    pending: { label: "待支付", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+    paid: { label: "已支付", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+    failed: { label: "已关闭", cls: "bg-destructive/10 text-destructive" },
+  } as const
+  const m = map[status]
+  return (
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] ${m.cls}`}>
+      {m.label}
+    </span>
   )
 }

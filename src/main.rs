@@ -8,6 +8,7 @@ mod image_plaza;
 mod images;
 mod invites;
 mod net_guard;
+mod payments;
 mod profile;
 mod prompts;
 mod settings;
@@ -933,6 +934,8 @@ fn build_router(state: AppState) -> Router {
         .merge(admin::routes())
         .merge(credits::user_routes())
         .merge(credits::admin_routes())
+        .merge(payments::user_routes())
+        .merge(payments::admin_routes())
         .merge(invites::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -944,6 +947,7 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .merge(email::public_routes())
+        .merge(payments::public_routes())
         .merge(setup::routes());
 
     Router::new()

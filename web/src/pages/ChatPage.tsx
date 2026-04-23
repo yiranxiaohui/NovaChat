@@ -282,6 +282,53 @@ function ActionIcon({
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8
 
+/// Build the `onImageToolCall` callback for streamChat. When the chat model
+/// emits a `generate_image` function call, we run the image through the
+/// user's configured image upstream (same settings used in image mode) and
+/// return a markdown `![prompt](/api/images/xxx.png)` snippet that the
+/// stream loop splices into the assistant message.
+function buildImageToolCall(opts: {
+  settings: UpstreamSettings
+  signal?: AbortSignal
+}): ((args: { prompt: string; size?: string }) => Promise<string>) | undefined {
+  const s = opts.settings
+  // Same constraints as image mode: only OpenAI-protocol image upstreams
+  // support /v1/images/generations.
+  if (s.imageProtocol !== "openai") return undefined
+  const imgMeta = IMAGE_PROTOCOL_META[s.imageProtocol]
+  return async (args) => {
+    const size = normalizeSize(args.size)
+    const imgs = await generateImages({
+      protocol: s.imageProtocol,
+      baseUrl: s.imageBaseUrl || imgMeta.defaultBaseUrl,
+      apiKey: s.imageApiKey,
+      prompt: args.prompt,
+      model: s.imageModel || imgMeta.defaultModel,
+      size,
+      useProxy: s.imageUseProxy,
+      useShared: s.imageUseShared,
+      signal: opts.signal,
+    })
+    return imgs
+      .filter((i) => i.path)
+      .map(
+        (i) =>
+          `![${(i.revised_prompt || args.prompt).replace(/[\[\]]/g, "")}](${i.path})`
+      )
+      .join("\n\n")
+  }
+}
+
+function normalizeSize(
+  raw: string | undefined
+): "1024x1024" | "1024x1792" | "1792x1024" | "auto" {
+  if (!raw) return "1024x1024"
+  const s = raw.trim().toLowerCase()
+  if (s === "1024x1792" || s === "1792x1024") return s
+  if (s === "auto") return "auto"
+  return "1024x1024"
+}
+
 /// Models known to support the Responses API `image_generation` tool. When
 /// the user has picked one of these, we send the full conversation history
 /// so the model can edit prior outputs in place. Other (legacy) models fall
@@ -1205,6 +1252,10 @@ export default function ChatPage() {
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
+        onImageToolCall: buildImageToolCall({
+          settings,
+          signal: ctrl.signal,
+        }),
         onDelta: (delta) => {
           assistantContent += delta
           setMessages((prev) => {
@@ -1408,6 +1459,10 @@ export default function ChatPage() {
         webSearch: settings.webSearch,
         messages: toModel,
         signal: ctrl.signal,
+        onImageToolCall: buildImageToolCall({
+          settings,
+          signal: ctrl.signal,
+        }),
         onDelta: (delta) => {
           assistantContent += delta
           setMessages((prev) => {

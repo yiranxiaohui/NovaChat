@@ -1,32 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { Link } from "react-router-dom"
 import {
   ArrowLeft,
-  ArrowUp,
-  Image as ImageIcon,
+  Check,
+  Download,
+  ImageIcon,
   ImagePlus,
   Loader2,
-  Pencil,
-  Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
-  User,
+  Upload,
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
-import { loadEffectiveSettings } from "@/lib/settings"
-import {
-  studioApi,
-  type StudioConversation,
-  type StudioMessage,
-} from "@/lib/studio"
+import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
+import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { creditsApi, type SharedStatus } from "@/lib/credits"
+import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
 
-type TurnState = "idle" | "running"
+const SIZE_OPTIONS = [
+  { value: "auto", label: "自动" },
+  { value: "1024x1024", label: "1024×1024（正方）" },
+  { value: "1024x1792", label: "1024×1792（竖版）" },
+  { value: "1792x1024", label: "1792×1024（横版）" },
+]
+const QUALITY_OPTIONS = [
+  { value: "auto", label: "自动" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "standard", label: "Standard（DALL·E）" },
+  { value: "hd", label: "HD（DALL·E）" },
+]
+const STYLE_OPTIONS = [
+  { value: "", label: "默认" },
+  { value: "vivid", label: "Vivid（鲜艳）" },
+  { value: "natural", label: "Natural（自然）" },
+]
+const MODEL_SUGGESTIONS = ["gpt-image-1", "gpt-image-1-mini", "dall-e-3"]
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -40,71 +57,39 @@ function fileToDataUrl(file: File): Promise<string> {
 export default function ImageStudioPage() {
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
-  const nav = useNavigate()
-  const { id: paramId } = useParams()
-  const convId = paramId ? Number(paramId) : null
 
-  const [convs, setConvs] = useState<StudioConversation[]>([])
-  const [messages, setMessages] = useState<StudioMessage[]>([])
-  const [loadingConvs, setLoadingConvs] = useState(true)
-  const [loadingMsgs, setLoadingMsgs] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [turnState, setTurnState] = useState<TurnState>("idle")
-  const [turnElapsed, setTurnElapsed] = useState(0)
-  const [input, setInput] = useState("")
+  const [prompt, setPrompt] = useState("")
+  const [model, setModel] = useState<string>("gpt-image-1")
+  const [size, setSize] = useState<string>("1024x1024")
+  const [quality, setQuality] = useState<string>("auto")
+  const [style, setStyle] = useState<string>("")
   const [attached, setAttached] = useState<File | null>(null)
   const [attachedUrl, setAttachedUrl] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
   const [shared, setShared] = useState<SharedStatus | null>(null)
   const [useShared, setUseShared] = useState(true)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+
+  const [submitting, setSubmitting] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const [current, setCurrent] = useState<StudioGeneration | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const [history, setHistory] = useState<StudioGeneration[]>([])
+  const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(
+    new Set()
+  )
+  const [publishingFilename, setPublishingFilename] = useState<string | null>(
+    null
+  )
   const tickRef = useRef<number | null>(null)
 
-  // Load shared status once.
   useEffect(() => {
     creditsApi
       .sharedStatus()
       .then(setShared)
       .catch(() => setShared(null))
   }, [])
-
-  // Load conversation list.
-  async function loadConvs() {
-    setLoadingConvs(true)
-    try {
-      setConvs(await studioApi.list())
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoadingConvs(false)
-    }
-  }
-  useEffect(() => {
-    void loadConvs()
-  }, [])
-
-  // Load messages for current conv.
-  async function loadMessages(id: number) {
-    setLoadingMsgs(true)
-    try {
-      setMessages(await studioApi.messages(id))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoadingMsgs(false)
-    }
-  }
-  useEffect(() => {
-    if (convId == null) {
-      setMessages([])
-      return
-    }
-    void loadMessages(convId)
-  }, [convId])
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [messages, turnState])
 
   useEffect(() => {
     if (!attached) {
@@ -116,62 +101,40 @@ export default function ImageStudioPage() {
     return () => URL.revokeObjectURL(u)
   }, [attached])
 
-  async function createNew() {
+  async function loadHistory() {
     try {
-      const c = await studioApi.create({})
-      await loadConvs()
-      nav(`/studio/${c.id}`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setHistory(await studioApi.list(1))
+    } catch {
+      /* non-fatal */
     }
   }
+  useEffect(() => {
+    void loadHistory()
+    plazaApi
+      .listMine()
+      .then((rows) => {
+        setPublishedFilenames(new Set(rows.map((r) => r.filename)))
+      })
+      .catch(() => {
+        /* non-fatal */
+      })
+  }, [])
 
-  async function removeConv(c: StudioConversation) {
-    if (!window.confirm(`删除「${c.title}」及其所有消息？`)) return
-    try {
-      await studioApi.remove(c.id)
-      await loadConvs()
-      if (convId === c.id) nav("/studio")
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const sharedAvailable = !!shared?.image_openai_available && !!shared?.enabled
 
-  async function rename(c: StudioConversation) {
-    const next = window.prompt("重命名工作台", c.title)
-    if (next == null) return
-    const title = next.trim()
-    if (!title || title === c.title) return
-    try {
-      await studioApi.update(c.id, { title })
-      await loadConvs()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  async function submit() {
+  async function generate() {
     if (!user) return
-    if (turnState === "running") return
-
-    let cid = convId
-    if (cid == null) {
-      try {
-        const c = await studioApi.create({})
-        await loadConvs()
-        cid = c.id
-        nav(`/studio/${c.id}`, { replace: true })
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-        return
-      }
+    const p = prompt.trim()
+    if (!p) {
+      setError("请填写 prompt")
+      return
     }
-    if (cid == null) return
-
-    const text = input.trim()
-    if (!text && !attached) return
+    setError(null)
+    setSubmitting(true)
+    setCurrent(null)
 
     const effective = await loadEffectiveSettings(user.id)
+    const imgMeta = IMAGE_PROTOCOL_META.openai
 
     let imageDataUrl: string | undefined
     if (attached) {
@@ -179,254 +142,212 @@ export default function ImageStudioPage() {
         imageDataUrl = await fileToDataUrl(attached)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
+        setSubmitting(false)
         return
       }
     }
 
-    setInput("")
-    setAttached(null)
-    setError(null)
-    setTurnState("running")
-
-    // Optimistic user message.
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: -1,
-        role: "user",
-        text: text || null,
-        images: imageDataUrl
-          ? [{ path: imageDataUrl }]  // inline preview; real path comes from refetch
-          : [],
-        created_at: new Date().toISOString(),
-      },
-    ])
-
     const startedAt = Date.now()
-    setTurnElapsed(0)
+    setElapsed(0)
     if (tickRef.current) window.clearInterval(tickRef.current)
     tickRef.current = window.setInterval(() => {
-      setTurnElapsed(Math.floor((Date.now() - startedAt) / 1000))
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000))
     }, 1000)
 
     try {
-      const { token } = await studioApi.submitTurn(cid, {
-        text,
+      const { token } = await studioApi.submit({
+        prompt: p,
+        model,
+        size: size === "auto" ? undefined : size,
+        quality: quality === "auto" ? undefined : quality,
+        style: style || undefined,
         imageDataUrl,
-        useShared,
-        upstreamUrl: useShared ? undefined : effective.baseUrl,
-        upstreamKey: useShared ? undefined : effective.apiKey,
+        useShared: useShared && sharedAvailable,
+        upstreamUrl: !useShared || !sharedAvailable
+          ? effective.imageBaseUrl || imgMeta.defaultBaseUrl
+          : undefined,
+        upstreamKey: !useShared || !sharedAvailable ? effective.imageApiKey : undefined,
       })
-      const j = await studioApi.waitForJob(token)
-      if (j.status === "failed") {
-        setError(j.error || "生成失败")
+      const final = await studioApi.waitForJob(token)
+      setCurrent(final)
+      if (final.status === "failed") {
+        setError(final.error || "生成失败")
       }
+      await loadHistory()
     } catch (e) {
-      if ((e as { name?: string })?.name !== "AbortError") {
-        setError(e instanceof Error ? e.message : String(e))
-      }
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       if (tickRef.current) {
         window.clearInterval(tickRef.current)
         tickRef.current = null
       }
-      setTurnState("idle")
-      await loadMessages(cid)
-      await loadConvs()
+      setSubmitting(false)
     }
   }
 
-  const canSubmit = useMemo(() => {
-    const hasText = input.trim().length > 0
-    return (hasText || !!attached) && turnState === "idle"
-  }, [input, attached, turnState])
+  async function publishToPlaza(g: StudioGeneration) {
+    if (!g.image_path) return
+    const fname = filenameFromPath(g.image_path)
+    if (!fname) return
+    if (publishedFilenames.has(fname) || publishingFilename === fname) return
+    setPublishingFilename(fname)
+    setError(null)
+    try {
+      await plazaApi.publish({
+        filename: fname,
+        prompt: g.prompt,
+        revised_prompt: g.revised_prompt,
+      })
+      setPublishedFilenames((s) => new Set(s).add(fname))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/already published|CONFLICT/i.test(msg)) {
+        setPublishedFilenames((s) => new Set(s).add(fname))
+      } else {
+        setError(`发布失败：${msg}`)
+      }
+    } finally {
+      setPublishingFilename(null)
+    }
+  }
 
-  const sharedAvailable = !!shared?.openai_available && !!shared?.enabled
+  async function removeHistory(g: StudioGeneration) {
+    if (!window.confirm("删除这条历史？")) return
+    try {
+      await studioApi.remove(g.id)
+      await loadHistory()
+      if (current && current.id === g.id) setCurrent(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const effectivePreview = useMemo(() => {
+    if (submitting) return null
+    return current
+  }, [current, submitting])
+
+  const canPublish = (g: StudioGeneration) =>
+    !!g.image_path && !!filenameFromPath(g.image_path)
 
   return (
     <div className="flex h-svh bg-background text-foreground">
-      <aside className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      {/* Left: parameter panel */}
+      <aside className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <BrandMark />
         </div>
-
-        <div className="flex flex-col gap-2 px-3 pb-2">
+        <div className="flex flex-col gap-1 px-3 pb-2">
           <Link
             to="/"
             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           >
             <ArrowLeft className="size-3.5" /> 返回对话
           </Link>
-          <Button onClick={() => void createNew()} className="w-full justify-start gap-2" size="sm">
-            <Plus className="size-4" /> 新建工作台
-          </Button>
         </div>
 
-        <div className="nc-scroll flex-1 overflow-y-auto px-2 pb-2">
-          {loadingConvs && (
-            <p className="px-2 py-1 text-xs text-muted-foreground">加载中…</p>
-          )}
-          {!loadingConvs && convs.length === 0 && (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-              还没有工作台
-            </p>
-          )}
-          <ul className="flex flex-col gap-0.5">
-            {convs.map((c) => {
-              const active = convId === c.id
-              return (
-                <li key={c.id} className="group relative">
-                  <div
-                    className={
-                      "flex items-center rounded-lg transition-colors " +
-                      (active
-                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                        : "hover:bg-sidebar-accent/50")
-                    }
-                  >
-                    <Link
-                      to={`/studio/${c.id}`}
-                      className="min-w-0 flex-1 px-3 py-2"
-                      title={c.title}
-                    >
-                      <div className="truncate text-sm font-medium">
-                        {c.title}
-                      </div>
-                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                        {c.model || "默认模型"}
-                      </div>
-                    </Link>
-                    <button
-                      type="button"
-                      className="mr-1 hidden rounded p-1 text-muted-foreground hover:bg-background/60 hover:text-foreground group-hover:block"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        void rename(c)
-                      }}
-                      aria-label="重命名"
-                      title="重命名"
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      className="mr-1 hidden rounded p-1 text-destructive hover:bg-destructive/10 group-hover:block"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        void removeConv(c)
-                      }}
-                      aria-label="删除"
-                      title="删除"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
-        </div>
+        <div className="nc-scroll flex-1 overflow-y-auto px-4 pb-4">
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+            <Sparkles className="size-4 text-primary" /> 生成参数
+          </h2>
 
-        <div className="border-t border-sidebar-border px-3 py-2 text-[11px] text-muted-foreground">
-          多轮生图（OpenAI Responses API，工具 image_generation）
-        </div>
-      </aside>
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-border bg-background/70 px-6 py-3 backdrop-blur">
-          <div className="flex items-center gap-2">
-            <ImageIcon className="size-4 text-muted-foreground" />
-            <h1 className="text-base font-semibold">图像工作室</h1>
-            {convId && (
-              <span className="text-xs text-muted-foreground">
-                · #{convId}
+          <div className="mb-3 flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs">
+            <input
+              type="checkbox"
+              id="use-shared"
+              className="size-3.5 accent-primary"
+              checked={useShared}
+              onChange={(e) => setUseShared(e.target.checked)}
+              disabled={!sharedAvailable}
+            />
+            <label htmlFor="use-shared" className="cursor-pointer flex-1">
+              使用共享后端
+              {!sharedAvailable && (
+                <span className="ml-1 text-muted-foreground">（未启用）</span>
+              )}
+            </label>
+            {useShared && sharedAvailable && (
+              <span className="tabular-nums text-muted-foreground">
+                {shared?.balance ?? 0} 分
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-2 py-1 text-xs">
-              <input
-                type="checkbox"
-                className="size-3.5 accent-primary"
-                checked={useShared}
-                onChange={(e) => setUseShared(e.target.checked)}
-                disabled={!sharedAvailable}
-              />
-              使用共享后端
-              {!sharedAvailable && (
-                <span className="text-muted-foreground">（未启用）</span>
-              )}
-            </label>
-          </div>
-        </header>
 
-        <main className="nc-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
-          {error && (
-            <div className="mx-auto my-3 w-full max-w-3xl rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-              <button
-                type="button"
-                onClick={() => setError(null)}
-                className="float-right"
-                aria-label="关闭"
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          )}
-
-          {convId == null && (
-            <div className="m-auto flex max-w-md flex-col items-center gap-3 text-center text-sm text-muted-foreground">
-              <div className="grid size-12 place-items-center rounded-full bg-primary/10">
-                <Sparkles className="size-5 text-primary" />
-              </div>
-              <p className="text-base font-semibold text-foreground">
-                多轮图像生成
-              </p>
-              <p>
-                用对话的方式生图：说"画一只戴帽子的猫"后，下一轮直接说"把帽子改成红色"——模型能看到前面生成的图，自动在上面改。
-              </p>
-              <Button onClick={() => void createNew()}>
-                <Plus className="size-4" /> 新建工作台开始
-              </Button>
-            </div>
-          )}
-
-          {convId != null && (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-4">
-              {loadingMsgs && messages.length === 0 && (
-                <p className="text-center text-sm text-muted-foreground">加载中…</p>
-              )}
-              {!loadingMsgs && messages.length === 0 && (
-                <p className="text-center text-sm text-muted-foreground">
-                  输入提示词开始生成。可在左下角附上一张图进行编辑。
-                </p>
-              )}
-              {messages.map((m) => (
-                <MessageRow key={m.id === -1 ? `tmp-${m.created_at}` : m.id} message={m} />
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">模型</Label>
+            <Input
+              list="studio-models"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="gpt-image-1"
+            />
+            <datalist id="studio-models">
+              {MODEL_SUGGESTIONS.map((m) => (
+                <option key={m} value={m} />
               ))}
-              {turnState === "running" && (
-                <div className="flex items-center gap-2 pl-9 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" /> 生成中…（已等
-                  {turnElapsed}s）
-                </div>
-              )}
-              <div ref={bottomRef} />
-            </div>
-          )}
-        </main>
+            </datalist>
+          </div>
 
-        <div className="border-t border-border bg-background/60 px-6 py-3">
-          <div className="mx-auto w-full max-w-3xl">
-            {attachedUrl && (
-              <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-card p-2 text-xs">
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">尺寸</Label>
+            <select
+              value={size}
+              onChange={(e) => setSize(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {SIZE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">质量</Label>
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {QUALITY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">
+              风格 <span className="text-muted-foreground">(仅 DALL·E 3)</span>
+            </Label>
+            <select
+              value={style}
+              onChange={(e) => setStyle(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {STYLE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">
+              底图 <span className="text-muted-foreground">(可选，作为 edit 输入)</span>
+            </Label>
+            {attachedUrl ? (
+              <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2 text-xs">
                 <img
                   src={attachedUrl}
-                  alt="附加图"
-                  className="size-12 rounded object-cover"
+                  alt=""
+                  className="size-14 rounded object-cover"
                 />
                 <span className="flex-1 truncate text-muted-foreground">
-                  已附加图片 — 本轮作为编辑输入
+                  已上传
                 </span>
                 <Button
                   size="sm"
@@ -437,115 +358,333 @@ export default function ImageStudioPage() {
                   <X className="size-3.5" />
                 </Button>
               </div>
-            )}
-            <div className="flex items-end gap-2">
-              <Input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) setAttached(f)
-                  e.target.value = ""
-                }}
-              />
+            ) : (
               <Button
                 type="button"
                 variant="outline"
-                size="icon"
+                size="sm"
                 onClick={() => fileRef.current?.click()}
-                disabled={turnState === "running"}
-                title="附加图片"
+                className="w-full justify-start gap-2"
               >
-                <ImagePlus className="size-4" />
+                <ImagePlus className="size-4" /> 上传底图
               </Button>
-              <Textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault()
-                    if (canSubmit) void submit()
-                  }
-                }}
-                rows={1}
-                placeholder="描述你想要的图片，或对上一张图的修改…"
-                className="min-h-[44px] resize-none"
-              />
-              <Button
-                onClick={() => void submit()}
-                disabled={!canSubmit}
-                size="icon"
-                title="发送"
-              >
-                <ArrowUp className="size-4" />
-              </Button>
-            </div>
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              Enter 发送 · Shift + Enter 换行 · 多轮上下文自动保留
-            </p>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) setAttached(f)
+                e.target.value = ""
+              }}
+            />
           </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">Prompt</Label>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={5}
+              placeholder="一只戴着红色礼帽的猫，坐在雪地里，黄昏，电影感…"
+              className="text-sm"
+            />
+          </div>
+
+          <Button
+            onClick={() => void generate()}
+            disabled={submitting || !prompt.trim()}
+            className="w-full"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="size-4 animate-spin" /> 生成中…（{elapsed}s）
+              </>
+            ) : (
+              <>
+                <Sparkles className="size-4" /> 生成图片
+              </>
+            )}
+          </Button>
         </div>
+      </aside>
+
+      {/* Right: preview + history */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between border-b border-border bg-background/70 px-6 py-3 backdrop-blur">
+          <div className="flex items-center gap-2">
+            <ImageIcon className="size-4 text-muted-foreground" />
+            <h1 className="text-base font-semibold">图像工作室</h1>
+            <span className="text-xs text-muted-foreground">
+              单图生成 · 可发布到广场
+            </span>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => void loadHistory()}>
+            <RefreshCw className="size-3.5" /> 刷新历史
+          </Button>
+        </header>
+
+        <main className="nc-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {error && (
+            <div className="mx-auto my-3 w-full max-w-3xl rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="float-right"
+                aria-label="关闭"
+              >
+                <X className="size-3.5" />
+              </button>
+              {error}
+            </div>
+          )}
+
+          <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6">
+            {/* Main preview slot */}
+            <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+              {submitting && (
+                <div className="flex h-80 flex-col items-center justify-center gap-3 text-muted-foreground">
+                  <Loader2 className="size-8 animate-spin" />
+                  <p className="text-sm">生成中…（已等 {elapsed}s）</p>
+                  <p className="text-xs">
+                    浏览器关掉再打开也不影响，结果会保留在历史里
+                  </p>
+                </div>
+              )}
+
+              {!submitting && !effectivePreview && (
+                <div className="flex h-80 flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <Sparkles className="size-8" />
+                  <p className="text-sm">在左侧填写参数后点「生成图片」</p>
+                </div>
+              )}
+
+              {!submitting && effectivePreview && (
+                <PreviewCard
+                  gen={effectivePreview}
+                  published={
+                    effectivePreview.image_path
+                      ? publishedFilenames.has(
+                          filenameFromPath(effectivePreview.image_path) ?? ""
+                        )
+                      : false
+                  }
+                  publishing={
+                    effectivePreview.image_path
+                      ? publishingFilename ===
+                        filenameFromPath(effectivePreview.image_path)
+                      : false
+                  }
+                  onPublish={() => void publishToPlaza(effectivePreview)}
+                  canPublish={canPublish(effectivePreview)}
+                />
+              )}
+            </div>
+
+            {/* History grid */}
+            <div>
+              <h2 className="mb-3 text-sm font-semibold">最近生成</h2>
+              {history.length === 0 ? (
+                <p className="text-xs text-muted-foreground">暂无历史</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                  {history.map((g) => {
+                    const fname = g.image_path ? filenameFromPath(g.image_path) : null
+                    const published = fname ? publishedFilenames.has(fname) : false
+                    return (
+                      <HistoryCard
+                        key={g.id}
+                        gen={g}
+                        published={published}
+                        publishing={fname ? publishingFilename === fname : false}
+                        onSelect={() => setCurrent(g)}
+                        onPublish={() => void publishToPlaza(g)}
+                        onRemove={() => void removeHistory(g)}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
       </div>
     </div>
   )
 }
 
-function MessageRow({ message }: { message: StudioMessage }) {
-  const isUser = message.role === "user"
-  if (isUser) {
+function PreviewCard({
+  gen,
+  published,
+  publishing,
+  canPublish,
+  onPublish,
+}: {
+  gen: StudioGeneration
+  published: boolean
+  publishing: boolean
+  canPublish: boolean
+  onPublish: () => void
+}) {
+  const fname = gen.image_path ? filenameFromPath(gen.image_path) : null
+  if (gen.status === "failed") {
     return (
-      <div className="flex flex-col items-end gap-1.5">
-        <div className="flex max-w-[80%] items-end gap-2">
-          <div className="flex flex-col gap-1.5 rounded-2xl rounded-tr-md bg-primary px-4 py-2 text-sm text-primary-foreground shadow-sm">
-            {message.text && (
-              <p className="whitespace-pre-wrap">{message.text}</p>
-            )}
-            {message.images.map((img, i) => (
-              <img
-                key={i}
-                src={img.path}
-                alt=""
-                className="max-h-60 w-auto rounded-md"
-              />
-            ))}
-          </div>
-          <div className="grid size-7 shrink-0 place-items-center rounded-full border border-border bg-card text-muted-foreground">
-            <User className="size-3.5" />
-          </div>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-3 py-10 text-destructive">
+        <X className="size-8" />
+        <p className="text-sm">生成失败</p>
+        <p className="max-w-lg text-xs text-muted-foreground">
+          {gen.error || "未知错误"}
+        </p>
       </div>
     )
   }
+  if (!gen.image_path) return null
   return (
-    <div className="flex items-start gap-2.5">
-      <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-primary-foreground shadow-sm">
-        <Sparkles className="size-3.5" />
-      </div>
-      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-border/70 bg-card px-4 py-2.5 shadow-sm">
-        {message.text && (
-          <p className="mb-2 whitespace-pre-wrap text-sm leading-relaxed">
-            {message.text}
+    <div className="flex flex-col items-center gap-4">
+      <img
+        src={gen.image_path}
+        alt={gen.prompt}
+        className="max-h-[70vh] w-auto rounded-lg border border-border shadow-sm"
+      />
+      <div className="flex w-full max-w-lg flex-col gap-2 text-xs">
+        <div className="flex flex-wrap gap-1.5 text-muted-foreground">
+          {gen.model && (
+            <span className="rounded bg-muted px-1.5 py-0.5">{gen.model}</span>
+          )}
+          {gen.size && (
+            <span className="rounded bg-muted px-1.5 py-0.5">{gen.size}</span>
+          )}
+          {gen.quality && (
+            <span className="rounded bg-muted px-1.5 py-0.5">
+              质量 {gen.quality}
+            </span>
+          )}
+          {gen.style && (
+            <span className="rounded bg-muted px-1.5 py-0.5">{gen.style}</span>
+          )}
+        </div>
+        <p className="text-sm">
+          <b>Prompt：</b> {gen.prompt}
+        </p>
+        {gen.revised_prompt && gen.revised_prompt !== gen.prompt && (
+          <p className="text-muted-foreground">
+            <b>Revised：</b> {gen.revised_prompt}
           </p>
         )}
-        <div className="flex flex-wrap gap-2">
-          {message.images.map((img, i) => (
+      </div>
+      <div className="flex gap-2">
+        <Button asChild variant="outline" size="sm">
+          <a href={gen.image_path} download={fname || "image"}>
+            <Download className="size-4" /> 下载
+          </a>
+        </Button>
+        <Button
+          variant={published ? "secondary" : "default"}
+          size="sm"
+          disabled={!canPublish || published || publishing}
+          onClick={onPublish}
+        >
+          {published ? (
+            <>
+              <Check className="size-4 text-emerald-500" /> 已发布到广场
+            </>
+          ) : (
+            <>
+              <Upload className="size-4" />{" "}
+              {publishing ? "发布中…" : "发布到图片广场"}
+            </>
+          )}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function HistoryCard({
+  gen,
+  published,
+  publishing,
+  onSelect,
+  onPublish,
+  onRemove,
+}: {
+  gen: StudioGeneration
+  published: boolean
+  publishing: boolean
+  onSelect: () => void
+  onPublish: () => void
+  onRemove: () => void
+}) {
+  return (
+    <div className="group relative overflow-hidden rounded-lg border border-border bg-card">
+      {gen.image_path ? (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="block aspect-square w-full"
+          title={gen.prompt}
+        >
+          <img
+            src={gen.image_path}
+            alt={gen.prompt}
+            className="size-full object-cover transition-transform group-hover:scale-105"
+          />
+        </button>
+      ) : (
+        <div className="grid aspect-square w-full place-items-center bg-muted text-xs text-muted-foreground">
+          {gen.status === "failed" ? (
+            <span className="text-destructive">失败</span>
+          ) : (
+            <Loader2 className="size-5 animate-spin" />
+          )}
+        </div>
+      )}
+
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 bg-gradient-to-t from-black/80 to-transparent p-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
+        <p className="line-clamp-2">{gen.prompt}</p>
+        <div className="flex items-center gap-1">
+          {gen.image_path && (
             <a
-              key={i}
-              href={img.path}
-              target="_blank"
-              rel="noreferrer"
-              className="block"
-              title={img.revised_prompt ?? undefined}
+              href={gen.image_path}
+              download={filenameFromPath(gen.image_path) || "image"}
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[11px] hover:bg-white/20"
+              title="下载"
             >
-              <img
-                src={img.path}
-                alt=""
-                className="max-h-96 w-auto rounded-lg border border-border"
-              />
+              <Download className="size-3" />
             </a>
-          ))}
+          )}
+          {gen.image_path && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onPublish()
+              }}
+              disabled={published || publishing}
+              className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[11px] hover:bg-white/20 disabled:cursor-default disabled:opacity-70"
+              title={published ? "已发布" : "发布到广场"}
+            >
+              {published ? (
+                <Check className="size-3 text-emerald-400" />
+              ) : (
+                <Upload className="size-3" />
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onRemove()
+            }}
+            className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[11px] hover:bg-red-500/40"
+            title="删除"
+          >
+            <Trash2 className="size-3" />
+          </button>
         </div>
       </div>
     </div>

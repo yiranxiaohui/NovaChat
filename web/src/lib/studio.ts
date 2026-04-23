@@ -1,30 +1,33 @@
-export type StudioConversation = {
+export type StudioGeneration = {
   id: number
-  title: string
-  model: string | null
-  created_at: string
-  updated_at: string
-}
-
-export type StudioImage = {
-  path: string
-  revised_prompt?: string | null
-}
-
-export type StudioMessage = {
-  id: number
-  role: "user" | "assistant"
-  text: string | null
-  images: StudioImage[]
-  created_at: string
-}
-
-export type StudioJobStatus = {
   token: string
   status: "pending" | "running" | "done" | "failed"
   error: string | null
+  prompt: string
+  revised_prompt: string | null
+  model: string | null
+  size: string | null
+  quality: string | null
+  style: string | null
+  n: number
+  image_path: string | null
+  source_path: string | null
+  used_shared: boolean
   created_at: string
   finished_at: string | null
+}
+
+export type GenerateParams = {
+  prompt: string
+  model?: string
+  size?: string
+  quality?: string
+  style?: string
+  imageDataUrl?: string
+  useShared?: boolean
+  upstreamUrl?: string
+  upstreamKey?: string
+  signal?: AbortSignal
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -35,16 +38,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export type TurnOptions = {
-  text: string
-  imageDataUrl?: string
-  useShared?: boolean
-  upstreamUrl?: string
-  upstreamKey?: string
-  signal?: AbortSignal
-}
-
-function turnHeaders(o: TurnOptions): Record<string, string> {
+function headersFor(o: GenerateParams): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json" }
   if (o.useShared) {
     h["X-Use-Shared"] = "1"
@@ -56,68 +50,17 @@ function turnHeaders(o: TurnOptions): Record<string, string> {
 }
 
 export const studioApi = {
-  async list(): Promise<StudioConversation[]> {
+  async submit(o: GenerateParams): Promise<{ token: string }> {
     return jsonOrThrow(
-      await fetch("/api/studio/conversations", { credentials: "same-origin" })
-    )
-  },
-  async create(body: {
-    title?: string
-    model?: string
-  }): Promise<{ id: number; title: string; model: string | null }> {
-    return jsonOrThrow(
-      await fetch("/api/studio/conversations", {
+      await fetch("/api/studio/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        credentials: "same-origin",
-      })
-    )
-  },
-  async update(
-    id: number,
-    body: { title?: string; model?: string }
-  ): Promise<void> {
-    const res = await fetch(`/api/studio/conversations/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      credentials: "same-origin",
-    })
-    if (!res.ok) {
-      throw new Error(
-        (await res.text().catch(() => res.statusText)) || `HTTP ${res.status}`
-      )
-    }
-  },
-  async remove(id: number): Promise<void> {
-    const res = await fetch(`/api/studio/conversations/${id}`, {
-      method: "DELETE",
-      credentials: "same-origin",
-    })
-    if (!res.ok) {
-      throw new Error(
-        (await res.text().catch(() => res.statusText)) || `HTTP ${res.status}`
-      )
-    }
-  },
-  async messages(id: number): Promise<StudioMessage[]> {
-    return jsonOrThrow(
-      await fetch(`/api/studio/conversations/${id}/messages`, {
-        credentials: "same-origin",
-      })
-    )
-  },
-  async submitTurn(
-    id: number,
-    o: TurnOptions
-  ): Promise<{ token: string; user_message_id: number }> {
-    return jsonOrThrow(
-      await fetch(`/api/studio/conversations/${id}/turn`, {
-        method: "POST",
-        headers: turnHeaders(o),
+        headers: headersFor(o),
         body: JSON.stringify({
-          text: o.text,
+          prompt: o.prompt,
+          model: o.model,
+          size: o.size,
+          quality: o.quality,
+          style: o.style,
           image_data_url: o.imageDataUrl,
         }),
         credentials: "same-origin",
@@ -125,7 +68,7 @@ export const studioApi = {
       })
     )
   },
-  async job(token: string): Promise<StudioJobStatus> {
+  async job(token: string): Promise<StudioGeneration> {
     return jsonOrThrow(
       await fetch(`/api/studio/jobs/${encodeURIComponent(token)}`, {
         credentials: "same-origin",
@@ -135,7 +78,7 @@ export const studioApi = {
   async waitForJob(
     token: string,
     signal?: AbortSignal
-  ): Promise<StudioJobStatus> {
+  ): Promise<StudioGeneration> {
     const start = Date.now()
     const maxMs = 15 * 60 * 1000
     while (Date.now() - start < maxMs) {
@@ -145,6 +88,24 @@ export const studioApi = {
       const j = await this.job(token)
       if (j.status === "done" || j.status === "failed") return j
     }
-    throw new Error("任务超时")
+    throw new Error("生成超时")
+  },
+  async list(page = 1): Promise<StudioGeneration[]> {
+    return jsonOrThrow(
+      await fetch(`/api/studio/generations?page=${page}`, {
+        credentials: "same-origin",
+      })
+    )
+  },
+  async remove(id: number): Promise<void> {
+    const res = await fetch(`/api/studio/generations/${id}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    })
+    if (!res.ok) {
+      throw new Error(
+        (await res.text().catch(() => res.statusText)) || `HTTP ${res.status}`
+      )
+    }
   },
 }

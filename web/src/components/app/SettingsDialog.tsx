@@ -184,6 +184,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         apiKey: imageApiKey.trim(),
         useProxy: imageUseProxy,
         useShared: imageUseShared,
+        flavor: "image",
         signal: ctrl.signal,
       })
       const filter =

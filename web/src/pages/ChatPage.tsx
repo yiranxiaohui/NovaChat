@@ -119,6 +119,7 @@ function ModelPicker({
         apiKey,
         useProxy,
         useShared,
+        flavor: isImage ? "image" : "chat",
       })
       setModels(list)
     } catch (e) {

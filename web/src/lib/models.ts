@@ -8,6 +8,9 @@ export type ListModelsOptions = {
   /// When true, sends X-Use-Shared=1 instead of per-request URL/Key; backend
   /// resolves the admin-configured shared upstream.
   useShared?: boolean
+  /// Whether this lookup is for the image upstream (shared_image_*) vs the
+  /// chat upstream (shared_chat_*). Only meaningful with useShared.
+  flavor?: "chat" | "image"
   signal?: AbortSignal
 }
 
@@ -69,12 +72,12 @@ export async function listModels(o: ListModelsOptions): Promise<string[]> {
   const url = listUrl(o.protocol, o.baseUrl)
   let res: Response
   if (o.useShared) {
-    // Let the backend resolve the shared upstream's URL + key. The image
-    // studio uses its own /api/studio/models endpoint; chat/claude/gemini
-    // reuse the generic proxy which falls back to shared when no X-Upstream-*
-    // headers are sent.
+    // Let the backend resolve the shared upstream's URL + key. Flavor tells
+    // it whether to look up shared_chat_* or shared_image_* settings.
+    const headers: Record<string, string> = { "X-Use-Shared": "1" }
+    if (o.flavor === "image") headers["X-Upstream-Flavor"] = "image"
     res = await fetch(`/api/proxy/${o.protocol}/models`, {
-      headers: { "X-Use-Shared": "1" },
+      headers,
       credentials: "same-origin",
       signal: o.signal,
     })

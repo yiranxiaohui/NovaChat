@@ -783,6 +783,15 @@ async fn proxy_get_forward(
     let use_client_headers = !want_shared
         && matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
 
+    let flavor = match headers
+        .get("x-upstream-flavor")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    {
+        Some("image") => credits::SharedFlavor::Image,
+        _ => credits::SharedFlavor::Chat,
+    };
+
     let (url, key, used_shared) = if use_client_headers {
         (
             hdr_url.unwrap().to_string(),
@@ -794,7 +803,7 @@ async fn proxy_get_forward(
             &installed.pool,
             installed.kind,
             protocol.name(),
-            credits::SharedFlavor::Chat,
+            flavor,
         )
         .await
         {

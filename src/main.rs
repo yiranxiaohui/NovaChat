@@ -508,7 +508,7 @@ fn trim_slash(s: &str) -> &str {
 pub fn chat_endpoint(host: &str, protocol: Protocol, model: &str) -> String {
     let base = trim_slash(host);
     match protocol {
-        Protocol::OpenAi => format!("{base}/v1/chat/completions"),
+        Protocol::OpenAi => format!("{base}/v1/responses"),
         Protocol::Claude => format!("{base}/v1/messages"),
         Protocol::Gemini => format!("{base}/v1beta/models/{model}:streamGenerateContent"),
     }

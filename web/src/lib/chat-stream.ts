@@ -27,12 +27,20 @@ type PreparedRequest = {
 }
 
 function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
+  const system = o.messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n\n")
+  const input = o.messages
+    .filter((m) => m.role !== "system")
+    .map((m) => ({ role: m.role, content: m.content }))
   return {
-    url: `${trimSlash(o.baseUrl)}/v1/chat/completions`,
+    url: `${trimSlash(o.baseUrl)}/v1/responses`,
     body: {
       model: o.model,
-      messages: o.messages,
+      input,
       stream: true,
+      ...(system ? { instructions: system } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
       ...(o.webSearch ? { tools: [{ type: "web_search" }] } : {}),
     },
@@ -128,6 +136,13 @@ function extractDelta(protocol: Protocol, json: unknown): string | undefined {
   const j = json as Record<string, unknown>
   switch (protocol) {
     case "openai": {
+      // Responses API stream events carry a `type` field; text chunks come
+      // through as `response.output_text.delta` with a string `delta`.
+      if (j.type === "response.output_text.delta") {
+        return typeof j.delta === "string" ? j.delta : undefined
+      }
+      // Tolerate relays that still emit chat-completions-style chunks via
+      // the /v1/responses endpoint.
       const choices = (j.choices ?? []) as Array<{ delta?: { content?: string } }>
       return choices[0]?.delta?.content
     }

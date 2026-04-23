@@ -849,7 +849,7 @@ function PreviewCard({
       <img
         src={gen.image_path}
         alt={gen.prompt}
-        className="max-h-[70vh] w-auto rounded-lg border border-border shadow-sm"
+        className="max-h-[70vh] max-w-full rounded-lg border border-border shadow-sm"
       />
       <div className="flex w-full max-w-lg flex-col gap-2 text-xs">
         <div className="flex flex-wrap gap-1.5 text-muted-foreground">
@@ -877,7 +877,7 @@ function PreviewCard({
           </p>
         )}
       </div>
-      <div className="flex gap-2">
+      <div className="flex w-full flex-wrap justify-center gap-2">
         <Button asChild variant="outline" size="sm">
           <a href={gen.image_path} download={fname || "image"}>
             <Download className="size-4" /> 下载

@@ -14,8 +14,6 @@ export type GenerateImageOptions = {
   size?: "1024x1024" | "1024x1792" | "1792x1024" | "auto"
   n?: number
   useProxy?: boolean
-  // When true, server uses the admin-configured shared image backend; baseUrl/
-  // apiKey are ignored. Forces useProxy.
   useShared?: boolean
   signal?: AbortSignal
 }
@@ -58,6 +56,64 @@ function geminiRequest(o: GenerateImageOptions): { url: string; body: unknown } 
   }
 }
 
+// ---------------------------------------------------------------------------
+// job polling (for proxy / shared paths — decouples browser from upstream)
+// ---------------------------------------------------------------------------
+
+type JobStatus = {
+  token: string
+  status: "pending" | "running" | "done" | "failed"
+  protocol: string
+  kind: string
+  error: string | null
+  images: GeneratedImage[] | null
+}
+
+async function pollImageJob(
+  token: string,
+  signal: AbortSignal | undefined
+): Promise<GeneratedImage[]> {
+  // Poll every 2s up to 15 minutes. Backend always completes the job even
+  // if this polling stops — the next call to get_job will find it 'done'.
+  const start = Date.now()
+  const maxMs = 15 * 60 * 1000
+  while (Date.now() - start < maxMs) {
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError")
+    await new Promise((r) => setTimeout(r, 2000))
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError")
+
+    const res = await fetch(`/api/images/jobs/${encodeURIComponent(token)}`, {
+      credentials: "same-origin",
+      signal,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(text || `HTTP ${res.status}`)
+    }
+    const j = (await res.json()) as JobStatus
+    if (j.status === "done" && j.images) return j.images
+    if (j.status === "failed") throw new Error(j.error || "图像生成失败")
+  }
+  throw new Error("图像生成超时，请稍后在侧边栏重试或联系管理员")
+}
+
+async function submitJob(
+  path: string,
+  init: RequestInit
+): Promise<string> {
+  const res = await fetch(path, init)
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  const j = (await res.json()) as { token: string }
+  return j.token
+}
+
+// ---------------------------------------------------------------------------
+// generate
+// ---------------------------------------------------------------------------
+
 export async function generateImages(
   o: GenerateImageOptions
 ): Promise<GeneratedImage[]> {
@@ -66,9 +122,11 @@ export async function generateImages(
   const { url: upstream, body } =
     protocol === "gemini" ? geminiRequest(o) : openaiRequest(o)
 
-  let res: Response
+  // Proxy / shared modes → async job (poll until done). Direct mode stays
+  // synchronous since it hits the provider directly without going through
+  // our backend.
   if (o.useShared) {
-    res = await fetch(`/api/proxy/${protocol}/images`, {
+    const token = await submitJob(`/api/images/jobs/${protocol}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -79,8 +137,10 @@ export async function generateImages(
       credentials: "same-origin",
       signal: o.signal,
     })
-  } else if (useProxy) {
-    res = await fetch(`/api/proxy/${protocol}/images`, {
+    return pollImageJob(token, o.signal)
+  }
+  if (useProxy) {
+    const token = await submitJob(`/api/images/jobs/${protocol}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -91,33 +151,26 @@ export async function generateImages(
       credentials: "same-origin",
       signal: o.signal,
     })
-  } else {
-    const directHeaders: Record<string, string> =
-      protocol === "gemini"
-        ? { "Content-Type": "application/json", "x-goog-api-key": o.apiKey }
-        : { "Content-Type": "application/json", Authorization: `Bearer ${o.apiKey}` }
-    res = await fetch(upstream, {
-      method: "POST",
-      headers: directHeaders,
-      body: JSON.stringify(body),
-      signal: o.signal,
-    })
+    return pollImageJob(token, o.signal)
   }
 
+  // Direct mode: caller talks to provider; no backend involvement.
+  const directHeaders: Record<string, string> =
+    protocol === "gemini"
+      ? { "Content-Type": "application/json", "x-goog-api-key": o.apiKey }
+      : { "Content-Type": "application/json", Authorization: `Bearer ${o.apiKey}` }
+  const res = await fetch(upstream, {
+    method: "POST",
+    headers: directHeaders,
+    body: JSON.stringify(body),
+    signal: o.signal,
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(text || `HTTP ${res.status}`)
   }
-
-  // Proxy mode: unified { images: [{path, revised_prompt}] } — files already stored.
-  // Direct mode: protocol-native shape, which we normalize below.
   const json = (await res.json()) as Record<string, unknown>
-  if (Array.isArray((json as { images?: unknown[] }).images)) {
-    return (json as { images: GeneratedImage[] }).images
-  }
-
   if (protocol === "gemini") {
-    // predict: { predictions: [{ bytesBase64Encoded, mimeType } | { image: { imageBytes } }] }
     const preds = (json.predictions as Array<Record<string, unknown>> | undefined) ?? []
     const out: GeneratedImage[] = []
     for (const p of preds) {
@@ -137,8 +190,6 @@ export async function generateImages(
     }
     return out
   }
-
-  // OpenAI shape: { data: [{ b64_json } | { url }] }
   const raw = (json.data as Array<Record<string, unknown>> | undefined) ?? []
   return raw.map((d) => ({
     path: d.b64_json
@@ -147,6 +198,10 @@ export async function generateImages(
     revised_prompt: (d.revised_prompt as string | undefined) ?? null,
   }))
 }
+
+// ---------------------------------------------------------------------------
+// edit
+// ---------------------------------------------------------------------------
 
 export type EditImageOptions = {
   protocol?: ImageProtocol
@@ -179,8 +234,6 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
   const useProxy = o.useProxy !== false
 
   if (protocol === "gemini") {
-    // Gemini edits use :generateContent with image+text parts (image-capable models,
-    // e.g. gemini-2.5-flash-image-preview). Response reuses the existing proxy.
     const model = o.model ?? "gemini-2.5-flash-image-preview"
     const upstream = `${trimSlash(o.baseUrl)}/v1beta/models/${encodeURIComponent(model)}:generateContent`
     const mime = o.image.type || "image/png"
@@ -198,9 +251,8 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
       contents: [{ role: "user", parts }],
       generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
     }
-    let res: Response
     if (o.useShared) {
-      res = await fetch(`/api/proxy/gemini/images`, {
+      const token = await submitJob(`/api/images/jobs/gemini`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -211,8 +263,10 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
         credentials: "same-origin",
         signal: o.signal,
       })
-    } else if (useProxy) {
-      res = await fetch(`/api/proxy/gemini/images`, {
+      return pollImageJob(token, o.signal)
+    }
+    if (useProxy) {
+      const token = await submitJob(`/api/images/jobs/gemini`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -223,26 +277,22 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
         credentials: "same-origin",
         signal: o.signal,
       })
-    } else {
-      res = await fetch(upstream, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": o.apiKey,
-        },
-        body: JSON.stringify(body),
-        signal: o.signal,
-      })
+      return pollImageJob(token, o.signal)
     }
+    const res = await fetch(upstream, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": o.apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: o.signal,
+    })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
       throw new Error(text || `HTTP ${res.status}`)
     }
     const json = (await res.json()) as Record<string, unknown>
-    if (Array.isArray((json as { images?: unknown[] }).images)) {
-      return (json as { images: GeneratedImage[] }).images
-    }
-    // Direct mode: normalize generateContent shape.
     const cands =
       (json.candidates as Array<Record<string, unknown>> | undefined) ?? []
     const out: GeneratedImage[] = []
@@ -275,9 +325,8 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
   if (o.size && o.size !== "auto") form.append("size", o.size)
 
   const upstream = `${trimSlash(o.baseUrl)}/v1/images/edits`
-  let res: Response
   if (o.useShared) {
-    res = await fetch(`/api/proxy/openai/images/edits`, {
+    const token = await submitJob(`/api/images/jobs/openai/edits`, {
       method: "POST",
       headers: {
         "X-Use-Shared": "1",
@@ -287,8 +336,10 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
       credentials: "same-origin",
       signal: o.signal,
     })
-  } else if (useProxy) {
-    res = await fetch(`/api/proxy/openai/images/edits`, {
+    return pollImageJob(token, o.signal)
+  }
+  if (useProxy) {
+    const token = await submitJob(`/api/images/jobs/openai/edits`, {
       method: "POST",
       headers: {
         "X-Upstream-Url": upstream,
@@ -298,24 +349,19 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
       credentials: "same-origin",
       signal: o.signal,
     })
-  } else {
-    res = await fetch(upstream, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${o.apiKey}` },
-      body: form,
-      signal: o.signal,
-    })
+    return pollImageJob(token, o.signal)
   }
-
+  const res = await fetch(upstream, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${o.apiKey}` },
+    body: form,
+    signal: o.signal,
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(text || `HTTP ${res.status}`)
   }
-
   const json = (await res.json()) as Record<string, unknown>
-  if (Array.isArray((json as { images?: unknown[] }).images)) {
-    return (json as { images: GeneratedImage[] }).images
-  }
   const raw = (json.data as Array<Record<string, unknown>> | undefined) ?? []
   return raw.map((d) => ({
     path: d.b64_json

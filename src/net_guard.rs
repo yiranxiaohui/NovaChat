@@ -120,8 +120,16 @@ pub async fn validate_upstream_url(raw: &str) -> Result<(Url, String, Vec<Socket
 }
 
 pub fn guarded_client(host: &str, addrs: &[SocketAddr]) -> Result<Client, Response> {
+    guarded_client_with_timeout(host, addrs, Duration::from_secs(180))
+}
+
+pub fn guarded_client_with_timeout(
+    host: &str,
+    addrs: &[SocketAddr],
+    timeout: Duration,
+) -> Result<Client, Response> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(host, addrs)
         .build()
@@ -138,4 +146,17 @@ pub async fn client_for_upstream(
     }
     let (_parsed, host, addrs) = validate_upstream_url(url).await?;
     guarded_client(&host, &addrs)
+}
+
+pub async fn client_for_upstream_with_timeout(
+    shared_client: &Client,
+    url: &str,
+    used_shared: bool,
+    timeout: Duration,
+) -> Result<Client, Response> {
+    if used_shared {
+        return Ok(shared_client.clone());
+    }
+    let (_parsed, host, addrs) = validate_upstream_url(url).await?;
+    guarded_client_with_timeout(&host, &addrs, timeout)
 }

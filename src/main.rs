@@ -43,6 +43,11 @@ struct Assets;
 pub struct AppState {
     pub installed: Arc<RwLock<Option<InstalledState>>>,
     pub http: reqwest::Client,
+    /// Longer-timeout reqwest client for image generation upstreams.
+    /// Image endpoints frequently take 1–5 minutes, and upstream relays add
+    /// their own variability on top. Jobs run on a background tokio task so
+    /// this doesn't tie up the user's HTTP connection.
+    pub image_http: reqwest::Client,
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
 }
@@ -987,6 +992,10 @@ async fn main() {
             .timeout(std::time::Duration::from_secs(180))
             .build()
             .expect("reqwest client"),
+        image_http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .expect("image reqwest client"),
         config_path: config_path.clone(),
         data_dir: data_dir.clone(),
     };
@@ -1003,6 +1012,7 @@ async fn main() {
     if let Some(url) = effective_url.as_deref() {
         match setup::boot_installed(url).await {
             Ok(s) => {
+                images::cleanup_stale_jobs(&s.pool, s.kind).await;
                 *state.installed.write().await = Some(s.clone());
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }

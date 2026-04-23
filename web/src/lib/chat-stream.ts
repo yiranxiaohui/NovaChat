@@ -331,7 +331,7 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
           prompt: parsed.prompt,
           size: parsed.size,
         })
-        if (md) o.onDelta((buffer === "" ? "" : "\n") + md)
+        if (md) o.onDelta(md)
       } catch (e) {
         o.onDelta(
           `\n\n> 图像生成失败：${e instanceof Error ? e.message : String(e)}`

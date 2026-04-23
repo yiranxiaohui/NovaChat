@@ -3,6 +3,7 @@ import { Link } from "react-router-dom"
 import {
   ArrowLeft,
   Check,
+  Copy,
   Download,
   ImageIcon,
   ImagePlus,
@@ -56,6 +57,40 @@ function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
+// Copy an image URL to the OS clipboard. Many browsers only accept image/png
+// via ClipboardItem, so re-encode through a canvas when the source isn't PNG.
+async function copyImageToClipboard(url: string): Promise<void> {
+  const res = await fetch(url, { credentials: "same-origin" })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  let blob = await res.blob()
+  if (blob.type !== "image/png") {
+    const objUrl = URL.createObjectURL(blob)
+    try {
+      const img = new Image()
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error("图片加载失败"))
+        img.src = objUrl
+      })
+      const canvas = document.createElement("canvas")
+      canvas.width = img.naturalWidth
+      canvas.height = img.naturalHeight
+      const ctx = canvas.getContext("2d")
+      if (!ctx) throw new Error("Canvas 不可用")
+      ctx.drawImage(img, 0, 0)
+      blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("PNG 编码失败"))),
+          "image/png"
+        )
+      })
+    } finally {
+      URL.revokeObjectURL(objUrl)
+    }
+  }
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })])
+}
+
 export default function ImageStudioPage() {
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
@@ -90,6 +125,7 @@ export default function ImageStudioPage() {
   const [publishingFilename, setPublishingFilename] = useState<string | null>(
     null
   )
+  const [pastedFlash, setPastedFlash] = useState(false)
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -120,6 +156,31 @@ export default function ImageStudioPage() {
     setAttachedUrl(u)
     return () => URL.revokeObjectURL(u)
   }, [attached])
+
+  // Accept pasted images anywhere on the page → attach as base image. We
+  // preventDefault only when we actually consume an image, so plain text
+  // pastes into the prompt textarea still work normally.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]!
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          const f = it.getAsFile()
+          if (f) {
+            e.preventDefault()
+            setAttached(f)
+            setPastedFlash(true)
+            window.setTimeout(() => setPastedFlash(false), 1500)
+            return
+          }
+        }
+      }
+    }
+    window.addEventListener("paste", onPaste)
+    return () => window.removeEventListener("paste", onPaste)
+  }, [])
 
   async function reloadModels() {
     if (!user) return
@@ -457,14 +518,21 @@ export default function ImageStudioPage() {
               底图 <span className="text-muted-foreground">(可选，作为 edit 输入)</span>
             </Label>
             {attachedUrl ? (
-              <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2 text-xs">
+              <div
+                className={
+                  "flex items-center gap-2 rounded-md border p-2 text-xs transition-colors " +
+                  (pastedFlash
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-card")
+                }
+              >
                 <img
                   src={attachedUrl}
                   alt=""
                   className="size-14 rounded object-cover"
                 />
                 <span className="flex-1 truncate text-muted-foreground">
-                  已上传
+                  {pastedFlash ? "已粘贴" : "已上传"}
                 </span>
                 <Button
                   size="sm"
@@ -486,6 +554,9 @@ export default function ImageStudioPage() {
                 <ImagePlus className="size-4" /> 上传底图
               </Button>
             )}
+            <p className="text-[11px] text-muted-foreground">
+              也可直接 Ctrl+V 粘贴图片
+            </p>
             <input
               ref={fileRef}
               type="file"
@@ -646,6 +717,26 @@ function PreviewCard({
   onPublish: () => void
 }) {
   const fname = gen.image_path ? filenameFromPath(gen.image_path) : null
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "done" | "error">(
+    "idle"
+  )
+  const [copyError, setCopyError] = useState<string | null>(null)
+
+  async function handleCopy() {
+    if (!gen.image_path) return
+    setCopyState("copying")
+    setCopyError(null)
+    try {
+      await copyImageToClipboard(gen.image_path)
+      setCopyState("done")
+      window.setTimeout(() => setCopyState("idle"), 1500)
+    } catch (e) {
+      setCopyState("error")
+      setCopyError(e instanceof Error ? e.message : String(e))
+      window.setTimeout(() => setCopyState("idle"), 2500)
+    }
+  }
+
   if (gen.status === "failed") {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-10 text-destructive">
@@ -696,6 +787,28 @@ function PreviewCard({
           <a href={gen.image_path} download={fname || "image"}>
             <Download className="size-4" /> 下载
           </a>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleCopy()}
+          disabled={copyState === "copying"}
+          title={copyError ?? "复制图片到剪贴板，然后可粘贴到左侧底图"}
+        >
+          {copyState === "done" ? (
+            <>
+              <Check className="size-4 text-emerald-500" /> 已复制
+            </>
+          ) : copyState === "error" ? (
+            <>
+              <X className="size-4 text-destructive" /> 复制失败
+            </>
+          ) : (
+            <>
+              <Copy className="size-4" />{" "}
+              {copyState === "copying" ? "复制中…" : "复制图片"}
+            </>
+          )}
         </Button>
         <Button
           variant={published ? "secondary" : "default"}

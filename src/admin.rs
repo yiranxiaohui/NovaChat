@@ -19,6 +19,7 @@ pub struct AdminUser {
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub email: Option<String>,
     pub is_admin: bool,
     pub created_at: String,
     pub conversations: i64,
@@ -152,7 +153,7 @@ async fn list_users(Extension(installed): Extension<InstalledState>) -> Response
     let sql = db::q(
         installed.kind,
         &format!(
-            "SELECT u.id, u.username, u.display_name, u.avatar_url, {admin_col}, u.created_at,
+            "SELECT u.id, u.username, u.display_name, u.avatar_url, u.email, {admin_col}, u.created_at,
                     (SELECT COUNT(*) FROM conversations c WHERE c.user_id = u.id) AS convs,
                     (SELECT COUNT(*) FROM messages m
                         JOIN conversations c ON c.id = m.conversation_id
@@ -163,7 +164,18 @@ async fn list_users(Extension(installed): Extension<InstalledState>) -> Response
         ),
     );
     let rows: Result<
-        Vec<(i64, String, Option<String>, Option<String>, i64, String, i64, i64, i64)>,
+        Vec<(
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+        )>,
         _,
     > = sqlx::query_as(&sql).fetch_all(&installed.pool).await;
     match rows {
@@ -171,12 +183,24 @@ async fn list_users(Extension(installed): Extension<InstalledState>) -> Response
             let out: Vec<AdminUser> = rs
                 .into_iter()
                 .map(
-                    |(id, username, display_name, avatar_url, is_admin, created_at, c, m, s)| {
+                    |(
+                        id,
+                        username,
+                        display_name,
+                        avatar_url,
+                        email,
+                        is_admin,
+                        created_at,
+                        c,
+                        m,
+                        s,
+                    )| {
                         AdminUser {
                             id,
                             username,
                             display_name,
                             avatar_url,
+                            email,
                             is_admin: is_admin != 0,
                             created_at,
                             conversations: c,

@@ -324,6 +324,7 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
               <th className="px-3 py-2 text-left font-medium">ID</th>
               <th className="px-3 py-2 text-left font-medium">用户</th>
               <th className="px-3 py-2 text-left font-medium">角色</th>
+              <th className="px-3 py-2 text-left font-medium">邮箱</th>
               <th className="px-3 py-2 text-right font-medium">会话</th>
               <th className="px-3 py-2 text-right font-medium">消息</th>
               <th className="px-3 py-2 text-right font-medium">Skills</th>
@@ -335,7 +336,7 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
             {loading && (
               <tr>
                 <td
-                  colSpan={8}
+                  colSpan={9}
                   className="px-3 py-6 text-center text-muted-foreground"
                 >
                   加载中…
@@ -345,7 +346,7 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
             {!loading && filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={8}
+                  colSpan={9}
                   className="px-3 py-6 text-center text-muted-foreground"
                 >
                   没有匹配的用户
@@ -402,6 +403,12 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
                         （你）
                       </span>
                     )}
+                  </td>
+                  <td
+                    className="max-w-[14rem] truncate px-3 py-2 text-xs text-muted-foreground"
+                    title={u.email ?? ""}
+                  >
+                    {u.email || "—"}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {u.conversations}

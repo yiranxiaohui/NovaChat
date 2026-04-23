@@ -14,6 +14,7 @@ mod prompts;
 mod settings;
 mod setup;
 mod skills;
+mod studio;
 
 use axum::{
     Json, Router,
@@ -941,6 +942,7 @@ fn build_router(state: AppState) -> Router {
         .merge(credits::admin_routes())
         .merge(payments::user_routes())
         .merge(payments::admin_routes())
+        .merge(studio::routes())
         .merge(invites::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -1013,6 +1015,7 @@ async fn main() {
         match setup::boot_installed(url).await {
             Ok(s) => {
                 images::cleanup_stale_jobs(&s.pool, s.kind).await;
+                studio::cleanup_stale_jobs(&s.pool, s.kind).await;
                 *state.installed.write().await = Some(s.clone());
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }

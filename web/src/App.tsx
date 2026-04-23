@@ -6,6 +6,7 @@ import ChatPage from "@/pages/ChatPage"
 import SetupPage from "@/pages/SetupPage"
 import AdminPage from "@/pages/AdminPage"
 import PaymentReturnPage from "@/pages/PaymentReturnPage"
+import ImageStudioPage from "@/pages/ImageStudioPage"
 
 function Loading() {
   return (
@@ -96,6 +97,22 @@ export default function App() {
             element={
               <Protected>
                 <PaymentReturnPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/studio"
+            element={
+              <Protected>
+                <ImageStudioPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/studio/:id"
+            element={
+              <Protected>
+                <ImageStudioPage />
               </Protected>
             }
           />

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
+  ImageIcon,
   LogOut,
   MoreHorizontal,
   Pencil,
@@ -223,6 +224,13 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
       </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
+        <Link
+          to="/studio"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+          title="多轮对话式生图（Responses API）"
+        >
+          <ImageIcon className="size-4" /> 图像工作室
+        </Link>
         {user?.is_admin && (
           <Link
             to="/admin"

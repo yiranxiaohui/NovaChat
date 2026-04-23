@@ -773,37 +773,41 @@ async fn proxy_get_forward(
     };
 
     // Client-supplied URL wins (it already points at /v1/models etc.).
-    // Otherwise fall back to shared host + construct the models endpoint.
+    // Otherwise — when X-Use-Shared=1, or when the client sent empty
+    // X-Upstream-Url/Key headers — fall back to the admin-configured
+    // shared upstream and build the models endpoint server-side.
     let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
     let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-    let (url, key, used_shared) = if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-        if !u.is_empty() && !k.is_empty() {
-            (u.to_string(), k.to_string(), false)
-        } else {
-            match credits::read_shared(
-                &installed.pool,
-                installed.kind,
-                protocol.name(),
-                credits::SharedFlavor::Chat,
-            )
-            .await
-            {
-                Some(s) => (models_endpoint(&s.url, protocol), s.key, true),
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "missing X-Upstream-Url/Key header (and no shared backend configured)",
-                    )
-                        .into_response();
-                }
+    let want_shared = header_truthy(headers, "x-use-shared");
+
+    let use_client_headers = !want_shared
+        && matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
+
+    let (url, key, used_shared) = if use_client_headers {
+        (
+            hdr_url.unwrap().to_string(),
+            hdr_key.unwrap().to_string(),
+            false,
+        )
+    } else {
+        match credits::read_shared(
+            &installed.pool,
+            installed.kind,
+            protocol.name(),
+            credits::SharedFlavor::Chat,
+        )
+        .await
+        {
+            Some(s) => (models_endpoint(&s.url, protocol), s.key, true),
+            None => {
+                let msg = if want_shared {
+                    "shared backend not configured"
+                } else {
+                    "missing X-Upstream-Url/Key header (and no shared backend configured)"
+                };
+                return (StatusCode::BAD_REQUEST, msg).into_response();
             }
         }
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "missing X-Upstream-Url/Key header",
-        )
-            .into_response();
     };
 
     let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {

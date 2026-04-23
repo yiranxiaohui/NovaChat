@@ -29,6 +29,7 @@ fn trim_slash(s: &str) -> &str {
 enum ImageKind {
     Generate,
     Edit,
+    Responses,
 }
 
 impl ImageKind {
@@ -36,6 +37,7 @@ impl ImageKind {
         match self {
             Self::Generate => "generate",
             Self::Edit => "edit",
+            Self::Responses => "responses",
         }
     }
 }
@@ -45,6 +47,7 @@ fn image_endpoint(host: &str, protocol: &str, model: &str, kind: ImageKind) -> S
     match (protocol, kind) {
         ("openai", ImageKind::Generate) => format!("{base}/v1/images/generations"),
         ("openai", ImageKind::Edit) => format!("{base}/v1/images/edits"),
+        ("openai", ImageKind::Responses) => format!("{base}/v1/responses"),
         ("gemini", ImageKind::Generate) => format!("{base}/v1beta/models/{model}:predict"),
         ("gemini", ImageKind::Edit) => format!("{base}/v1beta/models/{model}:generateContent"),
         _ => format!("{base}/"),
@@ -893,6 +896,359 @@ async fn get_job(
     .into_response()
 }
 
+// ---------------------------------------------------------------------------
+// Responses API (multi-turn image generation for OpenAI-compatible upstreams)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ResponsesHistoryTurn {
+    role: String,
+    #[serde(default)]
+    text: Option<String>,
+    /// Image paths like "/api/images/xxx.png" to re-submit as input_image.
+    #[serde(default)]
+    images: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ResponsesJobReq {
+    history: Vec<ResponsesHistoryTurn>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    quality: Option<String>,
+}
+
+/// Load a previously-stored image from disk, return as data: URL.
+async fn stored_image_to_data_url(
+    data_dir: &std::path::Path,
+    web_path: &str,
+) -> Option<String> {
+    // Only /api/images/xxx.png paths are valid — we store them ourselves.
+    let name = web_path.rsplit('/').next()?;
+    if name.is_empty() || name.contains("..") || name.contains('\\') {
+        return None;
+    }
+    let p = data_dir.join("images").join(name);
+    let bytes = tokio::fs::read(&p).await.ok()?;
+    let mime = match p.extension().and_then(|e| e.to_str()) {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/png",
+    };
+    Some(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
+}
+
+async fn build_responses_input(
+    data_dir: &std::path::Path,
+    history: &[ResponsesHistoryTurn],
+) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let mut input = Vec::new();
+    for t in history {
+        let mut parts: Vec<serde_json::Value> = Vec::new();
+        if let Some(text) = t.text.as_deref() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let ty = if t.role == "assistant" { "output_text" } else { "input_text" };
+                parts.push(json!({ "type": ty, "text": trimmed }));
+            }
+        }
+        for p in &t.images {
+            let durl = if p.starts_with("data:") {
+                // Inline attachment — pass through as-is.
+                Some(p.clone())
+            } else {
+                stored_image_to_data_url(data_dir, p).await
+            };
+            if let Some(d) = durl {
+                parts.push(json!({
+                    "type": "input_image",
+                    "image_url": d,
+                }));
+            }
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        input.push(json!({
+            "role": if t.role == "assistant" { "assistant" } else { "user" },
+            "content": parts,
+        }));
+    }
+    input
+}
+
+/// Extract image bytes (base64) from a Responses API output item.
+fn extract_responses_image_b64(item: &serde_json::Value) -> Option<String> {
+    // gpt-image-1 style: top-level "result"
+    if let Some(s) = item.get("result").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    // Alternative shapes seen in community relays.
+    if let Some(s) = item.pointer("/image/b64_json").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = item.pointer("/output/b64_json").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    None
+}
+
+fn extract_responses_text(item: &serde_json::Value) -> Option<String> {
+    // message.content[] entries with text
+    let content = item.get("content")?.as_array()?;
+    let mut out = String::new();
+    for part in content {
+        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+            out.push_str(t);
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+async fn start_openai_responses_job(
+    State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
+    Json(body): Json<ResponsesJobReq>,
+) -> Response {
+    use serde_json::json;
+
+    if body.history.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "history 不能为空");
+    }
+
+    let (url, key, used_shared, shared_model) = match resolve_image_upstream(
+        &state,
+        "openai",
+        ImageKind::Responses,
+        &headers,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let model = body
+        .model
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or(shared_model)
+        .unwrap_or_else(|| "gpt-image-1".into());
+
+    if used_shared {
+        if let Err(r) = deduct_image_credits(&state, user.id, "openai").await {
+            return r;
+        }
+    }
+
+    let token = match insert_job(&state, user.id, "openai-responses", ImageKind::Responses, used_shared).await {
+        Ok(t) => t,
+        Err(r) => {
+            if used_shared {
+                refund_image_credits(&state, user.id, "refund_job_create_error").await;
+            }
+            return r;
+        }
+    };
+
+    let state_c = state.clone();
+    let token_c = token.clone();
+    let size = body.size.clone();
+    let quality = body.quality.clone();
+    let history = body.history;
+
+    tokio::spawn(async move {
+        mark_running(&state_c, &token_c).await;
+
+        let input = build_responses_input(&state_c.data_dir, &history).await;
+        if input.is_empty() {
+            if used_shared {
+                refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+            }
+            mark_failed(&state_c, &token_c, "history 展开后为空").await;
+            return;
+        }
+
+        // Build image_generation tool options. Size/quality are accepted on
+        // gpt-image-1 per OpenAI docs; relay behavior varies.
+        let mut tool = serde_json::Map::new();
+        tool.insert("type".into(), json!("image_generation"));
+        if let Some(s) = size.as_deref() {
+            if !s.is_empty() && s != "auto" {
+                tool.insert("size".into(), json!(s));
+            }
+        }
+        if let Some(q) = quality.as_deref() {
+            if !q.is_empty() && q != "auto" {
+                tool.insert("quality".into(), json!(q));
+            }
+        }
+
+        let payload = json!({
+            "model": model,
+            "input": input,
+            "tools": [ tool ],
+        });
+
+        let client = match net_guard::client_for_upstream_with_timeout(
+            &state_c.image_http,
+            &url,
+            used_shared,
+            Duration::from_secs(600),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(_) => {
+                if used_shared {
+                    refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+                }
+                mark_failed(&state_c, &token_c, "HTTP client 构建失败").await;
+                return;
+            }
+        };
+
+        let resp = match client
+            .post(&url)
+            .bearer_auth(&key)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                if used_shared {
+                    refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+                }
+                mark_failed(&state_c, &token_c, &format!("upstream: {e}")).await;
+                return;
+            }
+        };
+
+        let status = resp.status();
+        let raw = resp.bytes().await.unwrap_or_default();
+        if !status.is_success() {
+            if used_shared {
+                refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+            }
+            mark_failed(
+                &state_c,
+                &token_c,
+                &format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
+            )
+            .await;
+            return;
+        }
+
+        let parsed: serde_json::Value = match serde_json::from_slice(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                if used_shared {
+                    refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+                }
+                mark_failed(&state_c, &token_c, &format!("parse: {e}")).await;
+                return;
+            }
+        };
+
+        // Walk output[] — collect images + assistant text.
+        let images_dir = state_c.data_dir.join("images");
+        if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
+            if used_shared {
+                refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+            }
+            mark_failed(&state_c, &token_c, &format!("mkdir: {e}")).await;
+            return;
+        }
+
+        let mut out_images: Vec<GeneratedImage> = Vec::new();
+        let mut text_out = String::new();
+
+        if let Some(items) = parsed.get("output").and_then(|v| v.as_array()) {
+            for it in items {
+                let ty = it.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                match ty {
+                    "image_generation_call" => {
+                        let Some(b64) = extract_responses_image_b64(it) else {
+                            continue;
+                        };
+                        let bytes = match STANDARD.decode(&b64) {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
+                        let name = format!("{}.png", random_hex(16));
+                        let path = images_dir.join(&name);
+                        if tokio::fs::write(&path, &bytes).await.is_err() {
+                            continue;
+                        }
+                        out_images.push(GeneratedImage {
+                            path: format!("/api/images/{name}"),
+                            revised_prompt: it
+                                .get("revised_prompt")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                        });
+                    }
+                    "message" => {
+                        if let Some(t) = extract_responses_text(it) {
+                            if !text_out.is_empty() {
+                                text_out.push('\n');
+                            }
+                            text_out.push_str(&t);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Fallback: some relays return `output_text` at top level.
+        if text_out.is_empty() {
+            if let Some(t) = parsed.get("output_text").and_then(|v| v.as_str()) {
+                text_out.push_str(t);
+            }
+        }
+
+        if out_images.is_empty() && text_out.is_empty() {
+            if used_shared {
+                refund_image_credits(&state_c, user.id, "refund_upstream_error").await;
+            }
+            mark_failed(&state_c, &token_c, "上游未返回图片或文本").await;
+            return;
+        }
+
+        // Prepend any assistant text to the first image's revised_prompt so the
+        // UI can surface it as a caption (frontend renders revised_prompt).
+        if !text_out.is_empty() && !out_images.is_empty() {
+            let prior = out_images[0].revised_prompt.clone().unwrap_or_default();
+            out_images[0].revised_prompt = Some(if prior.is_empty() {
+                text_out.clone()
+            } else {
+                format!("{prior}\n{text_out}")
+            });
+        }
+
+        // If only text came back (no image), surface a synthetic entry so the
+        // caller sees something to display.
+        if out_images.is_empty() {
+            out_images.push(GeneratedImage {
+                path: String::new(),
+                revised_prompt: Some(text_out),
+            });
+        }
+
+        mark_done(&state_c, &token_c, &GeneratedImages { images: out_images }).await;
+    });
+
+    Json(JobCreated { token }).into_response()
+}
+
 /// On startup, mark any still-running jobs as failed. Invoked from main
 /// after the database is ready.
 pub async fn cleanup_stale_jobs(pool: &db::Pool, kind: db::DbKind) {
@@ -939,6 +1295,7 @@ pub fn routes() -> Router<AppState> {
         .route("/proxy/gemini/images", post(proxy_gemini_images))
         .route("/images/jobs/openai", post(start_openai_generate_job))
         .route("/images/jobs/openai/edits", post(start_openai_edit_job))
+        .route("/images/jobs/openai/responses", post(start_openai_responses_job))
         .route("/images/jobs/gemini", post(start_gemini_job))
         .route("/images/jobs/{token}", get(get_job))
         .route("/images/{name}", get(serve_image))

@@ -97,6 +97,75 @@ async function pollImageJob(
   throw new Error("图像生成超时，请稍后在侧边栏重试或联系管理员")
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI Responses API — multi-turn image generation with real conversation
+// context. The backend receives the serialized history, re-encodes stored
+// images as input_image data URLs, and calls /v1/responses with the
+// image_generation tool. Only supported for OpenAI-protocol upstreams.
+// ---------------------------------------------------------------------------
+
+export type ResponsesHistoryTurn = {
+  role: "user" | "assistant"
+  text?: string
+  images?: string[]  // server-stored paths like "/api/images/xxx.png"
+}
+
+export type ResponsesImageOptions = {
+  history: ResponsesHistoryTurn[]
+  model?: string
+  size?: GenerateImageOptions["size"]
+  quality?: string
+  useShared?: boolean
+  baseUrl?: string   // used when not shared — backend appends /v1/responses
+  apiKey?: string    // used when not shared
+  signal?: AbortSignal
+}
+
+export async function generateWithResponses(
+  o: ResponsesImageOptions
+): Promise<GeneratedImage[]> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (o.useShared) {
+    headers["X-Use-Shared"] = "1"
+    if (o.model) headers["X-Upstream-Model"] = o.model
+  } else if (o.baseUrl && o.apiKey) {
+    headers["X-Upstream-Url"] = o.baseUrl.replace(/\/+$/, "")
+    headers["X-Upstream-Key"] = o.apiKey
+  } else {
+    throw new Error("缺少 baseUrl / apiKey（或启用共享后端）")
+  }
+  const body: Record<string, unknown> = { history: o.history }
+  if (o.model) body.model = o.model
+  if (o.size && o.size !== "auto") body.size = o.size
+  if (o.quality) body.quality = o.quality
+
+  const token = await submitJob(`/api/images/jobs/openai/responses`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+    signal: o.signal,
+  })
+  return pollImageJob(token, o.signal)
+}
+
+/// Parse assistant-role markdown content: extract every `![alt](path)` image
+/// URL, return the residual text (with image tags stripped) and the list of
+/// paths. Used to serialize history for the Responses API.
+export function extractAssistantImages(md: string): {
+  text: string
+  images: string[]
+} {
+  const images: string[] = []
+  const text = md
+    .replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_m, p1: string) => {
+      if (p1) images.push(p1)
+      return ""
+    })
+    .trim()
+  return { text, images }
+}
+
 async function submitJob(
   path: string,
   init: RequestInit

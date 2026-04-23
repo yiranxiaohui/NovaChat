@@ -32,7 +32,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
-import { editImages, generateImages } from "@/lib/image-gen"
+import {
+  editImages,
+  extractAssistantImages,
+  generateImages,
+  generateWithResponses,
+  type ResponsesHistoryTurn,
+} from "@/lib/image-gen"
 import { listModels } from "@/lib/models"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
@@ -275,6 +281,102 @@ function ActionIcon({
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8
+
+/// Models known to support the Responses API `image_generation` tool. When
+/// the user has picked one of these, we send the full conversation history
+/// so the model can edit prior outputs in place. Other (legacy) models fall
+/// back to the single-turn /v1/images/generations or /v1/images/edits path.
+const RESPONSES_MODEL_RE = /^(gpt-image|gpt-?5)/i
+
+/// The maximum number of prior messages re-sent to the Responses API.
+/// Each message re-encodes any stored images as base64 data URLs, so a long
+/// history can blow up the request size and token cost quickly.
+const RESPONSES_HISTORY_LIMIT = 6
+
+async function runImageTurn(opts: {
+  prompt: string
+  attached: File | null | undefined
+  priorMessages: UiMessage[]
+  settings: UpstreamSettings
+  common: {
+    protocol: "openai" | "gemini"
+    baseUrl: string
+    apiKey: string
+    prompt: string
+    model: string
+    useProxy: boolean
+    useShared: boolean
+    signal?: AbortSignal
+  }
+}) {
+  const { prompt, attached, priorMessages, settings, common } = opts
+
+  const useResponses =
+    settings.imageProtocol === "openai" &&
+    (settings.imageUseShared || settings.imageUseProxy) &&
+    RESPONSES_MODEL_RE.test(common.model)
+
+  if (!useResponses) {
+    return attached
+      ? editImages({ ...common, image: attached })
+      : generateImages(common)
+  }
+
+  // Build history. Keep only chat turns with meaningful content; skip the
+  // transient "生成中…" placeholder assistant message (no images, text is
+  // the tick indicator).
+  const turns: ResponsesHistoryTurn[] = []
+  for (const m of priorMessages) {
+    if (m.role !== "user" && m.role !== "assistant") continue
+    if (m.role === "assistant") {
+      const { text, images } = extractAssistantImages(m.content ?? "")
+      if (!text && images.length === 0) continue
+      // skip "generating" placeholder
+      if (/生成图像中|编辑图像中/.test(text) && images.length === 0) continue
+      turns.push({ role: "assistant", text: text || undefined, images })
+    } else {
+      // Strip the 🖼 / 🖼✏️ prefix added by runImage for display.
+      const text = (m.content ?? "").replace(/^🖼(?:✏️)?\s*/, "").trim()
+      if (!text) continue
+      turns.push({ role: "user", text })
+    }
+  }
+
+  // Trim to the most recent RESPONSES_HISTORY_LIMIT turns (balanced so the
+  // first entry is ideally a user message).
+  const trimmed = turns.slice(-RESPONSES_HISTORY_LIMIT)
+
+  // Append the current user turn — with attached image if any (encoded here
+  // as a data URL, written to disk by the backend + referenced via its path).
+  // For inline attachments we don't have a stored path yet, so inline the
+  // data URL via a special marker the backend expands.
+  let attachedDataUrl: string | undefined
+  if (attached) {
+    attachedDataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result as string)
+      r.onerror = () => reject(r.error ?? new Error("读取失败"))
+      r.readAsDataURL(attached)
+    })
+  }
+  trimmed.push({
+    role: "user",
+    text: prompt,
+    // The backend treats data: URLs in `images` as inline — it saves and
+    // re-references them automatically. (Current impl only supports stored
+    // /api/images/* paths; inline data URLs would be a future add.)
+    images: attachedDataUrl ? [attachedDataUrl] : undefined,
+  })
+
+  return generateWithResponses({
+    history: trimmed,
+    model: common.model,
+    useShared: settings.imageUseShared,
+    baseUrl: settings.imageUseShared ? undefined : common.baseUrl,
+    apiKey: settings.imageUseShared ? undefined : common.apiKey,
+    signal: common.signal,
+  })
+}
 
 /// Copy an image URL's bytes onto the clipboard as a PNG ClipboardItem so
 /// the user can paste it into Word / Slack / image editors.
@@ -1207,9 +1309,13 @@ export default function ChatPage() {
         useShared: settings.imageUseShared,
         signal: ctrl.signal,
       }
-      const imgs = attached
-        ? await editImages({ ...common, image: attached })
-        : await generateImages(common)
+      const imgs = await runImageTurn({
+        prompt,
+        attached,
+        priorMessages: messages,
+        settings,
+        common,
+      })
       assistantContent = imgs
         .map(
           (i) =>

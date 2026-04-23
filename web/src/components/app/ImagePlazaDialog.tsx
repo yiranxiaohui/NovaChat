@@ -30,7 +30,7 @@ type Props = {
   open: boolean
   onClose: () => void
   onUsePrompt: (prompt: string) => void
-  onUseAsEditBase: (filename: string, prompt: string) => void
+  onUseAsEditBase?: (filename: string, prompt: string) => void
 }
 
 type Tab = "discover" | "mine"
@@ -145,6 +145,7 @@ export function ImagePlazaDialog({
   }
 
   async function handleUseAsBase(p: PlazaImage) {
+    if (!onUseAsEditBase) return
     setBusyId(p.id)
     try {
       await plazaApi.bumpClone(p.id)

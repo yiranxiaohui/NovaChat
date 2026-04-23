@@ -8,10 +8,7 @@ import {
   Copy,
   Download,
   Globe,
-  ImageIcon,
-  ImagePlus,
   Images,
-  MessageSquare,
   MessageSquareText,
   Minus,
   Pencil,
@@ -32,13 +29,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
-import {
-  editImages,
-  extractAssistantImages,
-  generateImages,
-  generateWithResponses,
-  type ResponsesHistoryTurn,
-} from "@/lib/image-gen"
 import { listModels } from "@/lib/models"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
@@ -47,10 +37,8 @@ import {
   saveSettings,
   loadEffectiveSettings,
   settingsApi,
-  isImageConfigured,
   likelyWebSearchCapable,
   PROTOCOL_META,
-  IMAGE_PROTOCOL_META,
   type Protocol,
   type UpstreamSettings,
 } from "@/lib/settings"
@@ -81,13 +69,11 @@ const PROTOCOL_COLOR: Record<Protocol, string> = {
 function ModelPicker({
   protocol,
   model,
-  mode,
   settings,
   onChangeModel,
 }: {
   protocol: Protocol
   model: string
-  mode: "chat" | "image"
   settings: UpstreamSettings
   onChangeModel: (next: string) => void
 }) {
@@ -108,12 +94,11 @@ function ModelPicker({
     return () => window.removeEventListener("mousedown", onDown)
   }, [open])
 
-  const isImage = mode === "image"
-  const useShared = isImage ? settings.imageUseShared : settings.useShared
-  const baseUrl = isImage ? settings.imageBaseUrl : settings.baseUrl
-  const apiKey = isImage ? settings.imageApiKey : settings.apiKey
-  const useProxy = isImage ? settings.imageUseProxy : settings.useProxy
-  const fetchProtocol = isImage ? settings.imageProtocol : settings.protocol
+  const useShared = settings.useShared
+  const baseUrl = settings.baseUrl
+  const apiKey = settings.apiKey
+  const useProxy = settings.useProxy
+  const fetchProtocol = settings.protocol
 
   async function fetchList() {
     setError(null)
@@ -125,7 +110,7 @@ function ModelPicker({
         apiKey,
         useProxy,
         useShared,
-        flavor: isImage ? "image" : "chat",
+        flavor: "chat",
       })
       setModels(list)
     } catch (e) {
@@ -141,11 +126,11 @@ function ModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Reset model cache when upstream context changes (protocol/baseUrl/shared/mode).
+  // Reset model cache when upstream context changes (protocol/baseUrl/shared).
   useEffect(() => {
     setModels([])
     setError(null)
-  }, [isImage, useShared, baseUrl, fetchProtocol])
+  }, [useShared, baseUrl, fetchProtocol])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -281,102 +266,6 @@ function ActionIcon({
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8
-
-/// Models known to support the Responses API `image_generation` tool. When
-/// the user has picked one of these, we send the full conversation history
-/// so the model can edit prior outputs in place. Other (legacy) models fall
-/// back to the single-turn /v1/images/generations or /v1/images/edits path.
-const RESPONSES_MODEL_RE = /^(gpt-image|gpt-?5)/i
-
-/// The maximum number of prior messages re-sent to the Responses API.
-/// Each message re-encodes any stored images as base64 data URLs, so a long
-/// history can blow up the request size and token cost quickly.
-const RESPONSES_HISTORY_LIMIT = 6
-
-async function runImageTurn(opts: {
-  prompt: string
-  attached: File | null | undefined
-  priorMessages: UiMessage[]
-  settings: UpstreamSettings
-  common: {
-    protocol: "openai" | "gemini"
-    baseUrl: string
-    apiKey: string
-    prompt: string
-    model: string
-    useProxy: boolean
-    useShared: boolean
-    signal?: AbortSignal
-  }
-}) {
-  const { prompt, attached, priorMessages, settings, common } = opts
-
-  const useResponses =
-    settings.imageProtocol === "openai" &&
-    (settings.imageUseShared || settings.imageUseProxy) &&
-    RESPONSES_MODEL_RE.test(common.model)
-
-  if (!useResponses) {
-    return attached
-      ? editImages({ ...common, image: attached })
-      : generateImages(common)
-  }
-
-  // Build history. Keep only chat turns with meaningful content; skip the
-  // transient "生成中…" placeholder assistant message (no images, text is
-  // the tick indicator).
-  const turns: ResponsesHistoryTurn[] = []
-  for (const m of priorMessages) {
-    if (m.role !== "user" && m.role !== "assistant") continue
-    if (m.role === "assistant") {
-      const { text, images } = extractAssistantImages(m.content ?? "")
-      if (!text && images.length === 0) continue
-      // skip "generating" placeholder
-      if (/生成图像中|编辑图像中/.test(text) && images.length === 0) continue
-      turns.push({ role: "assistant", text: text || undefined, images })
-    } else {
-      // Strip the 🖼 / 🖼✏️ prefix added by runImage for display.
-      const text = (m.content ?? "").replace(/^🖼(?:✏️)?\s*/, "").trim()
-      if (!text) continue
-      turns.push({ role: "user", text })
-    }
-  }
-
-  // Trim to the most recent RESPONSES_HISTORY_LIMIT turns (balanced so the
-  // first entry is ideally a user message).
-  const trimmed = turns.slice(-RESPONSES_HISTORY_LIMIT)
-
-  // Append the current user turn — with attached image if any (encoded here
-  // as a data URL, written to disk by the backend + referenced via its path).
-  // For inline attachments we don't have a stored path yet, so inline the
-  // data URL via a special marker the backend expands.
-  let attachedDataUrl: string | undefined
-  if (attached) {
-    attachedDataUrl = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader()
-      r.onload = () => resolve(r.result as string)
-      r.onerror = () => reject(r.error ?? new Error("读取失败"))
-      r.readAsDataURL(attached)
-    })
-  }
-  trimmed.push({
-    role: "user",
-    text: prompt,
-    // The backend treats data: URLs in `images` as inline — it saves and
-    // re-references them automatically. (Current impl only supports stored
-    // /api/images/* paths; inline data URLs would be a future add.)
-    images: attachedDataUrl ? [attachedDataUrl] : undefined,
-  })
-
-  return generateWithResponses({
-    history: trimmed,
-    model: common.model,
-    useShared: settings.imageUseShared,
-    baseUrl: settings.imageUseShared ? undefined : common.baseUrl,
-    apiKey: settings.imageUseShared ? undefined : common.apiKey,
-    signal: common.signal,
-  })
-}
 
 /// Copy an image URL's bytes onto the clipboard as a PNG ClipboardItem so
 /// the user can paste it into Word / Slack / image editors.
@@ -881,7 +770,6 @@ export default function ChatPage() {
   const [attachedSkills, setAttachedSkills] = useState<Skill[]>([])
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
-  const [mode, setMode] = useState<"chat" | "image">("chat")
   const [systemPrompt, setSystemPrompt] = useState("")
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [input, setInput] = useState("")
@@ -889,26 +777,9 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarReload, setSidebarReload] = useState(0)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const [editImage, setEditImage] = useState<File | null>(null)
-  const [editImageUrl, setEditImageUrl] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const editFileInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (!editImage) {
-      setEditImageUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(editImage)
-    setEditImageUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [editImage])
-
-  useEffect(() => {
-    if (mode !== "image") setEditImage(null)
-  }, [mode])
 
   useEffect(() => {
     if (!user) return
@@ -969,14 +840,6 @@ export default function ChatPage() {
       })
     }
   }
-
-  const imageConfigured = isImageConfigured(settings)
-
-  useEffect(() => {
-    if (!imageConfigured && mode === "image") {
-      setMode("chat")
-    }
-  }, [imageConfigured, mode])
 
   useEffect(() => {
     if (!conversationId) {
@@ -1048,38 +911,8 @@ export default function ChatPage() {
   }
 
   function applyPlazaPrompt(prompt: string) {
-    if (settings.protocol === "openai" && imageConfigured) {
-      setMode("image")
-    }
     setInput(prompt)
     textareaRef.current?.focus()
-  }
-
-  async function applyPlazaAsEditBase(filename: string, prompt: string) {
-    if (settings.protocol !== "openai" || !imageConfigured) {
-      setError("请先在设置里配置 OpenAI 图像生成，才能以此图生图")
-      return
-    }
-    try {
-      const resp = await fetch(`/api/images/${filename}`, {
-        credentials: "same-origin",
-      })
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`)
-      }
-      const blob = await resp.blob()
-      const file = new File([blob], filename, {
-        type: blob.type || "image/png",
-      })
-      setMode("image")
-      setEditImage(file)
-      setInput(prompt)
-      textareaRef.current?.focus()
-    } catch (e) {
-      setError(
-        `加载底图失败：${e instanceof Error ? e.message : String(e)}`
-      )
-    }
   }
 
   const effectiveSystemPrompt = useMemo(
@@ -1158,16 +991,6 @@ export default function ChatPage() {
   async function send() {
     if (!canSend || !user) return
     const text = input.trim()
-
-    if (mode === "image") {
-      if (settings.protocol !== "openai") {
-        setError("图像模式仅在 OpenAI 协议下可用")
-        return
-      }
-      const attached = editImage
-      await runImage(text, text, attached)
-      return
-    }
 
     const convId = await ensureConversation()
     if (!convId) return
@@ -1264,113 +1087,6 @@ export default function ChatPage() {
     } catch (e) {
       setError(
         "已生成但保存失败：" + (e instanceof Error ? e.message : String(e))
-      )
-    }
-  }
-
-  async function runImage(prompt: string, rawInput: string, attached?: File | null) {
-    const convId = await ensureConversation()
-    if (!convId) return
-
-    setInput("")
-    setError(null)
-
-    const userPrefix = attached ? "🖼✏️ " : "🖼 "
-    const userMsg: UiMessage = { role: "user", content: `${userPrefix}${rawInput}` }
-    const baseLabel = attached ? "✏️ 编辑图像中" : "🎨 生成图像中"
-    setMessages((prev) => [
-      ...prev,
-      userMsg,
-      { role: "assistant", content: `${baseLabel}…（已等 0s）` },
-    ])
-    setStreaming(true)
-
-    const startedAt = Date.now()
-    const tickTimer = window.setInterval(() => {
-      const secs = Math.floor((Date.now() - startedAt) / 1000)
-      setMessages((prev) => {
-        if (prev.length === 0) return prev
-        const last = prev[prev.length - 1]
-        if (!last || last.role !== "assistant") return prev
-        const next = prev.slice()
-        next[next.length - 1] = {
-          ...last,
-          content: `${baseLabel}…（已等 ${secs}s）`,
-        }
-        return next
-      })
-    }, 1000)
-
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-
-    let assistantContent = ""
-    let genError: Error | null = null
-
-    try {
-      const imgMeta = IMAGE_PROTOCOL_META[settings.imageProtocol]
-      const common = {
-        protocol: settings.imageProtocol,
-        baseUrl: settings.imageBaseUrl || imgMeta.defaultBaseUrl,
-        apiKey: settings.imageApiKey,
-        prompt,
-        model: settings.imageModel || imgMeta.defaultModel,
-        useProxy: settings.imageUseProxy,
-        useShared: settings.imageUseShared,
-        signal: ctrl.signal,
-      }
-      const imgs = await runImageTurn({
-        prompt,
-        attached,
-        priorMessages: messages,
-        settings,
-        common,
-      })
-      assistantContent = imgs
-        .map(
-          (i) =>
-            `![${(i.revised_prompt || prompt).replace(/[\[\]]/g, "")}](${i.path})`
-        )
-        .join("\n\n")
-      if (!assistantContent) assistantContent = "(no images returned)"
-      setMessages((prev) => {
-        const copy = prev.slice()
-        copy[copy.length - 1] = { role: "assistant", content: assistantContent }
-        return copy
-      })
-    } catch (e) {
-      if ((e as { name?: string }).name !== "AbortError") {
-        genError = e instanceof Error ? e : new Error(String(e))
-      }
-    } finally {
-      window.clearInterval(tickTimer)
-      setStreaming(false)
-      abortRef.current = null
-      void refreshCredits()
-    }
-
-    if (genError) {
-      setError(genError.message)
-      setMessages((prev) => {
-        const copy = prev.slice()
-        if (copy[copy.length - 1]?.role === "assistant") copy.pop()
-        return copy
-      })
-      return
-    }
-
-    try {
-      await conversationsApi.append(convId, [
-        { role: "user", content: userMsg.content },
-        { role: "assistant", content: assistantContent },
-      ])
-      setSidebarReload((x) => x + 1)
-      await refetchMessages(convId)
-      if (attached) setEditImage(null)
-    } catch (e) {
-      setError(
-        "图像已生成但消息保存失败：" +
-          (e instanceof Error ? e.message : String(e))
       )
     }
   }
@@ -1493,9 +1209,7 @@ export default function ChatPage() {
 
     const keepUntil = messages.findIndex((m) => m.id === target!.id)
     setMessages(keepUntil < 0 ? messages : messages.slice(0, keepUntil))
-    const stripped = target.content.replace(/^(?:🖼✏️ |🖼 )/, "")
-    setInput(stripped)
-    setMode("chat")
+    setInput(target.content)
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
@@ -1534,15 +1248,11 @@ export default function ChatPage() {
               {conversationId ? `会话 #${conversationId}` : "新对话"}
             </h1>
             <ModelPicker
-              protocol={mode === "image" ? "openai" : settings.protocol}
-              model={mode === "image" ? settings.imageModel : settings.model}
-              mode={mode}
+              protocol={settings.protocol}
+              model={settings.model}
               settings={settings}
               onChangeModel={(next) => {
-                const updated: UpstreamSettings =
-                  mode === "image"
-                    ? { ...settings, imageModel: next }
-                    : { ...settings, model: next }
+                const updated: UpstreamSettings = { ...settings, model: next }
                 setSettings(updated)
                 if (user) saveSettings(user.id, updated)
                 if (updated.cloudSync) {
@@ -1706,104 +1416,29 @@ export default function ChatPage() {
 
         <div className="bg-background px-5 pb-4 pt-2">
           <div className="mx-auto max-w-3xl">
-            {mode === "image" && editImage && editImageUrl && (
-              <div className="mb-2 flex items-center gap-2 rounded-xl border border-border bg-card px-2 py-1.5 text-xs">
-                <img
-                  src={editImageUrl}
-                  alt="待编辑"
-                  className="size-10 shrink-0 rounded-md border border-border object-cover"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{editImage.name}</p>
-                  <p className="text-muted-foreground">
-                    将基于这张图进行编辑 · 需要支持图像编辑的模型（如 gpt-image-1）
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setEditImage(null)}
-                  className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  aria-label="移除图片"
-                  title="移除图片"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            )}
-            <input
-              ref={editFileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0] ?? null
-                setEditImage(f)
-                e.target.value = ""
-              }}
-            />
             <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
               <Button
                 type="button"
-                variant={mode === "image" ? "default" : "ghost"}
+                variant={settings.webSearch ? "default" : "ghost"}
                 size="icon"
                 className="shrink-0"
-                aria-label={mode === "image" ? "切换到文字" : "切换到图像"}
+                aria-label={
+                  settings.webSearch ? "关闭联网搜索" : "开启联网搜索"
+                }
                 title={
-                  settings.protocol !== "openai"
-                    ? "图像模式仅在 OpenAI 协议可用"
-                    : mode === "image"
-                    ? "当前：图像（点击切回文字）"
-                    : "当前：文字（点击切到图像）"
+                  !likelyWebSearchCapable(settings.protocol, settings.model)
+                    ? `当前模型可能不支持联网搜索（${
+                        settings.model || "未选择"
+                      }）；点击仍可切换，请求失败请改选支持的模型`
+                    : settings.webSearch
+                      ? "联网搜索：开启（点击关闭）"
+                      : "联网搜索：关闭（点击开启）"
                 }
-                disabled={settings.protocol !== "openai" || streaming}
-                onClick={() =>
-                  setMode((m) => (m === "image" ? "chat" : "image"))
-                }
+                disabled={streaming}
+                onClick={toggleWebSearch}
               >
-                {mode === "image" ? <ImageIcon /> : <MessageSquare />}
+                <Globe />
               </Button>
-              {mode === "chat" && (
-                <Button
-                  type="button"
-                  variant={settings.webSearch ? "default" : "ghost"}
-                  size="icon"
-                  className="shrink-0"
-                  aria-label={
-                    settings.webSearch ? "关闭联网搜索" : "开启联网搜索"
-                  }
-                  title={
-                    !likelyWebSearchCapable(settings.protocol, settings.model)
-                      ? `当前模型可能不支持联网搜索（${
-                          settings.model || "未选择"
-                        }）；点击仍可切换，请求失败请改选支持的模型`
-                      : settings.webSearch
-                        ? "联网搜索：开启（点击关闭）"
-                        : "联网搜索：关闭（点击开启）"
-                  }
-                  disabled={streaming}
-                  onClick={toggleWebSearch}
-                >
-                  <Globe />
-                </Button>
-              )}
-              {mode === "image" && (
-                <Button
-                  type="button"
-                  variant={editImage ? "default" : "ghost"}
-                  size="icon"
-                  className="shrink-0"
-                  aria-label="附加图片以编辑"
-                  title={
-                    editImage
-                      ? "已附加图片（点击更换）"
-                      : "附加图片以编辑"
-                  }
-                  disabled={streaming || !imageConfigured}
-                  onClick={() => editFileInputRef.current?.click()}
-                >
-                  <ImagePlus />
-                </Button>
-              )}
               <Textarea
                 ref={textareaRef}
                 value={input}
@@ -1819,13 +1454,7 @@ export default function ChatPage() {
                   }
                 }}
                 placeholder={
-                  !configured
-                    ? "先在设置中配置 API…"
-                    : mode === "image"
-                    ? editImage
-                      ? "描述要对这张图做的修改…"
-                      : "描述想要的图像…（留空并附加图片即可编辑）"
-                    : "问点什么…"
+                  !configured ? "先在设置中配置 API…" : "问点什么…"
                 }
                 rows={1}
                 className="max-h-60 min-h-[40px] flex-1 resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
@@ -1846,20 +1475,8 @@ export default function ChatPage() {
                   disabled={!canSend}
                   size="icon"
                   className="shrink-0"
-                  aria-label={
-                    mode === "image"
-                      ? editImage
-                        ? "编辑图像"
-                        : "生成图像"
-                      : "发送"
-                  }
-                  title={
-                    mode === "image"
-                      ? editImage
-                        ? "编辑图像"
-                        : "生成图像"
-                      : "发送"
-                  }
+                  aria-label="发送"
+                  title="发送"
                 >
                   <ArrowUp />
                 </Button>
@@ -1938,9 +1555,6 @@ export default function ChatPage() {
         open={plazaOpen}
         onClose={() => setPlazaOpen(false)}
         onUsePrompt={applyPlazaPrompt}
-        onUseAsEditBase={(filename, prompt) =>
-          void applyPlazaAsEditBase(filename, prompt)
-        }
       />
     </div>
   )

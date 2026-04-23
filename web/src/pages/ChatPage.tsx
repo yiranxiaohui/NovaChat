@@ -29,9 +29,11 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
 import { editImages, generateImages } from "@/lib/image-gen"
+import { listModels } from "@/lib/models"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import {
@@ -70,19 +72,174 @@ const PROTOCOL_COLOR: Record<Protocol, string> = {
   gemini: "from-sky-400 to-indigo-600",
 }
 
-function ModelBadge({ protocol, model }: { protocol: Protocol; model: string }) {
+function ModelPicker({
+  protocol,
+  model,
+  mode,
+  settings,
+  onChangeModel,
+}: {
+  protocol: Protocol
+  model: string
+  mode: "chat" | "image"
+  settings: UpstreamSettings
+  onChangeModel: (next: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [models, setModels] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const popRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!popRef.current) return
+      if (!popRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    window.addEventListener("mousedown", onDown)
+    return () => window.removeEventListener("mousedown", onDown)
+  }, [open])
+
+  const isImage = mode === "image"
+  const useShared = isImage ? settings.imageUseShared : settings.useShared
+  const baseUrl = isImage ? settings.imageBaseUrl : settings.baseUrl
+  const apiKey = isImage ? settings.imageApiKey : settings.apiKey
+  const useProxy = isImage ? settings.imageUseProxy : settings.useProxy
+  const fetchProtocol = isImage ? settings.imageProtocol : settings.protocol
+
+  async function fetchList() {
+    setError(null)
+    setLoading(true)
+    try {
+      const list = await listModels({
+        protocol: fetchProtocol as Protocol,
+        baseUrl,
+        apiKey,
+        useProxy,
+        useShared,
+      })
+      setModels(list)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setModels([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (open && models.length === 0 && !loading && !error) void fetchList()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Reset model cache when upstream context changes (protocol/baseUrl/shared/mode).
+  useEffect(() => {
+    setModels([])
+    setError(null)
+  }, [isImage, useShared, baseUrl, fetchProtocol])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return models
+    return models.filter((m) => m.toLowerCase().includes(q))
+  }, [models, query])
+
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs">
-      <span
-        className={cn(
-          "inline-block size-2 rounded-full bg-gradient-to-br",
-          PROTOCOL_COLOR[protocol]
-        )}
-      />
-      <span className="font-medium">{PROTOCOL_META[protocol].label.replace(" 兼容", "")}</span>
-      <span className="text-muted-foreground">·</span>
-      <span className="truncate text-muted-foreground">{model || "未配置"}</span>
-    </span>
+    <div className="relative" ref={popRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10"
+        title="点击切换模型"
+      >
+        <span
+          className={cn(
+            "inline-block size-2 rounded-full bg-gradient-to-br",
+            PROTOCOL_COLOR[protocol]
+          )}
+        />
+        <span className="font-medium">
+          {PROTOCOL_META[protocol].label.replace(" 兼容", "")}
+        </span>
+        <span className="text-muted-foreground">·</span>
+        <span className="truncate text-muted-foreground">{model || "未配置"}</span>
+        <span className="text-muted-foreground">▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-lg border border-border bg-popover p-2 shadow-panel">
+          <div className="mb-2 flex items-center gap-1">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索模型…"
+              className="h-8 text-xs"
+              autoFocus
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={() => void fetchList()}
+              disabled={loading}
+              title="重新拉取"
+              className="size-8 shrink-0"
+            >
+              <RefreshCcw className={cn("size-3.5", loading && "animate-spin")} />
+            </Button>
+          </div>
+          <div className="nc-scroll max-h-72 overflow-y-auto">
+            {loading && models.length === 0 && (
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+                加载中…
+              </p>
+            )}
+            {!loading && error && (
+              <p className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            {!loading && !error && filtered.length === 0 && (
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+                {models.length === 0
+                  ? "暂无可用模型"
+                  : "没有匹配的模型"}
+              </p>
+            )}
+            <ul className="flex flex-col">
+              {filtered.map((m) => {
+                const active = m === model
+                return (
+                  <li key={m}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeModel(m)
+                        setOpen(false)
+                      }}
+                      className={cn(
+                        "flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-accent",
+                        active && "bg-accent text-accent-foreground"
+                      )}
+                    >
+                      <span className="truncate font-mono">{m}</span>
+                      {active && <Check className="size-3.5 text-primary" />}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+          <div className="mt-2 border-t border-border pt-2 text-[10px] text-muted-foreground">
+            {useShared
+              ? "共享后端 · 实时从上游获取"
+              : "自带 Key · 从你配置的上游获取"}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1249,25 +1406,24 @@ export default function ChatPage() {
             <h1 className="truncate text-base font-semibold tracking-tight">
               {conversationId ? `会话 #${conversationId}` : "新对话"}
             </h1>
-            <ModelBadge
+            <ModelPicker
               protocol={mode === "image" ? "openai" : settings.protocol}
-              model={
-                mode === "image"
-                  ? settings.imageModel ||
-                    (settings.imageUseShared
-                      ? settings.imageProtocol === "gemini"
-                        ? sharedStatus?.image_gemini_model ?? ""
-                        : sharedStatus?.image_openai_model ?? ""
-                      : "")
-                  : settings.model ||
-                    (settings.useShared
-                      ? settings.protocol === "openai"
-                        ? sharedStatus?.chat_openai_model ?? ""
-                        : settings.protocol === "claude"
-                          ? sharedStatus?.chat_claude_model ?? ""
-                          : sharedStatus?.chat_gemini_model ?? ""
-                      : "")
-              }
+              model={mode === "image" ? settings.imageModel : settings.model}
+              mode={mode}
+              settings={settings}
+              onChangeModel={(next) => {
+                const updated: UpstreamSettings =
+                  mode === "image"
+                    ? { ...settings, imageModel: next }
+                    : { ...settings, model: next }
+                setSettings(updated)
+                if (user) saveSettings(user.id, updated)
+                if (updated.cloudSync) {
+                  settingsApi.save(updated).catch(() => {
+                    /* non-fatal */
+                  })
+                }
+              }}
             />
           </div>
           <div className="flex items-center gap-1">

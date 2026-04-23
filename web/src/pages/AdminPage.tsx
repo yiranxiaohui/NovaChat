@@ -8,6 +8,7 @@ import {
   Database,
   Key,
   Mail,
+  Menu,
   Plug,
   RefreshCw,
   Send,
@@ -18,6 +19,7 @@ import {
   UserCog,
   Users,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -74,6 +76,7 @@ export default function AdminPage() {
   const { state } = useAuth()
   const currentUser = state.status === "authed" ? state.user : null
   const [section, setSection] = useState<Section>("overview")
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   if (state.status === "loading") {
     return (
@@ -88,7 +91,21 @@ export default function AdminPage() {
 
   return (
     <div className="flex h-svh bg-background text-foreground">
-      <aside className="flex h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+      {mobileNavOpen && (
+        <button
+          type="button"
+          aria-label="关闭侧栏"
+          onClick={() => setMobileNavOpen(false)}
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+        />
+      )}
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 flex h-full w-60 max-w-[85vw] flex-col border-r border-sidebar-border bg-sidebar transition-transform",
+          mobileNavOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
+          "md:static md:w-60 md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none"
+        )}
+      >
         <div className="flex items-center gap-2 px-4 pb-3 pt-4">
           <div className="grid size-8 place-items-center rounded-md bg-gradient-to-br from-primary to-chart-5 text-primary-foreground">
             <Shield className="size-4" />
@@ -109,7 +126,10 @@ export default function AdminPage() {
               <button
                 key={n.key}
                 type="button"
-                onClick={() => setSection(n.key)}
+                onClick={() => {
+                  setSection(n.key)
+                  setMobileNavOpen(false)
+                }}
                 className={
                   "flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors " +
                   (active
@@ -135,18 +155,29 @@ export default function AdminPage() {
       </aside>
 
       <div className="nc-scroll flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <header className="flex items-center justify-between border-b border-border bg-background/70 px-6 py-4 backdrop-blur">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              {NAV.find((n) => n.key === section)?.label}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              仅管理员可见。对系统全局生效。
-            </p>
+        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:px-6 md:py-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="打开侧栏"
+            >
+              <Menu />
+            </Button>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl">
+                {NAV.find((n) => n.key === section)?.label}
+              </h1>
+              <p className="hidden text-sm text-muted-foreground sm:block">
+                仅管理员可见。对系统全局生效。
+              </p>
+            </div>
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-5xl px-6 py-6">
+        <main className="mx-auto w-full max-w-5xl px-3 py-4 md:px-6 md:py-6">
           {section === "overview" && <OverviewPanel />}
           {section === "users" && <UsersPanel currentUserId={currentUser.id} />}
           {section === "credits" && <CreditsPanel />}
@@ -327,8 +358,8 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2 text-left font-medium">ID</th>
@@ -753,8 +784,8 @@ function CreditsPanel() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2 text-left font-medium">ID</th>
@@ -1067,8 +1098,8 @@ function InvitesPanel() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-3 py-2 text-left font-medium">邀请人</th>
@@ -1896,8 +1927,8 @@ function PaymentsPanel() {
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-xs">
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[32rem] text-xs">
             <thead className="bg-muted/40 text-[10px] uppercase text-muted-foreground">
               <tr>
                 <th className="px-2 py-2 text-left font-medium">订单号</th>

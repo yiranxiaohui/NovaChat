@@ -120,15 +120,15 @@ export default function SetupPage() {
   const step1Complete = kind === "sqlite" || Boolean(database.trim())
 
   return (
-    <div className="bg-auth-grid min-h-svh px-4 py-10">
+    <div className="bg-auth-grid min-h-svh px-3 py-6 sm:px-4 sm:py-10">
       <div className="mx-auto max-w-2xl">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 sm:mb-8">
           <BrandMark subtitle="首次初始化" />
           <Stepper step={step} />
         </div>
 
         {step === 1 && (
-          <div className="rounded-2xl border border-border bg-card p-6 shadow-panel">
+          <div className="rounded-2xl border border-border bg-card p-4 shadow-panel sm:p-6">
             <h2 className="text-lg font-semibold">选择数据库</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               三者都可以随时切换，数据不会跟着走。生产环境推荐 PostgreSQL。
@@ -184,7 +184,7 @@ export default function SetupPage() {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="host">主机</Label>
                     <Input id="host" value={host} onChange={(e) => setHost(e.target.value)} />
@@ -259,14 +259,14 @@ export default function SetupPage() {
         {step === 2 && (
           <form
             onSubmit={runInstall}
-            className="rounded-2xl border border-border bg-card p-6 shadow-panel"
+            className="rounded-2xl border border-border bg-card p-4 shadow-panel sm:p-6"
           >
             <h2 className="text-lg font-semibold">创建管理员账号</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               这是首位登录 NovaChat 的账号。之后可以在界面里再注册更多用户。
             </p>
 
-            <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="au">用户名</Label>
                 <Input

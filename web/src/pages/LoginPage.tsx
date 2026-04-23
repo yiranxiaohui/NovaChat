@@ -30,7 +30,7 @@ export default function LoginPage() {
 
   return (
     <div className="bg-auth-grid grid min-h-svh place-items-center p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-panel">
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-panel sm:p-8">
         <BrandMark subtitle="多协议对话 · 自托管" className="mb-6" />
         <h1 className="text-2xl font-semibold tracking-tight">欢迎回来</h1>
         <p className="mt-1 text-sm text-muted-foreground">

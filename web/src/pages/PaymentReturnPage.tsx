@@ -41,8 +41,8 @@ export default function PaymentReturnPage() {
   }, [outTradeNo])
 
   return (
-    <div className="grid min-h-svh place-items-center bg-background p-6 text-foreground">
-      <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-lg border border-border bg-card p-8 shadow-sm">
+    <div className="grid min-h-svh place-items-center bg-background p-4 text-foreground sm:p-6">
+      <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-lg border border-border bg-card p-6 shadow-sm sm:p-8">
         {error && !order && (
           <>
             <XCircle className="size-10 text-destructive" />

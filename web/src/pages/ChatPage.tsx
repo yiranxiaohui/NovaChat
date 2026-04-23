@@ -9,6 +9,7 @@ import {
   Download,
   Globe,
   Images,
+  Menu,
   MessageSquareText,
   Minus,
   Paperclip,
@@ -760,6 +761,7 @@ export default function ChatPage() {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [plazaOpen, setPlazaOpen] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(
     new Set()
   )
@@ -1328,14 +1330,40 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-svh bg-background text-foreground">
-      <Sidebar
-        reloadKey={sidebarReload}
-        onOpenLibrary={() => setLibraryOpen(true)}
-      />
+      {mobileNavOpen && (
+        <button
+          type="button"
+          aria-label="关闭侧栏"
+          onClick={() => setMobileNavOpen(false)}
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+        />
+      )}
+      <div
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 transition-transform",
+          mobileNavOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
+          "md:static md:translate-x-0 md:shadow-none"
+        )}
+      >
+        <Sidebar
+          reloadKey={sidebarReload}
+          onOpenLibrary={() => setLibraryOpen(true)}
+          onNavigate={() => setMobileNavOpen(false)}
+        />
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-3 border-b border-border bg-background/70 px-5 py-3 backdrop-blur">
-          <div className="flex min-w-0 items-center gap-3">
+        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:gap-3 md:px-5">
+          <div className="flex min-w-0 items-center gap-2 md:gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="打开侧栏"
+            >
+              <Menu />
+            </Button>
             <h1 className="truncate text-base font-semibold tracking-tight">
               {conversationId ? `会话 #${conversationId}` : "新对话"}
             </h1>
@@ -1426,7 +1454,7 @@ export default function ChatPage() {
         </header>
 
         <div className="nc-scroll flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 md:px-5 md:py-6">
             {banner}
             {loadingMessages && (
               <p className="text-center text-sm text-muted-foreground">加载中…</p>
@@ -1506,7 +1534,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="bg-background px-5 pb-4 pt-2">
+        <div className="bg-background px-3 pb-3 pt-2 md:px-5 md:pb-4">
           <div className="mx-auto max-w-3xl">
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2 rounded-xl border border-border bg-card p-2">

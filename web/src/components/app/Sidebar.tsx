@@ -23,6 +23,9 @@ type Props = {
   reloadKey: number
   onCreated?: (c: Conversation) => void
   onOpenLibrary?: () => void
+  /** Called after the user picks a navigation target (link or button).
+   *  Parent uses this to close the mobile drawer. */
+  onNavigate?: () => void
 }
 
 function relativeTime(iso: string): string {
@@ -38,7 +41,7 @@ function relativeTime(iso: string): string {
   return d.toLocaleDateString()
 }
 
-export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
+export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Props) {
   const { id: paramId } = useParams()
   const activeId = paramId ? Number(paramId) : null
   const nav = useNavigate()
@@ -88,6 +91,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
       setItems((s) => [c, ...s])
       onCreated?.(c)
       nav(`/c/${c.id}`)
+      onNavigate?.()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -172,7 +176,10 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
                     to={`/c/${c.id}`}
                     className="min-w-0 flex-1 px-3 py-2"
                     title={c.title}
-                    onClick={() => setMenuFor(null)}
+                    onClick={() => {
+                      setMenuFor(null)
+                      onNavigate?.()
+                    }}
                   >
                     <div className="truncate text-sm font-medium">{c.title}</div>
                     <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
@@ -226,6 +233,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
       <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
         <Link
           to="/studio"
+          onClick={() => onNavigate?.()}
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           title="多轮对话式生图（Responses API）"
         >
@@ -234,6 +242,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
         {user?.is_admin && (
           <Link
             to="/admin"
+            onClick={() => onNavigate?.()}
             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
             title="进入管理控制台"
           >
@@ -243,7 +252,10 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary }: Props) {
         {onOpenLibrary && (
           <button
             type="button"
-            onClick={onOpenLibrary}
+            onClick={() => {
+              onOpenLibrary()
+              onNavigate?.()
+            }}
             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           >
             <BookMarked className="size-4" /> 提示词库

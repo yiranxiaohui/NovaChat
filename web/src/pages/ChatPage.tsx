@@ -141,25 +141,25 @@ function ModelPicker({
   }, [models, query])
 
   return (
-    <div className="relative" ref={popRef}>
+    <div className="relative min-w-0" ref={popRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10"
+        className="inline-flex min-w-0 max-w-[11rem] items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10 md:max-w-none"
         title="点击切换模型"
       >
         <span
           className={cn(
-            "inline-block size-2 rounded-full bg-gradient-to-br",
+            "inline-block size-2 shrink-0 rounded-full bg-gradient-to-br",
             PROTOCOL_COLOR[protocol]
           )}
         />
-        <span className="font-medium">
+        <span className="hidden font-medium md:inline">
           {PROTOCOL_META[protocol].label.replace(" 兼容", "")}
         </span>
-        <span className="text-muted-foreground">·</span>
+        <span className="hidden text-muted-foreground md:inline">·</span>
         <span className="truncate text-muted-foreground">{model || "未配置"}</span>
-        <span className="text-muted-foreground">▾</span>
+        <span className="shrink-0 text-muted-foreground">▾</span>
       </button>
 
       {open && (
@@ -1353,18 +1353,18 @@ export default function ChatPage() {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:gap-3 md:px-5">
-          <div className="flex min-w-0 items-center gap-2 md:gap-3">
+        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-2 py-3 backdrop-blur md:gap-3 md:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 md:gap-3">
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden"
+              className="shrink-0 md:hidden"
               onClick={() => setMobileNavOpen(true)}
               aria-label="打开侧栏"
             >
               <Menu />
             </Button>
-            <h1 className="truncate text-base font-semibold tracking-tight">
+            <h1 className="hidden truncate text-base font-semibold tracking-tight md:block">
               {conversationId ? `会话 #${conversationId}` : "新对话"}
             </h1>
             <ModelPicker
@@ -1383,17 +1383,18 @@ export default function ChatPage() {
               }}
             />
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center">
             {sharedStatus?.enabled && creditsMe && (
               <button
                 type="button"
                 onClick={() => setRechargeOpen(true)}
-                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs tabular-nums transition-colors hover:border-primary/60 hover:bg-primary/10"
+                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-1 text-xs tabular-nums transition-colors hover:border-primary/60 hover:bg-primary/10 md:px-2.5"
                 title={`剩余积分 ${creditsMe.balance}｜对话 ${creditsMe.cost_chat} 分/次，生图 ${creditsMe.cost_image} 分/次。点击充值。`}
               >
-                <span className="text-muted-foreground">积分</span>
+                <span className="hidden text-muted-foreground md:inline">积分</span>
                 <span className="font-medium">{creditsMe.balance}</span>
-                <span className="text-muted-foreground">+</span>
+                <span className="hidden text-muted-foreground md:inline">+</span>
+                <Plus className="size-3 text-muted-foreground md:hidden" />
               </button>
             )}
             <Button
@@ -1401,7 +1402,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => setSystemPromptOpen(true)}
               title={systemPrompt ? "系统提示词（已设置）" : "系统提示词"}
-              className="relative"
+              className="relative size-8 md:size-9"
             >
               <MessageSquareText />
               {systemPrompt && (
@@ -1413,6 +1414,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => setLibraryOpen(true)}
               title="提示词库"
+              className="hidden md:inline-flex"
             >
               <BookMarked />
             </Button>
@@ -1425,7 +1427,7 @@ export default function ChatPage() {
                   ? `Skills（已挂载 ${attachedSkills.length}）`
                   : "Skills"
               }
-              className="relative"
+              className="relative size-8 md:size-9"
             >
               <Wand2 />
               {attachedSkills.length > 0 && (
@@ -1439,6 +1441,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => setPlazaOpen(true)}
               title="图片广场"
+              className="size-8 md:size-9"
             >
               <Images />
             </Button>
@@ -1447,6 +1450,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => setSettingsOpen(true)}
               title="设置"
+              className="size-8 md:size-9"
             >
               <Settings />
             </Button>

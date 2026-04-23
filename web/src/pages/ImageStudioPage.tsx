@@ -70,6 +70,7 @@ export default function ImageStudioPage() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [shared, setShared] = useState<SharedStatus | null>(null)
+  const [sharedLoaded, setSharedLoaded] = useState(false)
   const [useShared, setUseShared] = useState(true)
 
   const [models, setModels] = useState<string[]>([])
@@ -92,10 +93,22 @@ export default function ImageStudioPage() {
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     creditsApi
       .sharedStatus()
-      .then(setShared)
-      .catch(() => setShared(null))
+      .then((s) => {
+        if (cancelled) return
+        setShared(s)
+        setSharedLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setShared(null)
+        setSharedLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -160,11 +173,13 @@ export default function ImageStudioPage() {
   }, [])
 
   // Load models whenever the shared toggle (or availability) changes.
+  // Gate on sharedLoaded so we don't fire off a bogus "own key" request
+  // before the sharedStatus call has resolved.
   useEffect(() => {
-    if (!user) return
+    if (!user || !sharedLoaded) return
     void reloadModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, useShared, shared?.image_openai_available, shared?.enabled])
+  }, [user?.id, useShared, sharedLoaded, shared?.image_openai_available, shared?.enabled])
 
   const sharedAvailable = !!shared?.image_openai_available && !!shared?.enabled
 

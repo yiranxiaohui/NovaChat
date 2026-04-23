@@ -43,7 +43,9 @@ const STYLE_OPTIONS = [
   { value: "vivid", label: "Vivid（鲜艳）" },
   { value: "natural", label: "Natural（自然）" },
 ]
-const MODEL_SUGGESTIONS = ["gpt-image-1", "gpt-image-1-mini", "dall-e-3"]
+
+/// Heuristic for picking image-capable models out of a full /v1/models list.
+const IMAGE_MODEL_RE = /image|dall.?e|imagen/i
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -69,6 +71,11 @@ export default function ImageStudioPage() {
 
   const [shared, setShared] = useState<SharedStatus | null>(null)
   const [useShared, setUseShared] = useState(true)
+
+  const [models, setModels] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [showAllModels, setShowAllModels] = useState(false)
 
   const [submitting, setSubmitting] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -101,6 +108,38 @@ export default function ImageStudioPage() {
     return () => URL.revokeObjectURL(u)
   }, [attached])
 
+  async function reloadModels() {
+    if (!user) return
+    setModelsLoading(true)
+    setModelsError(null)
+    try {
+      const effective = await loadEffectiveSettings(user.id)
+      const imgMeta = IMAGE_PROTOCOL_META.openai
+      const effectivelyShared = useShared && !!shared?.image_openai_available && !!shared?.enabled
+      const list = await studioApi.listModels({
+        useShared: effectivelyShared,
+        upstreamUrl: effectivelyShared
+          ? undefined
+          : `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
+        upstreamKey: effectivelyShared ? undefined : effective.imageApiKey,
+      })
+      setModels(list)
+      // Snap to first available image-like model if current selection isn't in list.
+      if (list.length > 0) {
+        const imageLike = list.filter((m) => IMAGE_MODEL_RE.test(m))
+        const visible = showAllModels ? list : imageLike.length > 0 ? imageLike : list
+        if (!visible.includes(model)) {
+          setModel(visible[0] ?? list[0]!)
+        }
+      }
+    } catch (e) {
+      setModelsError(e instanceof Error ? e.message : String(e))
+      setModels([])
+    } finally {
+      setModelsLoading(false)
+    }
+  }
+
   async function loadHistory() {
     try {
       setHistory(await studioApi.list(1))
@@ -119,6 +158,13 @@ export default function ImageStudioPage() {
         /* non-fatal */
       })
   }, [])
+
+  // Load models whenever the shared toggle (or availability) changes.
+  useEffect(() => {
+    if (!user) return
+    void reloadModels()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, useShared, shared?.image_openai_available, shared?.enabled])
 
   const sharedAvailable = !!shared?.image_openai_available && !!shared?.enabled
 
@@ -274,18 +320,74 @@ export default function ImageStudioPage() {
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
-            <Label className="text-xs">模型</Label>
-            <Input
-              list="studio-models"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="gpt-image-1"
-            />
-            <datalist id="studio-models">
-              {MODEL_SUGGESTIONS.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">模型</Label>
+              <button
+                type="button"
+                onClick={() => void reloadModels()}
+                disabled={modelsLoading}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="重新拉取模型列表"
+              >
+                <RefreshCw
+                  className={"size-3 " + (modelsLoading ? "animate-spin" : "")}
+                />
+                {modelsLoading ? "加载中…" : "刷新"}
+              </button>
+            </div>
+            {models.length === 0 ? (
+              <Input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={modelsLoading ? "加载中…" : "gpt-image-1"}
+              />
+            ) : (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {!(showAllModels ? models : models.filter((m) => IMAGE_MODEL_RE.test(m))).includes(
+                  model
+                ) && model && <option value={model}>{model}（手动输入）</option>}
+                {(showAllModels
+                  ? models
+                  : models.filter((m) => IMAGE_MODEL_RE.test(m)).length > 0
+                    ? models.filter((m) => IMAGE_MODEL_RE.test(m))
+                    : models
+                ).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              {modelsError ? (
+                <span className="truncate text-destructive" title={modelsError}>
+                  拉取失败：{modelsError}
+                </span>
+              ) : (
+                <span>
+                  {models.length > 0
+                    ? `共 ${models.length} 个可用模型`
+                    : modelsLoading
+                      ? "正在拉取…"
+                      : "点击刷新拉取上游模型"}
+                </span>
+              )}
+              {models.length > 0 && (
+                <label className="flex cursor-pointer items-center gap-1">
+                  <input
+                    type="checkbox"
+                    className="size-3 accent-primary"
+                    checked={showAllModels}
+                    onChange={(e) => setShowAllModels(e.target.checked)}
+                  />
+                  显示全部
+                </label>
+              )}
+            </div>
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">

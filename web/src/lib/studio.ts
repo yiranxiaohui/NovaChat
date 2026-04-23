@@ -49,7 +49,31 @@ function headersFor(o: GenerateParams): Record<string, string> {
   return h
 }
 
+export type ListModelsOptions = {
+  useShared?: boolean
+  upstreamUrl?: string
+  upstreamKey?: string
+  signal?: AbortSignal
+}
+
 export const studioApi = {
+  async listModels(o: ListModelsOptions): Promise<string[]> {
+    const headers: Record<string, string> = {}
+    if (o.useShared) {
+      headers["X-Use-Shared"] = "1"
+    } else if (o.upstreamUrl && o.upstreamKey) {
+      headers["X-Upstream-Url"] = o.upstreamUrl
+      headers["X-Upstream-Key"] = o.upstreamKey
+    }
+    const r = await jsonOrThrow<{ models: string[] }>(
+      await fetch("/api/studio/models", {
+        headers,
+        credentials: "same-origin",
+        signal: o.signal,
+      })
+    )
+    return r.models
+  },
   async submit(o: GenerateParams): Promise<{ token: string }> {
     return jsonOrThrow(
       await fetch("/api/studio/generate", {

@@ -700,4 +700,95 @@ pub fn routes() -> Router<AppState> {
         .route("/studio/generations", get(list_generations))
         .route("/studio/generations/{id}", axum::routing::delete(delete_generation))
         .route("/studio/jobs/{token}", get(get_generation))
+        .route("/studio/models", get(list_models))
+}
+
+// ---------------------------------------------------------------------------
+// models: resolve the same upstream (image flavor for shared) and GET /v1/models
+// ---------------------------------------------------------------------------
+
+async fn list_models(
+    State(state): State<AppState>,
+    Extension(_installed): Extension<InstalledState>,
+    Extension(_user): Extension<CurrentUser>,
+    headers: HeaderMap,
+) -> Response {
+    let want_shared = header_truthy(&headers, "x-use-shared");
+
+    let (base_url, key, used_shared) = if !want_shared {
+        let hdr_url = read_header(&headers, "x-upstream-url");
+        let hdr_key = read_header(&headers, "x-upstream-key");
+        match (hdr_url, hdr_key) {
+            (Some(u), Some(k)) if !u.is_empty() && !k.is_empty() => {
+                (u.trim_end_matches('/').to_string(), k.to_string(), false)
+            }
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "缺少 X-Upstream-Url/Key 头",
+                );
+            }
+        }
+    } else {
+        let installed = match state.require_installed().await {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        match credits::read_shared(
+            &installed.pool,
+            installed.kind,
+            "openai",
+            credits::SharedFlavor::Image,
+        )
+        .await
+        {
+            Some(s) => (s.url.trim_end_matches('/').to_string(), s.key, true),
+            None => {
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "共享图像后端未配置",
+                );
+            }
+        }
+    };
+
+    let url = format!("{base_url}/v1/models");
+    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    let resp = match client
+        .get(&url)
+        .header(header::ACCEPT, "application/json")
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("upstream: {e}")),
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return err(StatusCode::BAD_GATEWAY, format!("upstream {status}: {body}"));
+    }
+    let parsed: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("parse: {e}")),
+    };
+
+    let mut models: Vec<String> = parsed
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|x| x.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort();
+    models.dedup();
+
+    Json(json!({ "models": models })).into_response()
 }

@@ -7,6 +7,7 @@ import {
   Download,
   ImageIcon,
   ImagePlus,
+  Images,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -24,6 +25,7 @@ import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { creditsApi, type SharedStatus } from "@/lib/credits"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
+import { ImagePlazaDialog } from "@/components/app/ImagePlazaDialog"
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -126,6 +128,7 @@ export default function ImageStudioPage() {
     null
   )
   const [pastedFlash, setPastedFlash] = useState(false)
+  const [plazaOpen, setPlazaOpen] = useState(false)
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -609,9 +612,19 @@ export default function ImageStudioPage() {
               单图生成 · 可发布到广场
             </span>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => void loadHistory()}>
-            <RefreshCw className="size-3.5" /> 刷新历史
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPlazaOpen(true)}
+              title="图片广场"
+            >
+              <Images className="size-3.5" /> 图片广场
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void loadHistory()}>
+              <RefreshCw className="size-3.5" /> 刷新历史
+            </Button>
+          </div>
         </header>
 
         <main className="nc-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -699,6 +712,15 @@ export default function ImageStudioPage() {
           </div>
         </main>
       </div>
+
+      <ImagePlazaDialog
+        open={plazaOpen}
+        onClose={() => setPlazaOpen(false)}
+        onUsePrompt={(p) => {
+          setPrompt(p)
+          setPlazaOpen(false)
+        }}
+      />
     </div>
   )
 }

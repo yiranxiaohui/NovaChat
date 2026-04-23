@@ -554,16 +554,18 @@ async fn resolve_chat_upstream(
     .await
     {
         Some(s) => {
-            let admin_model = s.model.clone().unwrap_or_default();
-            if admin_model.is_empty() {
+            // Shared mode: the client picks the model freely via X-Upstream-Model.
+            let client_model = header_str(headers, "x-upstream-model")
+                .unwrap_or_default();
+            if client_model.is_empty() {
                 return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "shared upstream has no configured model — ask the admin to set one",
+                    StatusCode::BAD_REQUEST,
+                    "请先在设置里选择模型（X-Upstream-Model 头缺失）",
                 )
                     .into_response());
             }
-            let url = chat_endpoint(&s.url, protocol, &admin_model);
-            Ok((url, s.key, true, Some(admin_model)))
+            let url = chat_endpoint(&s.url, protocol, &client_model);
+            Ok((url, s.key, true, Some(client_model)))
         }
         None => Err((
             StatusCode::BAD_REQUEST,

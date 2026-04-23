@@ -1250,62 +1250,47 @@ function SharedBackendPanel() {
 
       <UpstreamBlock
         title="对话 · OpenAI 兼容"
-        which="chat_openai"
         keySet={cfg.shared_chat_openai_key_set}
         url={cfg.shared_chat_openai_url}
-        model={cfg.shared_chat_openai_model}
         hostPlaceholder="https://api.openai.com"
         pathHint="/v1/chat/completions"
         onUrl={(v) => set("shared_chat_openai_url", v)}
-        onModel={(v) => set("shared_chat_openai_model", v)}
         onKey={(v) => set("shared_chat_openai_key", v)}
       />
       <UpstreamBlock
         title="对话 · Anthropic Claude"
-        which="chat_claude"
         keySet={cfg.shared_chat_claude_key_set}
         url={cfg.shared_chat_claude_url}
-        model={cfg.shared_chat_claude_model}
         hostPlaceholder="https://api.anthropic.com"
         pathHint="/v1/messages"
         onUrl={(v) => set("shared_chat_claude_url", v)}
-        onModel={(v) => set("shared_chat_claude_model", v)}
         onKey={(v) => set("shared_chat_claude_key", v)}
       />
       <UpstreamBlock
         title="对话 · Google Gemini"
-        which="chat_gemini"
         keySet={cfg.shared_chat_gemini_key_set}
         url={cfg.shared_chat_gemini_url}
-        model={cfg.shared_chat_gemini_model}
         hostPlaceholder="https://generativelanguage.googleapis.com"
         pathHint="/v1beta/models/{model}:streamGenerateContent"
         onUrl={(v) => set("shared_chat_gemini_url", v)}
-        onModel={(v) => set("shared_chat_gemini_model", v)}
         onKey={(v) => set("shared_chat_gemini_key", v)}
       />
       <UpstreamBlock
         title="图像 · OpenAI"
-        which="image_openai"
         keySet={cfg.shared_image_openai_key_set}
         url={cfg.shared_image_openai_url}
-        model={cfg.shared_image_openai_model}
         hostPlaceholder="https://api.openai.com"
         pathHint="/v1/images/generations"
         onUrl={(v) => set("shared_image_openai_url", v)}
-        onModel={(v) => set("shared_image_openai_model", v)}
         onKey={(v) => set("shared_image_openai_key", v)}
       />
       <UpstreamBlock
         title="图像 · Gemini / Imagen"
-        which="image_gemini"
         keySet={cfg.shared_image_gemini_key_set}
         url={cfg.shared_image_gemini_url}
-        model={cfg.shared_image_gemini_model}
         hostPlaceholder="https://generativelanguage.googleapis.com"
         pathHint="/v1beta/models/{model}:predict"
         onUrl={(v) => set("shared_image_gemini_url", v)}
-        onModel={(v) => set("shared_image_gemini_model", v)}
         onKey={(v) => set("shared_image_gemini_key", v)}
       />
 
@@ -1353,70 +1338,25 @@ function NumField({
   )
 }
 
-type UpstreamWhich =
-  | "chat_openai"
-  | "chat_claude"
-  | "chat_gemini"
-  | "image_openai"
-  | "image_gemini"
-
 function UpstreamBlock({
   title,
-  which,
   keySet,
   url,
-  model,
   hostPlaceholder,
   pathHint,
   onUrl,
-  onModel,
   onKey,
 }: {
   title: string
-  which: UpstreamWhich
   keySet: boolean
   url: string
-  model: string
   hostPlaceholder: string
   pathHint: string
   onUrl: (v: string) => void
-  onModel: (v: string) => void
   onKey: (v: string) => void
 }) {
   const [u, setU] = useState(url)
-  const [m, setM] = useState(model)
   const [k, setK] = useState("")
-  const [models, setModels] = useState<string[] | null>(null)
-  const [loadingModels, setLoadingModels] = useState(false)
-  const [modelError, setModelError] = useState<string | null>(null)
-
-  async function fetchModels() {
-    setModelError(null)
-    setLoadingModels(true)
-    try {
-      const list = await adminCreditsApi.listUpstreamModels(which)
-      setModels(list)
-      if (list.length > 0 && !list.includes(m)) {
-        setM(list[0]!)
-        onModel(list[0]!)
-      }
-    } catch (e) {
-      setModelError(e instanceof Error ? e.message : String(e))
-      setModels([])
-    } finally {
-      setLoadingModels(false)
-    }
-  }
-
-  // Auto-load the model list when the upstream looks usable (URL + saved key).
-  useEffect(() => {
-    if (u && keySet) {
-      void fetchModels()
-    } else {
-      setModels(null)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   return (
     <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -1456,65 +1396,9 @@ function UpstreamBlock({
             placeholder={keySet ? "••••（已设置，留空不修改）" : "sk-…"}
           />
         </div>
-        <div className="flex flex-col gap-1.5 sm:col-span-3">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs">默认模型</Label>
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              onClick={() => void fetchModels()}
-              disabled={loadingModels || !keySet || !u}
-              title={
-                !keySet
-                  ? "先保存 API Key 再拉取模型列表"
-                  : !u
-                    ? "先填 Base URL"
-                    : "从上游拉取模型列表"
-              }
-            >
-              <RefreshCw /> {loadingModels ? "加载中…" : "拉取模型"}
-            </Button>
-          </div>
-          {models && models.length > 0 ? (
-            <select
-              value={m}
-              onChange={(e) => {
-                setM(e.target.value)
-                onModel(e.target.value)
-              }}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {!models.includes(m) && m && (
-                <option value={m}>{m}（未在列表中）</option>
-              )}
-              {models.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <Input
-              value={m}
-              onChange={(e) => {
-                setM(e.target.value)
-                onModel(e.target.value)
-              }}
-              placeholder={
-                keySet
-                  ? "点「拉取模型」从上游获取"
-                  : "保存 URL 和 Key 后可拉取模型"
-              }
-            />
-          )}
-          {modelError && (
-            <p className="text-xs text-destructive">{modelError}</p>
-          )}
-          {models && models.length === 0 && !modelError && (
-            <p className="text-xs text-muted-foreground">上游未返回模型列表。</p>
-          )}
-        </div>
+        <p className="text-[11px] text-muted-foreground sm:col-span-3">
+          模型不再在此处配置——用户在设置或图像工作室里实时从上游拉取并自由选择。
+        </p>
       </div>
     </div>
   )

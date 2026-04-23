@@ -112,18 +112,9 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   const meta = PROTOCOL_META[protocol]
   const imgMeta = IMAGE_PROTOCOL_META[imageProtocol]
-  const canLoadChat = !useShared && Boolean(baseUrl.trim() && apiKey.trim())
-  const canLoadImage = !imageUseShared && Boolean(imageBaseUrl.trim() && imageApiKey.trim())
-  const sharedChatModel =
-    protocol === "openai"
-      ? (shared?.chat_openai_model ?? "")
-      : protocol === "claude"
-        ? (shared?.chat_claude_model ?? "")
-        : (shared?.chat_gemini_model ?? "")
-  const sharedImageModel =
-    imageProtocol === "openai"
-      ? (shared?.image_openai_model ?? "")
-      : (shared?.image_gemini_model ?? "")
+  const canLoadChat = useShared || Boolean(baseUrl.trim() && apiKey.trim())
+  const canLoadImage =
+    imageUseShared || Boolean(imageBaseUrl.trim() && imageApiKey.trim())
 
   function pickProtocol(next: Protocol) {
     if (next === protocol) return
@@ -164,6 +155,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim(),
         useProxy,
+        useShared,
         signal: ctrl.signal,
       })
       setChatModels(list)
@@ -191,6 +183,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         baseUrl: imageBaseUrl.trim(),
         apiKey: imageApiKey.trim(),
         useProxy: imageUseProxy,
+        useShared: imageUseShared,
         signal: ctrl.signal,
       })
       const filter =
@@ -343,21 +336,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               />
             </div>
 
-            {useShared ? (
-              <SharedModelField label="对话模型" model={sharedChatModel} />
-            ) : (
-              <ModelField
-                label="对话模型"
-                value={model}
-                onChange={setModel}
-                models={chatModels}
-                loading={chatLoading}
-                error={chatError}
-                canLoad={canLoadChat}
-                onLoad={loadChatModels}
-                placeholder={meta.defaultModel}
-                datalistId="chat-model-options"
-              />
+            <ModelField
+              label="对话模型"
+              value={model}
+              onChange={setModel}
+              models={chatModels}
+              loading={chatLoading}
+              error={chatError}
+              canLoad={canLoadChat}
+              onLoad={loadChatModels}
+              placeholder={meta.defaultModel}
+              datalistId="chat-model-options"
+            />
+            {useShared && (
+              <p className="-mt-2 text-xs text-muted-foreground">
+                共享后端模式：点「拉取」从站点上游获取可用模型列表，自由选择。
+              </p>
             )}
 
             {!useShared && (
@@ -503,21 +497,22 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               />
             </div>
 
-            {imageUseShared ? (
-              <SharedModelField label="图像模型" model={sharedImageModel} />
-            ) : (
-              <ModelField
-                label="图像模型"
-                value={imageModel}
-                onChange={setImageModel}
-                models={imageModels}
-                loading={imageLoading}
-                error={imageError}
-                canLoad={canLoadImage}
-                onLoad={loadImageModels}
-                placeholder={imgMeta.defaultModel}
-                datalistId="image-model-options"
-              />
+            <ModelField
+              label="图像模型"
+              value={imageModel}
+              onChange={setImageModel}
+              models={imageModels}
+              loading={imageLoading}
+              error={imageError}
+              canLoad={canLoadImage}
+              onLoad={loadImageModels}
+              placeholder={imgMeta.defaultModel}
+              datalistId="image-model-options"
+            />
+            {imageUseShared && (
+              <p className="-mt-2 text-xs text-muted-foreground">
+                共享后端模式：点「拉取」从站点上游获取可用模型列表，自由选择。
+              </p>
             )}
 
             {!imageUseShared && (
@@ -574,24 +569,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           </Button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function SharedModelField({ label, model }: { label: string; model: string }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label>{label}</Label>
-      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-        {model ? (
-          <span className="font-mono">{model}</span>
-        ) : (
-          <span className="text-muted-foreground">（管理员尚未配置模型）</span>
-        )}
-      </div>
-      <p className="text-xs text-muted-foreground">
-        共享后端下由管理员统一指定模型，无法自行修改。
-      </p>
     </div>
   )
 }

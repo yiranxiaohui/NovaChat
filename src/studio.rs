@@ -338,16 +338,15 @@ async fn submit_generate(
             Err(r) => return r,
         };
 
-    // Shared path forces the admin-configured model; clients can only override
-    // when using their own key.
-    let model = if used_shared {
-        admin_model
-            .filter(|s| !s.is_empty())
-            .or_else(|| body.model.clone())
-            .unwrap_or_else(|| "gpt-image-1".into())
-    } else {
-        body.model.clone().unwrap_or_else(|| "gpt-image-1".into())
-    };
+    // Model is always client-chosen now (body.model from studio UI).
+    // admin_model is ignored — the admin-configured model field was removed
+    // from the shared-backend panel so users can freely pick any model.
+    let _ = admin_model;
+    let model = body
+        .model
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "gpt-image-1".into());
 
     // Credits.
     if used_shared {

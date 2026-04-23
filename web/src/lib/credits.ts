@@ -73,11 +73,6 @@ export type AdminSettings = {
   shared_chat_gemini_url: string
   shared_image_openai_url: string
   shared_image_gemini_url: string
-  shared_chat_openai_model: string
-  shared_chat_claude_model: string
-  shared_chat_gemini_model: string
-  shared_image_openai_model: string
-  shared_image_gemini_model: string
   shared_chat_openai_key_set: boolean
   shared_chat_claude_key_set: boolean
   shared_chat_gemini_key_set: boolean

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   BookMarked,
   Check,
+  ClipboardCheck,
   Copy,
   Download,
   Globe,
@@ -116,6 +117,120 @@ function ActionIcon({
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8
+
+/// Copy an image URL's bytes onto the clipboard as a PNG ClipboardItem so
+/// the user can paste it into Word / Slack / image editors.
+/// Non-PNG sources (JPEG/WebP/data:) are re-encoded via canvas since the
+/// Clipboard API requires image/png on all browsers.
+async function copyImageToClipboard(url: string): Promise<void> {
+  if (!navigator.clipboard || typeof window.ClipboardItem === "undefined") {
+    throw new Error("当前浏览器不支持剪贴板复制图片")
+  }
+  const res = await fetch(url, { credentials: "same-origin" })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const src = await res.blob()
+  let png: Blob = src
+  if (src.type !== "image/png") {
+    png = await new Promise<Blob>((resolve, reject) => {
+      const img = new Image()
+      img.crossOrigin = "anonymous"
+      const objectUrl = URL.createObjectURL(src)
+      img.onload = () => {
+        const canvas = document.createElement("canvas")
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const ctx = canvas.getContext("2d")
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl)
+          reject(new Error("画布 2D 上下文不可用"))
+          return
+        }
+        ctx.drawImage(img, 0, 0)
+        canvas.toBlob((b) => {
+          URL.revokeObjectURL(objectUrl)
+          if (!b) reject(new Error("PNG 编码失败"))
+          else resolve(b)
+        }, "image/png")
+      }
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl)
+        reject(new Error("图片加载失败"))
+      }
+      img.src = objectUrl
+    })
+  }
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": png })])
+}
+
+function CopyImageButton({
+  url,
+  variant = "inline",
+}: {
+  url: string
+  variant?: "inline" | "circle"
+}) {
+  const [state, setState] = useState<"idle" | "busy" | "done" | "err">("idle")
+  const resetTimerRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current)
+    },
+    []
+  )
+  async function onClick(e: React.MouseEvent) {
+    e.stopPropagation()
+    e.preventDefault()
+    if (state === "busy") return
+    setState("busy")
+    try {
+      await copyImageToClipboard(url)
+      setState("done")
+    } catch {
+      setState("err")
+    } finally {
+      if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current)
+      resetTimerRef.current = window.setTimeout(() => setState("idle"), 1800)
+    }
+  }
+  const icon =
+    state === "done" ? (
+      <ClipboardCheck className={variant === "circle" ? "size-5 text-emerald-400" : "size-3 text-emerald-500"} />
+    ) : (
+      <Copy className={variant === "circle" ? "size-5" : "size-3"} />
+    )
+  const title =
+    state === "done"
+      ? "已复制到剪贴板"
+      : state === "err"
+        ? "复制失败（浏览器或协议限制）"
+        : state === "busy"
+          ? "复制中…"
+          : "复制图片到剪贴板"
+  if (variant === "circle") {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={title}
+        title={title}
+        className="inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+      >
+        {icon}
+      </button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur hover:bg-accent"
+    >
+      {icon}
+      {state === "done" ? "已复制" : "复制"}
+    </button>
+  )
+}
 
 function ImagePreview({
   src,
@@ -260,6 +375,7 @@ function ImagePreview({
         className="absolute right-4 top-4 flex items-center gap-2"
         onClick={(e) => e.stopPropagation()}
       >
+        <CopyImageButton url={src} variant="circle" />
         <a
           href={src}
           download={filenameFromPath(src) || "image"}
@@ -390,15 +506,18 @@ function Bubble({
                       )}
                     >
                       {url && (
-                        <a
-                          href={url}
-                          download={fname || "image"}
-                          title="下载图片"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur hover:bg-accent"
-                        >
-                          <Download className="size-3" /> 下载
-                        </a>
+                        <>
+                          <CopyImageButton url={url} />
+                          <a
+                            href={url}
+                            download={fname || "image"}
+                            title="下载图片"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur hover:bg-accent"
+                          >
+                            <Download className="size-3" /> 下载
+                          </a>
+                        </>
                       )}
                       {onPublishImage && fname && (
                         <button

@@ -888,12 +888,29 @@ export default function ChatPage() {
 
     const userPrefix = attached ? "🖼✏️ " : "🖼 "
     const userMsg: UiMessage = { role: "user", content: `${userPrefix}${rawInput}` }
+    const baseLabel = attached ? "✏️ 编辑图像中" : "🎨 生成图像中"
     setMessages((prev) => [
       ...prev,
       userMsg,
-      { role: "assistant", content: attached ? "✏️ 编辑图像中…" : "🎨 生成图像中…" },
+      { role: "assistant", content: `${baseLabel}…（已等 0s）` },
     ])
     setStreaming(true)
+
+    const startedAt = Date.now()
+    const tickTimer = window.setInterval(() => {
+      const secs = Math.floor((Date.now() - startedAt) / 1000)
+      setMessages((prev) => {
+        if (prev.length === 0) return prev
+        const last = prev[prev.length - 1]
+        if (!last || last.role !== "assistant") return prev
+        const next = prev.slice()
+        next[next.length - 1] = {
+          ...last,
+          content: `${baseLabel}…（已等 ${secs}s）`,
+        }
+        return next
+      })
+    }, 1000)
 
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -933,6 +950,7 @@ export default function ChatPage() {
         genError = e instanceof Error ? e : new Error(String(e))
       }
     } finally {
+      window.clearInterval(tickTimer)
       setStreaming(false)
       abortRef.current = null
       void refreshCredits()

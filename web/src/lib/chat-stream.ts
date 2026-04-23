@@ -3,6 +3,63 @@ import { trimSlash } from "./settings"
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string }
 
+// --- attachment handling -------------------------------------------------
+// User messages can embed markdown image refs like `![](/api/images/x.png)`
+// or data URLs. We strip them out for the text sent to the model and
+// upload each referenced image as a base64 `input_image` part.
+
+type ExtractedImages = { text: string; images: string[] }
+
+function extractImages(md: string): ExtractedImages {
+  const images: string[] = []
+  const text = md
+    .replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_m, p1: string) => {
+      if (p1) images.push(p1)
+      return ""
+    })
+    .trim()
+  return { text, images }
+}
+
+function mimeFromPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? ""
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg"
+  if (ext === "webp") return "image/webp"
+  if (ext === "gif") return "image/gif"
+  return "image/png"
+}
+
+async function refToBase64(ref: string): Promise<{ mime: string; b64: string } | null> {
+  // data URL: pass the base64 payload through.
+  if (ref.startsWith("data:")) {
+    const m = /^data:([^;]+);base64,(.*)$/.exec(ref)
+    if (!m) return null
+    return { mime: m[1], b64: m[2] }
+  }
+  try {
+    const res = await fetch(ref, { credentials: "same-origin" })
+    if (!res.ok) return null
+    const blob = await res.blob()
+    const mime = blob.type || mimeFromPath(ref)
+    const buf = await blob.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    let bin = ""
+    const chunk = 0x8000
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+    }
+    return { mime, b64: btoa(bin) }
+  } catch {
+    return null
+  }
+}
+
+async function refToDataUrl(ref: string): Promise<string | null> {
+  if (ref.startsWith("data:")) return ref
+  const enc = await refToBase64(ref)
+  return enc ? `data:${enc.mime};base64,${enc.b64}` : null
+}
+
 export type ChatStreamOptions = {
   protocol: Protocol
   baseUrl: string
@@ -36,14 +93,32 @@ type PreparedRequest = {
   directHeaders: Record<string, string>
 }
 
-function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
+async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
     .join("\n\n")
-  const input = o.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role, content: m.content }))
+  const nonSystem = o.messages.filter((m) => m.role !== "system")
+  const input = await Promise.all(
+    nonSystem.map(async (m) => {
+      const { text, images } = extractImages(m.content)
+      if (images.length === 0) {
+        return { role: m.role, content: m.content }
+      }
+      const parts: unknown[] = []
+      if (text) {
+        parts.push({
+          type: m.role === "assistant" ? "output_text" : "input_text",
+          text,
+        })
+      }
+      for (const ref of images) {
+        const durl = await refToDataUrl(ref)
+        if (durl) parts.push({ type: "input_image", image_url: durl })
+      }
+      return { role: m.role, content: parts }
+    })
+  )
   const tools: unknown[] = []
   if (o.webSearch) tools.push({ type: "web_search" })
   if (o.imageGen) tools.push({ type: "image_generation" })
@@ -63,14 +138,32 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
   }
 }
 
-function prepareClaude(o: ChatStreamOptions): PreparedRequest {
+async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
     .join("\n\n")
-  const rest = o.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role, content: m.content }))
+  const nonSystem = o.messages.filter((m) => m.role !== "system")
+  const rest = await Promise.all(
+    nonSystem.map(async (m) => {
+      const { text, images } = extractImages(m.content)
+      if (images.length === 0) {
+        return { role: m.role, content: m.content }
+      }
+      const parts: unknown[] = []
+      if (text) parts.push({ type: "text", text })
+      for (const ref of images) {
+        const enc = await refToBase64(ref)
+        if (enc) {
+          parts.push({
+            type: "image",
+            source: { type: "base64", media_type: enc.mime, data: enc.b64 },
+          })
+        }
+      }
+      return { role: m.role, content: parts }
+    })
+  )
   return {
     url: `${trimSlash(o.baseUrl)}/v1/messages`,
     body: {
@@ -100,17 +193,31 @@ function prepareClaude(o: ChatStreamOptions): PreparedRequest {
   }
 }
 
-function prepareGemini(o: ChatStreamOptions): PreparedRequest {
+async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
     .join("\n\n")
-  const contents = o.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }))
+  const nonSystem = o.messages.filter((m) => m.role !== "system")
+  const contents = await Promise.all(
+    nonSystem.map(async (m) => {
+      const { text, images } = extractImages(m.content)
+      const parts: unknown[] = []
+      if (text || images.length === 0) {
+        parts.push({ text: text || m.content })
+      }
+      for (const ref of images) {
+        const enc = await refToBase64(ref)
+        if (enc) {
+          parts.push({ inline_data: { mime_type: enc.mime, data: enc.b64 } })
+        }
+      }
+      return {
+        role: m.role === "assistant" ? "model" : "user",
+        parts,
+      }
+    })
+  )
   const generationConfig =
     o.temperature !== undefined || o.maxTokens !== undefined
       ? {
@@ -134,7 +241,7 @@ function prepareGemini(o: ChatStreamOptions): PreparedRequest {
   }
 }
 
-function prepare(o: ChatStreamOptions): PreparedRequest {
+function prepare(o: ChatStreamOptions): Promise<PreparedRequest> {
   switch (o.protocol) {
     case "openai":
       return prepareOpenAi(o)
@@ -178,7 +285,7 @@ function extractDelta(protocol: Protocol, json: unknown): string | undefined {
 }
 
 export async function streamChat(o: ChatStreamOptions): Promise<void> {
-  const prepared = prepare(o)
+  const prepared = await prepare(o)
   const payload = JSON.stringify(prepared.body)
 
   let res: Response

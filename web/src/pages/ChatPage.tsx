@@ -11,6 +11,7 @@ import {
   Images,
   MessageSquareText,
   Minus,
+  Paperclip,
   Pencil,
   Plus,
   RefreshCcw,
@@ -777,9 +778,21 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarReload, setSidebarReload] = useState(0)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<
+    Array<{ id: string; file: File; previewUrl: string }>
+  >([])
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const attachInputRef = useRef<HTMLInputElement>(null)
+
+  // Release object URLs for removed / unmounted previews.
+  useEffect(() => {
+    return () => {
+      for (const a of attachments) URL.revokeObjectURL(a.previewUrl)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!user) return
@@ -927,7 +940,60 @@ export default function ChatPage() {
   const configured =
     settings.useShared ||
     Boolean(settings.baseUrl && settings.apiKey && settings.model)
-  const canSend = input.trim().length > 0 && !streaming && configured
+  const canSend =
+    (input.trim().length > 0 || attachments.length > 0) &&
+    !streaming &&
+    configured
+
+  function addAttachments(files: FileList | File[]) {
+    const picked = Array.from(files).filter((f) => f.type.startsWith("image/"))
+    if (picked.length === 0) return
+    const next = picked.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }))
+    setAttachments((prev) => [...prev, ...next])
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((prev) => {
+      const hit = prev.find((a) => a.id === id)
+      if (hit) URL.revokeObjectURL(hit.previewUrl)
+      return prev.filter((a) => a.id !== id)
+    })
+  }
+
+  function clearAttachments() {
+    setAttachments((prev) => {
+      for (const a of prev) URL.revokeObjectURL(a.previewUrl)
+      return []
+    })
+  }
+
+  async function uploadAttachment(file: File): Promise<string> {
+    const mime = file.type || "image/png"
+    const buf = await file.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    let bin = ""
+    const chunk = 0x8000
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+    }
+    const b64 = btoa(bin)
+    const res = await fetch("/api/images/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ b64, mime }),
+      credentials: "same-origin",
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(text || `HTTP ${res.status}`)
+    }
+    const j = (await res.json()) as { path: string }
+    return j.path
+  }
 
   const banner = useMemo(() => {
     if (!configured) {
@@ -995,10 +1061,36 @@ export default function ChatPage() {
     const convId = await ensureConversation()
     if (!convId) return
 
+    // Upload attachments first — fail early so the user message never gets
+    // added if image saving breaks.
+    const pending = attachments
+    let uploadedPaths: string[] = []
+    if (pending.length > 0) {
+      try {
+        uploadedPaths = await Promise.all(
+          pending.map((a) => uploadAttachment(a.file))
+        )
+      } catch (e) {
+        setError(`图片上传失败：${e instanceof Error ? e.message : String(e)}`)
+        return
+      }
+    }
+
     setInput("")
     setError(null)
+    clearAttachments()
 
-    const userMsg: UiMessage = { role: "user", content: text }
+    // Compose the user message. Text first, then each uploaded image
+    // referenced as standard markdown — the chat-stream layer later
+    // extracts these refs and re-encodes them as input_image parts.
+    const imagesMd = uploadedPaths.map((p) => `![](${p})`).join("\n")
+    const composed = text
+      ? imagesMd
+        ? `${text}\n\n${imagesMd}`
+        : text
+      : imagesMd
+
+    const userMsg: UiMessage = { role: "user", content: composed }
     const baseHistory: UiMessage[] = [...messages, userMsg]
     setMessages([...baseHistory, { role: "assistant", content: "" }])
     setStreaming(true)
@@ -1075,7 +1167,7 @@ export default function ChatPage() {
     }
 
     const toSave: Array<{ role: "user" | "assistant"; content: string }> = [
-      { role: "user", content: text },
+      { role: "user", content: composed },
     ]
     if (assistantContent) {
       toSave.push({ role: "assistant", content: assistantContent })
@@ -1416,7 +1508,56 @@ export default function ChatPage() {
 
         <div className="bg-background px-5 pb-4 pt-2">
           <div className="mx-auto max-w-3xl">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2 rounded-xl border border-border bg-card p-2">
+                {attachments.map((a) => (
+                  <div
+                    key={a.id}
+                    className="group relative size-16 overflow-hidden rounded-lg border border-border bg-muted"
+                  >
+                    <img
+                      src={a.previewUrl}
+                      alt={a.file.name}
+                      className="size-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(a.id)}
+                      className="absolute right-0.5 top-0.5 grid size-5 place-items-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
+                      aria-label="移除图片"
+                      title="移除图片"
+                      disabled={streaming}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input
+              ref={attachInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addAttachments(e.target.files)
+                e.target.value = ""
+              }}
+            />
             <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                aria-label="附加图片"
+                title="附加图片（支持多选）"
+                disabled={streaming}
+                onClick={() => attachInputRef.current?.click()}
+              >
+                <Paperclip />
+              </Button>
               <Button
                 type="button"
                 variant={settings.webSearch ? "default" : "ghost"}

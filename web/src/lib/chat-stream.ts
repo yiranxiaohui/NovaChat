@@ -24,6 +24,10 @@ export type ChatStreamOptions = {
   maxTokens?: number
   signal?: AbortSignal
   onDelta: (delta: string) => void
+  // Apply a transformation to the current assistant message content. Used
+  // by the hosted image_generation flow to show a ticking "生成图像中…"
+  // placeholder without persisting it into the saved message content.
+  patchAssistant?: (update: (prev: string) => string) => void
 }
 
 type PreparedRequest = {
@@ -226,6 +230,46 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   const decoder = new TextDecoder()
   let buffer = ""
 
+  // State for the ticking "生成图像中…" placeholder shown while the hosted
+  // image_generation tool is working. `imgPrefix` is the assistant content
+  // snapshot taken at the moment generation started; the placeholder is
+  // appended to it every tick and wiped when the tool completes.
+  let imgPrefix: string | null = null
+  let imgStartedAt = 0
+  let imgTicker: ReturnType<typeof setInterval> | null = null
+
+  const placeholderFor = (prefix: string, secs: number): string => {
+    const sep = prefix ? "\n\n" : ""
+    return `${prefix}${sep}🎨 生成图像中…（已等 ${secs}s）`
+  }
+
+  const startImgPlaceholder = () => {
+    if (imgTicker != null || !o.patchAssistant) return
+    imgStartedAt = Date.now()
+    o.patchAssistant((prev) => {
+      imgPrefix = prev
+      return placeholderFor(prev, 0)
+    })
+    imgTicker = setInterval(() => {
+      if (imgPrefix == null || !o.patchAssistant) return
+      const secs = Math.floor((Date.now() - imgStartedAt) / 1000)
+      const prefix = imgPrefix
+      o.patchAssistant(() => placeholderFor(prefix, secs))
+    }, 1000)
+  }
+
+  const stopImgPlaceholder = () => {
+    if (imgTicker != null) {
+      clearInterval(imgTicker)
+      imgTicker = null
+    }
+    if (imgPrefix != null && o.patchAssistant) {
+      const prefix = imgPrefix
+      o.patchAssistant(() => prefix)
+    }
+    imgPrefix = null
+  }
+
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
@@ -241,23 +285,33 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
         if (!data || data === "[DONE]") continue
         try {
           const json = JSON.parse(data) as Record<string, unknown>
-          // Hosted image_generation tool: the model sent back a finished
-          // image as base64. Persist it via the backend so we can reference
-          // it with a stable /api/images/<name> URL in the message.
-          if (
-            o.protocol === "openai" &&
-            json.type === "response.output_item.done"
-          ) {
-            const item = json.item as
-              | {
-                  type?: string
-                  result?: string
-                  revised_prompt?: string
+          if (o.protocol === "openai") {
+            const ty = json.type as string | undefined
+            // Generation kicking off — show the ticking placeholder.
+            if (ty === "response.output_item.added") {
+              const item = json.item as { type?: string } | undefined
+              if (item?.type === "image_generation_call") {
+                startImgPlaceholder()
+                continue
+              }
+            }
+            // Generation finished — stop the ticker, persist the image,
+            // and splice its markdown reference into the assistant bubble.
+            if (ty === "response.output_item.done") {
+              const item = json.item as
+                | {
+                    type?: string
+                    result?: string
+                    revised_prompt?: string
+                  }
+                | undefined
+              if (item?.type === "image_generation_call") {
+                stopImgPlaceholder()
+                if (item.result) {
+                  await persistImageGenerationCall(item, o.onDelta)
                 }
-              | undefined
-            if (item?.type === "image_generation_call" && item.result) {
-              await persistImageGenerationCall(item, o.onDelta)
-              continue
+                continue
+              }
             }
           }
           const delta = extractDelta(o.protocol, json)
@@ -268,6 +322,10 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
       }
     }
   }
+
+  // If the stream ends mid-generation (upstream closed, aborted, etc.),
+  // make sure the placeholder gets cleaned up.
+  stopImgPlaceholder()
 }
 
 async function persistImageGenerationCall(

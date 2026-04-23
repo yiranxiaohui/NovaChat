@@ -1220,6 +1220,15 @@ export default function ChatPage() {
             return copy
           })
         },
+        patchAssistant: (update) => {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1]
+            if (last?.role !== "assistant") return prev
+            const copy = prev.slice()
+            copy[copy.length - 1] = { ...last, content: update(last.content) }
+            return copy
+          })
+        },
       })
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
@@ -1418,6 +1427,15 @@ export default function ChatPage() {
             if (tail?.role === "assistant") {
               copy[copy.length - 1] = { ...tail, content: tail.content + delta }
             }
+            return copy
+          })
+        },
+        patchAssistant: (update) => {
+          setMessages((prev) => {
+            const tail = prev[prev.length - 1]
+            if (tail?.role !== "assistant") return prev
+            const copy = prev.slice()
+            copy[copy.length - 1] = { ...tail, content: update(tail.content) }
             return copy
           })
         },

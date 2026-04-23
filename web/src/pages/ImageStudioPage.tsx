@@ -719,6 +719,33 @@ function PreviewCard({
   )
 }
 
+function PendingIndicator({ createdAt }: { createdAt: string }) {
+  const [elapsed, setElapsed] = useState(() => computeElapsed(createdAt))
+  useEffect(() => {
+    const id = window.setInterval(() => setElapsed(computeElapsed(createdAt)), 1000)
+    return () => window.clearInterval(id)
+  }, [createdAt])
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <Loader2 className="size-5 animate-spin" />
+      <span className="tabular-nums">已等 {elapsed}s</span>
+    </div>
+  )
+}
+
+function computeElapsed(isoUtc: string): number {
+  if (!isoUtc) return 0
+  // SQLite/Postgres store "YYYY-MM-DD HH:MM:SS" without timezone; treat as UTC.
+  const normalized = isoUtc.includes("T")
+    ? isoUtc.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(isoUtc)
+      ? isoUtc
+      : `${isoUtc}Z`
+    : `${isoUtc.replace(" ", "T")}Z`
+  const t = Date.parse(normalized)
+  if (Number.isNaN(t)) return 0
+  return Math.max(0, Math.floor((Date.now() - t) / 1000))
+}
+
 function HistoryCard({
   gen,
   published,
@@ -754,7 +781,7 @@ function HistoryCard({
           {gen.status === "failed" ? (
             <span className="text-destructive">失败</span>
           ) : (
-            <Loader2 className="size-5 animate-spin" />
+            <PendingIndicator createdAt={gen.created_at} />
           )}
         </div>
       )}

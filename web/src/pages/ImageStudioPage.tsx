@@ -9,12 +9,14 @@ import {
   ImagePlus,
   Images,
   Loader2,
+  Menu,
   RefreshCw,
   Sparkles,
   Trash2,
   Upload,
   X,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -57,6 +59,17 @@ function fileToDataUrl(file: File): Promise<string> {
     r.onerror = () => reject(r.error ?? new Error("读取失败"))
     r.readAsDataURL(file)
   })
+}
+
+// Fetch a same-origin image URL and turn it into a File the <input type=file>
+// attach-flow can consume. Used by the 用作底图 button so users can round-trip
+// a generated image back in as an edit input without downloading.
+async function urlToImageFile(url: string, fallbackName = "image"): Promise<File> {
+  const res = await fetch(url, { credentials: "same-origin" })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const blob = await res.blob()
+  const name = filenameFromPath(url) || fallbackName
+  return new File([blob], name, { type: blob.type || "image/png" })
 }
 
 // Copy an image URL to the OS clipboard. Many browsers only accept image/png
@@ -129,6 +142,7 @@ export default function ImageStudioPage() {
   )
   const [pastedFlash, setPastedFlash] = useState(false)
   const [plazaOpen, setPlazaOpen] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -357,8 +371,22 @@ export default function ImageStudioPage() {
 
   return (
     <div className="flex h-svh bg-background text-foreground">
-      {/* Left: parameter panel */}
-      <aside className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      {mobileNavOpen && (
+        <button
+          type="button"
+          aria-label="关闭参数面板"
+          onClick={() => setMobileNavOpen(false)}
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+        />
+      )}
+      {/* Left: parameter panel — drawer on mobile, static aside on md+. */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 flex h-full w-80 max-w-[85vw] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform",
+          mobileNavOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
+          "md:static md:w-80 md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none"
+        )}
+      >
         <div className="flex items-center justify-between px-4 pb-3 pt-4">
           <BrandMark />
         </div>
@@ -680,6 +708,17 @@ export default function ImageStudioPage() {
                   }
                   onPublish={() => void publishToPlaza(effectivePreview)}
                   canPublish={canPublish(effectivePreview)}
+                  onUseAsBase={async () => {
+                    if (!effectivePreview.image_path) return
+                    try {
+                      const f = await urlToImageFile(effectivePreview.image_path)
+                      setAttached(f)
+                      setPastedFlash(true)
+                      window.setTimeout(() => setPastedFlash(false), 1500)
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e))
+                    }
+                  }}
                 />
               )}
             </div>
@@ -731,18 +770,35 @@ function PreviewCard({
   publishing,
   canPublish,
   onPublish,
+  onUseAsBase,
 }: {
   gen: StudioGeneration
   published: boolean
   publishing: boolean
   canPublish: boolean
   onPublish: () => void
+  onUseAsBase: () => void | Promise<void>
 }) {
   const fname = gen.image_path ? filenameFromPath(gen.image_path) : null
   const [copyState, setCopyState] = useState<"idle" | "copying" | "done" | "error">(
     "idle"
   )
   const [copyError, setCopyError] = useState<string | null>(null)
+  const [baseState, setBaseState] = useState<"idle" | "loading" | "done" | "error">(
+    "idle"
+  )
+
+  async function handleUseAsBase() {
+    setBaseState("loading")
+    try {
+      await onUseAsBase()
+      setBaseState("done")
+      window.setTimeout(() => setBaseState("idle"), 1500)
+    } catch {
+      setBaseState("error")
+      window.setTimeout(() => setBaseState("idle"), 2500)
+    }
+  }
 
   async function handleCopy() {
     if (!gen.image_path) return
@@ -829,6 +885,28 @@ function PreviewCard({
             <>
               <Copy className="size-4" />{" "}
               {copyState === "copying" ? "复制中…" : "复制图片"}
+            </>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleUseAsBase()}
+          disabled={baseState === "loading"}
+          title="把这张图当作底图继续编辑"
+        >
+          {baseState === "done" ? (
+            <>
+              <Check className="size-4 text-emerald-500" /> 已设为底图
+            </>
+          ) : baseState === "error" ? (
+            <>
+              <X className="size-4 text-destructive" /> 失败
+            </>
+          ) : (
+            <>
+              <ArrowLeftToLine className="size-4" />{" "}
+              {baseState === "loading" ? "导入中…" : "用作底图"}
             </>
           )}
         </Button>

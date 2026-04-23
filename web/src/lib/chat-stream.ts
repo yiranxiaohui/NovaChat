@@ -14,6 +14,12 @@ export type ChatStreamOptions = {
   // backend (admin-configured URL/Key); baseUrl/apiKey are ignored.
   useShared?: boolean
   webSearch?: boolean
+  // OpenAI protocol only. Declares the hosted `image_generation` tool on
+  // the /v1/responses request so the model can emit images inline during
+  // a normal chat turn. When an `image_generation_call` completes, its
+  // base64 bytes are uploaded to /api/images/save and a markdown image
+  // reference is spliced into the assistant message.
+  imageGen?: boolean
   temperature?: number
   maxTokens?: number
   signal?: AbortSignal
@@ -34,6 +40,9 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
   const input = o.messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role, content: m.content }))
+  const tools: unknown[] = []
+  if (o.webSearch) tools.push({ type: "web_search" })
+  if (o.imageGen) tools.push({ type: "image_generation" })
   return {
     url: `${trimSlash(o.baseUrl)}/v1/responses`,
     body: {
@@ -42,7 +51,7 @@ function prepareOpenAi(o: ChatStreamOptions): PreparedRequest {
       stream: true,
       ...(system ? { instructions: system } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
-      ...(o.webSearch ? { tools: [{ type: "web_search" }] } : {}),
+      ...(tools.length ? { tools } : {}),
     },
     directHeaders: {
       Authorization: `Bearer ${o.apiKey}`,
@@ -231,7 +240,26 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
         const data = line.slice(5).trim()
         if (!data || data === "[DONE]") continue
         try {
-          const json = JSON.parse(data)
+          const json = JSON.parse(data) as Record<string, unknown>
+          // Hosted image_generation tool: the model sent back a finished
+          // image as base64. Persist it via the backend so we can reference
+          // it with a stable /api/images/<name> URL in the message.
+          if (
+            o.protocol === "openai" &&
+            json.type === "response.output_item.done"
+          ) {
+            const item = json.item as
+              | {
+                  type?: string
+                  result?: string
+                  revised_prompt?: string
+                }
+              | undefined
+            if (item?.type === "image_generation_call" && item.result) {
+              await persistImageGenerationCall(item, o.onDelta)
+              continue
+            }
+          }
           const delta = extractDelta(o.protocol, json)
           if (delta) o.onDelta(delta)
         } catch {
@@ -239,5 +267,32 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
         }
       }
     }
+  }
+}
+
+async function persistImageGenerationCall(
+  item: { result?: string; revised_prompt?: string },
+  onDelta: (delta: string) => void
+): Promise<void> {
+  if (!item.result) return
+  const alt = (item.revised_prompt || "image").replace(/[\[\]]/g, "")
+  try {
+    const res = await fetch("/api/images/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ b64: item.result, mime: "image/png" }),
+      credentials: "same-origin",
+    })
+    if (res.ok) {
+      const j = (await res.json()) as { path: string }
+      onDelta(`\n\n![${alt}](${j.path})`)
+    } else {
+      const text = await res.text().catch(() => res.statusText)
+      onDelta(`\n\n> 图像保存失败：${text || `HTTP ${res.status}`}`)
+    }
+  } catch (e) {
+    onDelta(
+      `\n\n> 图像保存失败：${e instanceof Error ? e.message : String(e)}`
+    )
   }
 }

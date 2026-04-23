@@ -1203,6 +1203,7 @@ export default function ChatPage() {
         useProxy: settings.useProxy,
         useShared: settings.useShared,
         webSearch: settings.webSearch,
+        imageGen: settings.protocol === "openai",
         messages: toModel,
         signal: ctrl.signal,
         onDelta: (delta) => {
@@ -1406,6 +1407,7 @@ export default function ChatPage() {
         useProxy: settings.useProxy,
         useShared: settings.useShared,
         webSearch: settings.webSearch,
+        imageGen: settings.protocol === "openai",
         messages: toModel,
         signal: ctrl.signal,
         onDelta: (delta) => {

@@ -1264,6 +1264,55 @@ pub async fn cleanup_stale_jobs(pool: &db::Pool, kind: db::DbKind) {
 }
 
 // ---------------------------------------------------------------------------
+// persist a base64 image from the main chat stream (hosted image_generation
+// tool returns the bytes inline — the browser uploads them here so we can
+// reference the image by /api/images/<name> just like every other stored
+// image in the app).
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SaveImageReq {
+    b64: String,
+    #[serde(default)]
+    mime: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SaveImageResp {
+    path: String,
+}
+
+async fn save_b64_image(
+    State(state): State<AppState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(req): Json<SaveImageReq>,
+) -> Response {
+    let bytes = match STANDARD.decode(req.b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("b64 decode: {e}")),
+    };
+    let ext = match req.mime.as_deref() {
+        Some("image/jpeg") => "jpg",
+        Some("image/webp") => "webp",
+        Some("image/gif") => "gif",
+        _ => "png",
+    };
+    let images_dir = state.data_dir.join("images");
+    if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
+    }
+    let name = format!("{}.{ext}", random_hex(16));
+    let path = images_dir.join(&name);
+    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
+    }
+    Json(SaveImageResp {
+        path: format!("/api/images/{name}"),
+    })
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
 // serve stored image
 // ---------------------------------------------------------------------------
 
@@ -1297,6 +1346,7 @@ pub fn routes() -> Router<AppState> {
         .route("/images/jobs/openai/edits", post(start_openai_edit_job))
         .route("/images/jobs/openai/responses", post(start_openai_responses_job))
         .route("/images/jobs/gemini", post(start_gemini_job))
+        .route("/images/save", post(save_b64_image))
         .route("/images/jobs/{token}", get(get_job))
         .route("/images/{name}", get(serve_image))
 }

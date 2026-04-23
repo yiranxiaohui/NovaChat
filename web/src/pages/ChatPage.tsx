@@ -314,13 +314,13 @@ export default function ChatPage() {
           apiKey: "",
           model: "",
           useProxy: true,
-          useShared: false,
+          useShared: true,
           imageProtocol: "openai",
           imageBaseUrl: "",
           imageApiKey: "",
           imageModel: "",
           imageUseProxy: true,
-          imageUseShared: false,
+          imageUseShared: true,
           webSearch: false,
           cloudSync: false,
         }
@@ -386,6 +386,19 @@ export default function ChatPage() {
           lifetime_used: 0,
           cost_chat: s.cost_chat,
           cost_image: s.cost_image,
+        })
+      })
+      .catch(() => {
+        /* non-fatal */
+      })
+    plazaApi
+      .listMine()
+      .then((rows) => {
+        if (cancelled) return
+        setPublishedFilenames((prev) => {
+          const next = new Set(prev)
+          for (const r of rows) next.add(r.filename)
+          return next
         })
       })
       .catch(() => {
@@ -939,7 +952,23 @@ export default function ChatPage() {
             </h1>
             <ModelBadge
               protocol={mode === "image" ? "openai" : settings.protocol}
-              model={mode === "image" ? settings.imageModel : settings.model}
+              model={
+                mode === "image"
+                  ? settings.imageModel ||
+                    (settings.imageUseShared
+                      ? settings.imageProtocol === "gemini"
+                        ? sharedStatus?.image_gemini_model ?? ""
+                        : sharedStatus?.image_openai_model ?? ""
+                      : "")
+                  : settings.model ||
+                    (settings.useShared
+                      ? settings.protocol === "openai"
+                        ? sharedStatus?.chat_openai_model ?? ""
+                        : settings.protocol === "claude"
+                          ? sharedStatus?.chat_claude_model ?? ""
+                          : sharedStatus?.chat_gemini_model ?? ""
+                      : "")
+              }
             />
           </div>
           <div className="flex items-center gap-1">

@@ -952,7 +952,7 @@ fn build_router(state: AppState) -> Router {
 
     Router::new()
         .nest("/api", public.merge(protected))
-        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
         .with_state(state)
         .fallback(static_handler)
 }

@@ -90,6 +90,14 @@ const EMPTY: UpstreamSettings = {
   cloudSync: false,
 }
 
+// New users with no saved settings default to the site-shared backend so they
+// can chat and generate images out of the box without entering credentials.
+const FRESH_DEFAULTS: UpstreamSettings = {
+  ...EMPTY,
+  useShared: true,
+  imageUseShared: true,
+}
+
 function keyFor(userId: number | string) {
   return `novachat:upstream:v2:${userId}`
 }
@@ -97,7 +105,7 @@ function keyFor(userId: number | string) {
 export function loadSettings(userId: number | string): UpstreamSettings {
   try {
     const raw = localStorage.getItem(keyFor(userId))
-    if (!raw) return EMPTY
+    if (!raw) return FRESH_DEFAULTS
     const parsed = JSON.parse(raw) as Partial<UpstreamSettings>
     const merged: UpstreamSettings = { ...EMPTY, ...parsed }
     // Migration: pre-toggle versions inferred shared mode from an empty key.

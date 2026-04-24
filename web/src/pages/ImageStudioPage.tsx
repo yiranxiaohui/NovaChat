@@ -436,6 +436,16 @@ export default function ImageStudioPage() {
       style: gen.style || undefined,
       imageDataUrl,
     })
+    // Drop the old failed record once the retry has finished — leaving it
+    // around just clutters the history with stale "失败" tiles. Best-effort;
+    // we don't block or surface errors if the delete fails.
+    try {
+      await studioApi.remove(gen.id)
+      setHistory((s) => s.filter((x) => x.id !== gen.id))
+      if (current?.id === gen.id) setCurrent(null)
+    } catch {
+      /* ignore */
+    }
   }
 
   async function publishToPlaza(g: StudioGeneration) {

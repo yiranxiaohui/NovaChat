@@ -62,6 +62,51 @@ function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
+// Map a raw upstream error string to a short, human-oriented hint so the UI
+// can tell the user which direction to go (change prompt, change params,
+// contact admin, or just retry). Returns null when we can't classify.
+function failureHint(err: string | null | undefined): string | null {
+  if (!err) return null
+  const s = err.toLowerCase()
+  if (
+    s.includes("content_policy") ||
+    s.includes("safety system") ||
+    s.includes("content policy") ||
+    s.includes("was rejected") ||
+    s.includes("moderation_blocked")
+  ) {
+    return "Prompt 可能触发了上游的内容审核。换个措辞试试（重试帮不上忙）。"
+  }
+  if (s.includes("does not support") || s.includes("unsupported")) {
+    return "当前模型不支持这个参数（尺寸 / 质量 / 风格）。左侧换一下再试。"
+  }
+  if (
+    s.includes("invalid_api_key") ||
+    s.includes("incorrect api key") ||
+    s.includes("401")
+  ) {
+    return "API key 无效。自己配 key 的用户检查设置里的密钥；用共享后端时请管理员处理。"
+  }
+  if (s.includes("insufficient_quota") || s.includes("quota")) {
+    return "上游账号额度用尽。用共享后端时请联系管理员；自己配 key 请去 OpenAI 后台充值。"
+  }
+  if (s.includes("rate limit") || s.includes("429")) {
+    return "上游限流，系统已自动重试过。稍等几秒再点重试。"
+  }
+  if (
+    s.includes("timed out") ||
+    s.includes("timeout") ||
+    s.includes("connection") ||
+    s.includes("network")
+  ) {
+    return "网络抖动或上游超时，系统已自动重试过。点「重试」再跑一次大概率能过。"
+  }
+  if (s.includes("502") || s.includes("503") || s.includes("504")) {
+    return "上游临时故障，已自动重试多次仍失败。稍等一两分钟再重试。"
+  }
+  return null
+}
+
 // Fetch a same-origin image URL and turn it into a File the <input type=file>
 // attach-flow can consume. Used by the 用作底图 button so users can round-trip
 // a generated image back in as an edit input without downloading.
@@ -342,6 +387,27 @@ export default function ImageStudioPage() {
       style,
       imageDataUrl,
     })
+  }
+
+  // Load a past generation's params into the left-side form. Used when a
+  // failed tile is clicked: the user almost always wants to tweak the prompt
+  // or swap the model, and retyping everything is tedious.
+  async function pickParams(gen: StudioGeneration) {
+    setPrompt(gen.prompt)
+    if (gen.model) setModel(gen.model)
+    setSize(gen.size || "auto")
+    setQuality(gen.quality || "auto")
+    setStyle(gen.style || "")
+    if (gen.source_path) {
+      try {
+        const f = await urlToImageFile(gen.source_path, "source")
+        setAttached(f)
+      } catch {
+        // Non-fatal: user can re-pick the base image manually.
+      }
+    } else {
+      setAttached(null)
+    }
   }
 
   // Re-run a failed generation with the same params. If the original request
@@ -784,6 +850,7 @@ export default function ImageStudioPage() {
                     }
                   }}
                   onRetry={() => void retryGeneration(effectivePreview)}
+                  onPickParams={() => void pickParams(effectivePreview)}
                   retrying={submitting}
                 />
               )}
@@ -809,6 +876,7 @@ export default function ImageStudioPage() {
                         onPublish={() => void publishToPlaza(g)}
                         onRemove={() => void removeHistory(g)}
                         onRetry={() => void retryGeneration(g)}
+                        onPickParams={() => void pickParams(g)}
                         retrying={submitting}
                       />
                     )
@@ -840,6 +908,7 @@ function PreviewCard({
   onPublish,
   onUseAsBase,
   onRetry,
+  onPickParams,
   retrying,
 }: {
   gen: StudioGeneration
@@ -849,6 +918,7 @@ function PreviewCard({
   onPublish: () => void
   onUseAsBase: () => void | Promise<void>
   onRetry?: () => void
+  onPickParams?: () => void
   retrying?: boolean
 }) {
   const fname = gen.image_path ? filenameFromPath(gen.image_path) : null
@@ -888,24 +958,47 @@ function PreviewCard({
   }
 
   if (gen.status === "failed") {
+    const hint = failureHint(gen.error)
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-10 text-destructive">
-        <X className="size-8" />
-        <p className="text-sm">生成失败</p>
-        <p className="max-w-lg text-xs text-muted-foreground">
-          {gen.error || "未知错误"}
-        </p>
-        {onRetry && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onRetry}
-            disabled={retrying}
-          >
-            <RefreshCw className={retrying ? "size-4 animate-spin" : "size-4"} />
-            {retrying ? "重试中…" : "重试"}
-          </Button>
-        )}
+      <div className="flex flex-col items-center gap-3 py-8">
+        <div className="grid size-10 place-items-center rounded-full bg-destructive/10 text-destructive">
+          <X className="size-6" />
+        </div>
+        <p className="text-base font-semibold text-destructive">生成失败</p>
+        <div className="w-full max-w-xl rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs">
+          <p className="mb-1 text-[11px] uppercase tracking-wide text-destructive/80">
+            上游返回
+          </p>
+          <p className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/80">
+            {gen.error || "未知错误"}
+          </p>
+          {hint && (
+            <p className="mt-2 border-t border-destructive/20 pt-2 text-[12px] text-foreground/90">
+              <b>建议：</b>
+              {hint}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          {onPickParams && (
+            <Button variant="outline" size="sm" onClick={onPickParams}>
+              载入到左侧参数
+            </Button>
+          )}
+          {onRetry && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onRetry}
+              disabled={retrying}
+            >
+              <RefreshCw
+                className={retrying ? "size-4 animate-spin" : "size-4"}
+              />
+              {retrying ? "重试中…" : "重试"}
+            </Button>
+          )}
+        </div>
       </div>
     )
   }
@@ -1050,6 +1143,7 @@ function HistoryCard({
   onPublish,
   onRemove,
   onRetry,
+  onPickParams,
   retrying,
 }: {
   gen: StudioGeneration
@@ -1059,6 +1153,10 @@ function HistoryCard({
   onPublish: () => void
   onRemove: () => void
   onRetry?: () => void
+  /** Called when the user clicks a failed tile: populates the left-side form
+   *  with this generation's params so they can tweak prompt/size/etc. and
+   *  re-submit without re-typing. */
+  onPickParams?: () => void
   retrying?: boolean
 }) {
   return (
@@ -1077,26 +1175,47 @@ function HistoryCard({
           />
         </button>
       ) : gen.status === "failed" ? (
-        <div className="grid aspect-square w-full place-items-center gap-2 bg-muted text-xs text-muted-foreground">
-          <span className="text-destructive">失败</span>
+        <button
+          type="button"
+          onClick={() => {
+            onSelect()
+            onPickParams?.()
+          }}
+          title={gen.error || "点击载入这次的参数，改后重发"}
+          className="flex aspect-square w-full flex-col items-center justify-center gap-1.5 bg-muted p-2 text-xs text-muted-foreground transition-colors hover:bg-muted/70"
+        >
+          <X className="size-5 text-destructive" />
+          <span className="font-medium text-destructive">失败</span>
+          {gen.error && (
+            <span className="line-clamp-3 max-w-full break-words text-center text-[10px] leading-tight text-muted-foreground">
+              {gen.error}
+            </span>
+          )}
           {onRetry && (
-            <Button
-              variant="outline"
-              size="xs"
+            <span
+              role="button"
+              tabIndex={0}
               onClick={(e) => {
                 e.stopPropagation()
-                onRetry()
+                if (!retrying) onRetry()
               }}
-              disabled={retrying}
-              title={gen.error || "重试"}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (!retrying) onRetry()
+                }
+              }}
+              aria-disabled={retrying}
+              className="mt-0.5 inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground hover:bg-accent aria-disabled:cursor-default aria-disabled:opacity-60"
             >
               <RefreshCw
                 className={retrying ? "size-3 animate-spin" : "size-3"}
               />
               {retrying ? "重试中…" : "重试"}
-            </Button>
+            </span>
           )}
-        </div>
+        </button>
       ) : (
         <div className="grid aspect-square w-full place-items-center bg-muted text-xs text-muted-foreground">
           <PendingIndicator createdAt={gen.created_at} />

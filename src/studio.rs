@@ -422,87 +422,132 @@ async fn submit_generate(
             }
         };
 
-        let resp_result = if let Some((bytes, mime)) = source_bytes_c {
-            // /v1/images/edits → multipart form
-            let part = match reqwest::multipart::Part::bytes(bytes)
-                .file_name(format!("source.{}", mime_to_ext(mime)))
-                .mime_str(mime)
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    finalize_failed(&pool, kind, &token_c, &format!("multipart: {e}")).await;
-                    if used_shared {
-                        let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                        let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+        // Retry transient upstream errors (connection errors, 429, 5xx) up to
+        // MAX_ATTEMPTS times with exponential backoff. 4xx other than 429 are
+        // returned as terminal immediately — they're usually prompt violations
+        // or config problems where retrying just wastes time.
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut attempt: u32 = 0;
+        let mut last_transient: Option<String> = None;
+        let (status, raw) = loop {
+            attempt += 1;
+            let resp_result = if let Some((bytes, mime)) = source_bytes_c.as_ref() {
+                // /v1/images/edits → multipart form. Bytes are cloned per
+                // attempt so retries can rebuild the form.
+                let part = match reqwest::multipart::Part::bytes(bytes.clone())
+                    .file_name(format!("source.{}", mime_to_ext(mime)))
+                    .mime_str(mime)
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        finalize_failed(&pool, kind, &token_c, &format!("multipart: {e}")).await;
+                        if used_shared {
+                            let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
+                            let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                        }
+                        return;
                     }
-                    return;
+                };
+                let mut form = reqwest::multipart::Form::new()
+                    .text("model", model_c.clone())
+                    .text("prompt", prompt_c.clone())
+                    .text("n", "1")
+                    .part("image", part);
+                if let Some(s) = size_c.as_deref() {
+                    if !s.is_empty() && s != "auto" {
+                        form = form.text("size", s.to_string());
+                    }
                 }
+                if let Some(q) = quality_c.as_deref() {
+                    if !q.is_empty() {
+                        form = form.text("quality", q.to_string());
+                    }
+                }
+                client.post(&url).bearer_auth(&key).multipart(form).send().await
+            } else {
+                // /v1/images/generations → JSON
+                let mut body = json!({
+                    "model": model_c,
+                    "prompt": prompt_c,
+                    "n": 1,
+                });
+                if let Some(s) = size_c.as_deref() {
+                    if !s.is_empty() {
+                        body["size"] = json!(s);
+                    }
+                }
+                if let Some(q) = quality_c.as_deref() {
+                    if !q.is_empty() {
+                        body["quality"] = json!(q);
+                    }
+                }
+                if let Some(st) = style_c.as_deref() {
+                    if !st.is_empty() {
+                        body["style"] = json!(st);
+                    }
+                }
+                // gpt-image-1 returns b64 by default; dall-e/classic models need
+                // response_format explicitly. Always request b64 for consistent parsing.
+                body["response_format"] = json!("b64_json");
+                client
+                    .post(&url)
+                    .bearer_auth(&key)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .json(&body)
+                    .send()
+                    .await
             };
-            let mut form = reqwest::multipart::Form::new()
-                .text("model", model_c.clone())
-                .text("prompt", prompt_c.clone())
-                .text("n", "1")
-                .part("image", part);
-            if let Some(s) = size_c.as_deref() {
-                if !s.is_empty() && s != "auto" {
-                    form = form.text("size", s.to_string());
+
+            match resp_result {
+                Ok(r) => {
+                    let status = r.status();
+                    let code = status.as_u16();
+                    let transient = code == 429 || code >= 500;
+                    let raw = r.bytes().await.unwrap_or_default();
+                    if status.is_success() || !transient || attempt >= MAX_ATTEMPTS {
+                        break (status, raw);
+                    }
+                    last_transient = Some(format!(
+                        "upstream {status}: {}",
+                        String::from_utf8_lossy(&raw)
+                    ));
+                }
+                Err(e) => {
+                    if attempt >= MAX_ATTEMPTS {
+                        let msg = match last_transient {
+                            Some(prev) => format!(
+                                "upstream: {e}（已重试 {} 次，上次：{}）",
+                                attempt - 1,
+                                prev
+                            ),
+                            None => format!("upstream: {e}（已重试 {} 次）", attempt - 1),
+                        };
+                        finalize_failed(&pool, kind, &token_c, &msg).await;
+                        if used_shared {
+                            let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
+                            let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                        }
+                        return;
+                    }
+                    last_transient = Some(format!("upstream: {e}"));
                 }
             }
-            if let Some(q) = quality_c.as_deref() {
-                if !q.is_empty() {
-                    form = form.text("quality", q.to_string());
-                }
-            }
-            client.post(&url).bearer_auth(&key).multipart(form).send().await
-        } else {
-            // /v1/images/generations → JSON
-            let mut body = json!({
-                "model": model_c,
-                "prompt": prompt_c,
-                "n": 1,
-            });
-            if let Some(s) = size_c.as_deref() {
-                if !s.is_empty() {
-                    body["size"] = json!(s);
-                }
-            }
-            if let Some(q) = quality_c.as_deref() {
-                if !q.is_empty() {
-                    body["quality"] = json!(q);
-                }
-            }
-            if let Some(st) = style_c.as_deref() {
-                if !st.is_empty() {
-                    body["style"] = json!(st);
-                }
-            }
-            // gpt-image-1 returns b64 by default; dall-e/classic models need
-            // response_format explicitly. Always request b64 for consistent parsing.
-            body["response_format"] = json!("b64_json");
-            client
-                .post(&url)
-                .bearer_auth(&key)
-                .header(header::CONTENT_TYPE, "application/json")
-                .json(&body)
-                .send()
-                .await
+
+            // Backoff: 0.8s, 2.4s (multiplied by 3^n).
+            let delay_ms = 800u64 * 3u64.pow(attempt - 1);
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         };
 
-        let resp = match resp_result {
-            Ok(r) => r,
-            Err(e) => {
-                finalize_failed(&pool, kind, &token_c, &format!("upstream: {e}")).await;
-                if used_shared {
-                    let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                    let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
-                }
-                return;
-            }
-        };
-        let status = resp.status();
-        let raw = resp.bytes().await.unwrap_or_default();
         if !status.is_success() {
-            let msg = format!("upstream {status}: {}", String::from_utf8_lossy(&raw));
+            let msg = if attempt > 1 {
+                format!(
+                    "upstream {status}（已重试 {} 次）: {}",
+                    attempt - 1,
+                    String::from_utf8_lossy(&raw)
+                )
+            } else {
+                format!("upstream {status}: {}", String::from_utf8_lossy(&raw))
+            };
             finalize_failed(&pool, kind, &token_c, &msg).await;
             if used_shared {
                 let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;

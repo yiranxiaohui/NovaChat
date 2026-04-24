@@ -262,30 +262,23 @@ export default function ImageStudioPage() {
 
   const sharedAvailable = !!shared?.image_openai_available && !!shared?.enabled
 
-  async function generate() {
+  // Shared submit + poll path used by both the "生成图片" button and the
+  // per-card 重试 action. Callers pre-resolve the image to a data URL.
+  async function runGeneration(params: {
+    prompt: string
+    model: string
+    size?: string
+    quality?: string
+    style?: string
+    imageDataUrl?: string
+  }) {
     if (!user) return
-    const p = prompt.trim()
-    if (!p) {
-      setError("请填写 prompt")
-      return
-    }
-    setError(null)
-    setSubmitting(true)
-    setCurrent(null)
-
     const effective = await loadEffectiveSettings(user.id)
     const imgMeta = IMAGE_PROTOCOL_META.openai
 
-    let imageDataUrl: string | undefined
-    if (attached) {
-      try {
-        imageDataUrl = await fileToDataUrl(attached)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-        setSubmitting(false)
-        return
-      }
-    }
+    setError(null)
+    setSubmitting(true)
+    setCurrent(null)
 
     const startedAt = Date.now()
     setElapsed(0)
@@ -296,12 +289,12 @@ export default function ImageStudioPage() {
 
     try {
       const { token } = await studioApi.submit({
-        prompt: p,
-        model,
-        size: size === "auto" ? undefined : size,
-        quality: quality === "auto" ? undefined : quality,
-        style: style || undefined,
-        imageDataUrl,
+        prompt: params.prompt,
+        model: params.model,
+        size: params.size === "auto" ? undefined : params.size,
+        quality: params.quality === "auto" ? undefined : params.quality,
+        style: params.style || undefined,
+        imageDataUrl: params.imageDataUrl,
         useShared: useShared && sharedAvailable,
         upstreamUrl: !useShared || !sharedAvailable
           ? effective.imageBaseUrl || imgMeta.defaultBaseUrl
@@ -323,6 +316,60 @@ export default function ImageStudioPage() {
       }
       setSubmitting(false)
     }
+  }
+
+  async function generate() {
+    if (!user) return
+    const p = prompt.trim()
+    if (!p) {
+      setError("请填写 prompt")
+      return
+    }
+    let imageDataUrl: string | undefined
+    if (attached) {
+      try {
+        imageDataUrl = await fileToDataUrl(attached)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return
+      }
+    }
+    await runGeneration({
+      prompt: p,
+      model,
+      size,
+      quality,
+      style,
+      imageDataUrl,
+    })
+  }
+
+  // Re-run a failed generation with the same params. If the original request
+  // used a base image (source_path), fetch it back and re-send as a data URL
+  // so the retry is a true re-run, not a fresh text-to-image.
+  async function retryGeneration(gen: StudioGeneration) {
+    if (submitting) return
+    if (!user) return
+    let imageDataUrl: string | undefined
+    if (gen.source_path) {
+      try {
+        const f = await urlToImageFile(gen.source_path, "source")
+        imageDataUrl = await fileToDataUrl(f)
+      } catch (e) {
+        setError(
+          `读取原底图失败：${e instanceof Error ? e.message : String(e)}`
+        )
+        return
+      }
+    }
+    await runGeneration({
+      prompt: gen.prompt,
+      model: gen.model || model,
+      size: gen.size || undefined,
+      quality: gen.quality || undefined,
+      style: gen.style || undefined,
+      imageDataUrl,
+    })
   }
 
   async function publishToPlaza(g: StudioGeneration) {
@@ -736,6 +783,8 @@ export default function ImageStudioPage() {
                       setError(e instanceof Error ? e.message : String(e))
                     }
                   }}
+                  onRetry={() => void retryGeneration(effectivePreview)}
+                  retrying={submitting}
                 />
               )}
             </div>
@@ -759,6 +808,8 @@ export default function ImageStudioPage() {
                         onSelect={() => setCurrent(g)}
                         onPublish={() => void publishToPlaza(g)}
                         onRemove={() => void removeHistory(g)}
+                        onRetry={() => void retryGeneration(g)}
+                        retrying={submitting}
                       />
                     )
                   })}
@@ -788,6 +839,8 @@ function PreviewCard({
   canPublish,
   onPublish,
   onUseAsBase,
+  onRetry,
+  retrying,
 }: {
   gen: StudioGeneration
   published: boolean
@@ -795,6 +848,8 @@ function PreviewCard({
   canPublish: boolean
   onPublish: () => void
   onUseAsBase: () => void | Promise<void>
+  onRetry?: () => void
+  retrying?: boolean
 }) {
   const fname = gen.image_path ? filenameFromPath(gen.image_path) : null
   const [copyState, setCopyState] = useState<"idle" | "copying" | "done" | "error">(
@@ -840,6 +895,17 @@ function PreviewCard({
         <p className="max-w-lg text-xs text-muted-foreground">
           {gen.error || "未知错误"}
         </p>
+        {onRetry && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            disabled={retrying}
+          >
+            <RefreshCw className={retrying ? "size-4 animate-spin" : "size-4"} />
+            {retrying ? "重试中…" : "重试"}
+          </Button>
+        )}
       </div>
     )
   }
@@ -983,6 +1049,8 @@ function HistoryCard({
   onSelect,
   onPublish,
   onRemove,
+  onRetry,
+  retrying,
 }: {
   gen: StudioGeneration
   published: boolean
@@ -990,6 +1058,8 @@ function HistoryCard({
   onSelect: () => void
   onPublish: () => void
   onRemove: () => void
+  onRetry?: () => void
+  retrying?: boolean
 }) {
   return (
     <div className="group relative overflow-hidden rounded-lg border border-border bg-card">
@@ -1006,13 +1076,30 @@ function HistoryCard({
             className="size-full object-cover transition-transform group-hover:scale-105"
           />
         </button>
+      ) : gen.status === "failed" ? (
+        <div className="grid aspect-square w-full place-items-center gap-2 bg-muted text-xs text-muted-foreground">
+          <span className="text-destructive">失败</span>
+          {onRetry && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRetry()
+              }}
+              disabled={retrying}
+              title={gen.error || "重试"}
+            >
+              <RefreshCw
+                className={retrying ? "size-3 animate-spin" : "size-3"}
+              />
+              {retrying ? "重试中…" : "重试"}
+            </Button>
+          )}
+        </div>
       ) : (
         <div className="grid aspect-square w-full place-items-center bg-muted text-xs text-muted-foreground">
-          {gen.status === "failed" ? (
-            <span className="text-destructive">失败</span>
-          ) : (
-            <PendingIndicator createdAt={gen.created_at} />
-          )}
+          <PendingIndicator createdAt={gen.created_at} />
         </div>
       )}
 

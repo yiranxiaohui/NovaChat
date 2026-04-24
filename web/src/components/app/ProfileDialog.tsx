@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { Check, Copy, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -164,7 +165,7 @@ export function ProfileDialog({ open, onClose }: Props) {
 
   const showImage = trimmedAvatar && !avatarBroken
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
       onClick={onClose}
@@ -383,6 +384,7 @@ export function ProfileDialog({ open, onClose }: Props) {
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

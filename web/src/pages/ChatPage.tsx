@@ -790,6 +790,40 @@ export default function ChatPage() {
     }
   }, [conversationId, nav])
 
+  // Auto-delete a conversation when the user leaves it without ever sending
+  // a message. Guarded by `loaded` so a slow-loading existing conversation
+  // doesn't get nuked if the user clicks away mid-fetch.
+  const emptyTrackRef = useRef<{
+    id: number
+    loaded: boolean
+    hadMessages: boolean
+  }>({ id: 0, loaded: false, hadMessages: false })
+  useEffect(() => {
+    if (conversationId == null) return
+    if (emptyTrackRef.current.id !== conversationId) {
+      emptyTrackRef.current = {
+        id: conversationId,
+        loaded: false,
+        hadMessages: false,
+      }
+    }
+    if (!loadingMessages) emptyTrackRef.current.loaded = true
+    if (messages.length > 0) emptyTrackRef.current.hadMessages = true
+  }, [conversationId, loadingMessages, messages])
+  useEffect(() => {
+    if (conversationId == null) return
+    const id = conversationId
+    return () => {
+      const ref = emptyTrackRef.current
+      if (ref.id === id && ref.loaded && !ref.hadMessages) {
+        conversationsApi
+          .remove(id)
+          .then(() => setSidebarReload((x) => x + 1))
+          .catch(() => {})
+      }
+    }
+  }, [conversationId])
+
   async function refreshAttachedSkills(convId: number) {
     try {
       const list = await skillsApi.listForConversation(convId)

@@ -379,6 +379,30 @@ function CopyImageButton({
   )
 }
 
+type UserSegment =
+  | { type: "text"; value: string }
+  | { type: "image"; url: string; alt: string }
+
+function splitUserContent(content: string): UserSegment[] {
+  // Match standard markdown image syntax: ![alt](url)
+  const re = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+  const segments: UserSegment[] = []
+  let lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    const text = content.slice(lastIndex, m.index).replace(/\n+$/, "")
+    if (text.length > 0) segments.push({ type: "text", value: text })
+    segments.push({ type: "image", alt: m[1] ?? "", url: m[2] ?? "" })
+    lastIndex = m.index + m[0].length
+    // Swallow a single trailing newline so consecutive images stack cleanly
+    if (content[lastIndex] === "\n") lastIndex += 1
+  }
+  const tail = content.slice(lastIndex)
+  if (tail.length > 0) segments.push({ type: "text", value: tail })
+  if (segments.length === 0) segments.push({ type: "text", value: content })
+  return segments
+}
+
 function Bubble({
   message,
   actions,
@@ -425,17 +449,41 @@ function Bubble({
   )
 
   if (isUser) {
+    const segments = splitUserContent(message.content)
     return (
       <div className="group flex flex-col items-end gap-1">
         <div className="flex max-w-[82%] items-end gap-2">
           <div className="rounded-2xl rounded-tr-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
-            <p className="whitespace-pre-wrap">{message.content}</p>
+            {segments.map((seg, i) =>
+              seg.type === "text" ? (
+                <p key={i} className="whitespace-pre-wrap">
+                  {seg.value}
+                </p>
+              ) : (
+                <img
+                  key={i}
+                  src={seg.url}
+                  alt={seg.alt}
+                  loading="lazy"
+                  onClick={() => setPreview({ src: seg.url, alt: seg.alt })}
+                  className="my-1 max-h-80 w-auto cursor-zoom-in rounded-xl border border-primary-foreground/20"
+                />
+              )
+            )}
           </div>
           <div className="grid size-7 shrink-0 place-items-center rounded-full border border-border bg-card text-muted-foreground">
             <User className="size-3.5" />
           </div>
         </div>
         <div className="pr-9">{toolbar}</div>
+        {preview && (
+          <ImagePreview
+            src={preview.src}
+            alt={preview.alt}
+            onClose={() => setPreview(null)}
+            extraActions={<CopyImageButton url={preview.src} variant="circle" />}
+          />
+        )}
       </div>
     )
   }

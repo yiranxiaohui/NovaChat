@@ -19,7 +19,6 @@ import {
   Sparkles,
   Square,
   Upload,
-  User,
   Wand2,
   X,
 } from "lucide-react"
@@ -409,17 +408,25 @@ function Bubble({
   onPublishImage,
   publishedFilenames,
   publishingFilename,
+  userAvatarUrl,
+  userInitial,
 }: {
   message: UiMessage
   actions: BubbleActions
   onPublishImage?: (filename: string, alt: string) => void
   publishedFilenames?: Set<string>
   publishingFilename?: string | null
+  userAvatarUrl?: string | null
+  userInitial?: string
 }) {
   const isUser = message.role === "user"
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(
     null
   )
+  const [avatarBroken, setAvatarBroken] = useState(false)
+  useEffect(() => {
+    setAvatarBroken(false)
+  }, [userAvatarUrl])
 
   const toolbar = (
     <div
@@ -471,9 +478,19 @@ function Bubble({
               )
             )}
           </div>
-          <div className="grid size-7 shrink-0 place-items-center rounded-full border border-border bg-card text-muted-foreground">
-            <User className="size-3.5" />
-          </div>
+          {userAvatarUrl && !avatarBroken ? (
+            <img
+              src={userAvatarUrl}
+              alt=""
+              loading="lazy"
+              onError={() => setAvatarBroken(true)}
+              className="size-7 shrink-0 rounded-full border border-border object-cover"
+            />
+          ) : (
+            <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
+              {(userInitial || "?").toUpperCase()}
+            </div>
+          )}
         </div>
         <div className="pr-9">{toolbar}</div>
         {preview && (
@@ -1405,6 +1422,10 @@ export default function ChatPage() {
                   }
                   publishedFilenames={publishedFilenames}
                   publishingFilename={publishingFilename}
+                  userAvatarUrl={user?.avatar_url ?? null}
+                  userInitial={(
+                    user?.display_name?.trim() || user?.username || "?"
+                  ).slice(0, 1)}
                 />
               )
             })}

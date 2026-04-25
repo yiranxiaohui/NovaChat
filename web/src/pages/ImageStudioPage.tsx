@@ -29,6 +29,7 @@ import { creditsApi, type SharedStatus } from "@/lib/credits"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
 import { ImagePlazaDialog } from "@/components/app/ImagePlazaDialog"
+import { ImagePreview } from "@/components/app/ImagePreview"
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -939,6 +940,7 @@ function PreviewCard({
   const [baseState, setBaseState] = useState<"idle" | "loading" | "done" | "error">(
     "idle"
   )
+  const [zoomOpen, setZoomOpen] = useState(false)
 
   async function handleUseAsBase() {
     setBaseState("loading")
@@ -1018,8 +1020,17 @@ function PreviewCard({
       <img
         src={gen.image_path}
         alt={gen.prompt}
-        className="max-h-[70vh] max-w-full rounded-lg border border-border shadow-sm"
+        onClick={() => setZoomOpen(true)}
+        title="点击放大预览（滚轮缩放，支持拖动）"
+        className="max-h-[70vh] max-w-full cursor-zoom-in rounded-lg border border-border shadow-sm"
       />
+      {zoomOpen && (
+        <ImagePreview
+          src={gen.image_path}
+          alt={gen.prompt}
+          onClose={() => setZoomOpen(false)}
+        />
+      )}
       <div className="flex w-full max-w-lg flex-col gap-2 text-xs">
         <div className="flex flex-wrap gap-1.5 text-muted-foreground">
           {gen.model && (

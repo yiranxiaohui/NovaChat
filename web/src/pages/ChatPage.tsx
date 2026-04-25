@@ -1616,6 +1616,30 @@ export default function ChatPage() {
                 ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={(e) => {
+                  const items = e.clipboardData?.items
+                  if (!items) return
+                  const images: File[] = []
+                  for (const item of items) {
+                    if (item.kind !== "file") continue
+                    if (!item.type.startsWith("image/")) continue
+                    const f = item.getAsFile()
+                    if (f) {
+                      const ext = (f.type.split("/")[1] || "png").split("+")[0]
+                      const named =
+                        f.name && f.name !== "image.png"
+                          ? f
+                          : new File([f], `pasted-${Date.now()}.${ext}`, {
+                              type: f.type,
+                            })
+                      images.push(named)
+                    }
+                  }
+                  if (images.length > 0) {
+                    e.preventDefault()
+                    addAttachments(images)
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (
                     e.key === "Enter" &&

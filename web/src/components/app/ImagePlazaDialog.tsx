@@ -411,9 +411,19 @@ export function ImagePlazaDialog({
                       >
                         {p.prompt}
                       </p>
-                      <p className="text-[10px] text-muted-foreground/80">
-                        by @{p.author_username}
-                      </p>
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground/80">
+                        <span className="truncate">by @{p.author_username}</span>
+                        <span
+                          className="shrink-0"
+                          title={new Date(
+                            p.created_at.includes("T")
+                              ? p.created_at
+                              : p.created_at.replace(" ", "T") + "Z"
+                          ).toLocaleString()}
+                        >
+                          {formatTime(p.created_at)}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-1">
                         <Button
                           size="xs"
@@ -514,21 +524,33 @@ export function ImagePlazaDialog({
                     >
                       {p.prompt}
                     </p>
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-flex items-center gap-0.5"
+                          title="点赞"
+                        >
+                          <Heart className="size-3" /> {p.like_count}
+                        </span>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-0.5 hover:text-foreground"
+                          title="查看评论"
+                          onClick={() => openDetail("mine", p)}
+                        >
+                          <MessageCircle className="size-3" /> {p.comment_count}
+                        </button>
+                      </div>
                       <span
-                        className="inline-flex items-center gap-0.5"
-                        title="点赞"
+                        className="shrink-0"
+                        title={new Date(
+                          p.created_at.includes("T")
+                            ? p.created_at
+                            : p.created_at.replace(" ", "T") + "Z"
+                        ).toLocaleString()}
                       >
-                        <Heart className="size-3" /> {p.like_count}
+                        {formatTime(p.created_at)}
                       </span>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-0.5 hover:text-foreground"
-                        title="查看评论"
-                        onClick={() => openDetail("mine", p)}
-                      >
-                        <MessageCircle className="size-3" /> {p.comment_count}
-                      </button>
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
@@ -761,6 +783,16 @@ function DetailOverlay({
               )}
               <span className="inline-flex items-center gap-1" title="评论数">
                 <MessageCircle className="size-3.5" /> {image.comment_count}
+              </span>
+              <span
+                className="ml-auto text-[11px]"
+                title={new Date(
+                  image.created_at.includes("T")
+                    ? image.created_at
+                    : image.created_at.replace(" ", "T") + "Z"
+                ).toLocaleString()}
+              >
+                {formatTime(image.created_at)}
               </span>
             </div>
           </div>

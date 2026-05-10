@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import {
   Copy,
   Flame,
   Heart,
   ImageOff,
+  Images,
+  Menu,
   MessageCircle,
   Search,
   Send,
@@ -17,7 +20,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
+import { Sidebar } from "@/components/app/Sidebar"
 import {
   plazaApi,
   type MyPlazaImage,
@@ -26,30 +31,19 @@ import {
   type PlazaSort,
 } from "@/lib/image-plaza"
 
-type Props = {
-  open: boolean
-  onClose: () => void
-  onUsePrompt: (prompt: string) => void
-  onUseAsEditBase?: (filename: string, prompt: string) => void
-}
-
 type Tab = "discover" | "mine"
 
 type DetailTarget =
   | { kind: "discover"; image: PlazaImage }
   | { kind: "mine"; image: MyPlazaImage }
 
-export function ImagePlazaDialog({
-  open,
-  onClose,
-  onUsePrompt,
-  onUseAsEditBase,
-}: Props) {
+export default function ImagePlazaPage() {
   const { state: authState } = useAuth()
   const currentUsername =
     authState.status === "authed" ? authState.user.username : null
   const currentUserIsAdmin =
     authState.status === "authed" ? authState.user.is_admin === true : false
+  const nav = useNavigate()
 
   const [tab, setTab] = useState<Tab>("discover")
   const [items, setItems] = useState<PlazaImage[]>([])
@@ -63,9 +57,10 @@ export function ImagePlazaDialog({
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [likeBusy, setLikeBusy] = useState<number | null>(null)
   const [detail, setDetail] = useState<DetailTarget | null>(null)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   useEffect(() => {
-    if (!open || tab !== "discover") return
+    if (tab !== "discover") return
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -83,10 +78,10 @@ export function ImagePlazaDialog({
     return () => {
       cancelled = true
     }
-  }, [open, tab, search, page, sort])
+  }, [tab, search, page, sort])
 
   useEffect(() => {
-    if (!open || tab !== "mine") return
+    if (tab !== "mine") return
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -104,15 +99,7 @@ export function ImagePlazaDialog({
     return () => {
       cancelled = true
     }
-  }, [open, tab])
-
-  useEffect(() => {
-    if (open) {
-      setPage(1)
-      setCopiedId(null)
-      setDetail(null)
-    }
-  }, [open])
+  }, [tab])
 
   async function copyPrompt(p: PlazaImage | MyPlazaImage) {
     try {
@@ -122,8 +109,16 @@ export function ImagePlazaDialog({
         setCopiedId((x) => (x === p.id ? null : x))
       }, 1200)
     } catch {
-      onUsePrompt(p.prompt)
+      // Fall back to navigating directly with the prompt prefilled.
+      goToStudio({ prompt: p.prompt })
     }
+  }
+
+  function goToStudio(opts: { prompt: string; base?: string }) {
+    const params = new URLSearchParams()
+    params.set("prompt", opts.prompt)
+    if (opts.base) params.set("base", opts.base)
+    nav(`/studio?${params.toString()}`)
   }
 
   async function handleUsePrompt(p: PlazaImage) {
@@ -135,8 +130,7 @@ export function ImagePlazaDialog({
           it.id === p.id ? { ...it, clone_count: it.clone_count + 1 } : it
         )
       )
-      onUsePrompt(p.prompt)
-      onClose()
+      goToStudio({ prompt: p.prompt })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -145,7 +139,6 @@ export function ImagePlazaDialog({
   }
 
   async function handleUseAsBase(p: PlazaImage) {
-    if (!onUseAsEditBase) return
     setBusyId(p.id)
     try {
       await plazaApi.bumpClone(p.id)
@@ -154,8 +147,7 @@ export function ImagePlazaDialog({
           it.id === p.id ? { ...it, clone_count: it.clone_count + 1 } : it
         )
       )
-      onUseAsEditBase(p.filename, p.prompt)
-      onClose()
+      goToStudio({ prompt: p.prompt, base: p.filename })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -247,31 +239,56 @@ export function ImagePlazaDialog({
     })
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
+    <div className="flex h-svh bg-background text-foreground">
+      {mobileNavOpen && (
+        <button
+          type="button"
+          aria-label="关闭侧栏"
+          onClick={() => setMobileNavOpen(false)}
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+        />
+      )}
       <div
-        className="relative flex w-full max-w-5xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: "calc(100svh - 2rem)" }}
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 transition-transform",
+          mobileNavOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
+          "md:static md:translate-x-0 md:shadow-none"
+        )}
       >
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="text-lg font-semibold">图片广场</h2>
-            <p className="text-sm text-muted-foreground">
-              浏览大家公开分享的生成图。点「用此提示词」直接复用，或点「以此图生图」用作编辑底图。
-            </p>
+        <Sidebar
+          reloadKey={0}
+          onNavigate={() => setMobileNavOpen(false)}
+        />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="打开侧栏"
+            >
+              <Menu />
+            </Button>
+            <Images className="size-4 shrink-0 text-muted-foreground" />
+            <h1 className="truncate text-base font-semibold">图片广场</h1>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              浏览大家公开分享的生成图，或复用为自己的提示词 / 底图
+            </span>
           </div>
-          <div className="flex items-center rounded-md border border-border p-0.5">
+          <div className="flex shrink-0 items-center rounded-md border border-border p-0.5">
             <Button
               size="sm"
               variant={tab === "discover" ? "secondary" : "ghost"}
               className="h-7 px-2"
-              onClick={() => setTab("discover")}
+              onClick={() => {
+                setTab("discover")
+                setPage(1)
+              }}
             >
               发现
             </Button>
@@ -284,109 +301,225 @@ export function ImagePlazaDialog({
               我的发布
             </Button>
           </div>
-        </div>
+        </header>
 
-        {tab === "discover" && (
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[12rem] flex-1">
-              <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                className="pl-8"
-                placeholder="按提示词搜索…"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setPage(1)
-                }}
-              />
-            </div>
-            <div className="flex items-center rounded-md border border-border p-0.5">
-              <Button
-                size="sm"
-                variant={sort === "hot" ? "secondary" : "ghost"}
-                className="h-7 px-2"
-                onClick={() => {
-                  setSort("hot")
-                  setPage(1)
-                }}
-              >
-                <Flame className="size-3.5" /> 热门
-              </Button>
-              <Button
-                size="sm"
-                variant={sort === "liked" ? "secondary" : "ghost"}
-                className="h-7 px-2"
-                onClick={() => {
-                  setSort("liked")
-                  setPage(1)
-                }}
-              >
-                <Heart className="size-3.5" /> 点赞
-              </Button>
-              <Button
-                size="sm"
-                variant={sort === "new" ? "secondary" : "ghost"}
-                className="h-7 px-2"
-                onClick={() => {
-                  setSort("new")
-                  setPage(1)
-                }}
-              >
-                <Sparkles className="size-3.5" /> 最新
-              </Button>
-            </div>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={page <= 1 || loading}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
-                上一页
-              </Button>
-              <span className="px-1">第 {page} 页</span>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={loading || items.length < 24}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                下一页
-              </Button>
-            </div>
-          </div>
-        )}
+        <main className="nc-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-3 py-4 md:px-6 md:py-6">
+            {tab === "discover" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[12rem] flex-1">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="pl-8"
+                    placeholder="按提示词搜索…"
+                    value={search}
+                    onChange={(e) => {
+                      setSearch(e.target.value)
+                      setPage(1)
+                    }}
+                  />
+                </div>
+                <div className="flex items-center rounded-md border border-border p-0.5">
+                  <Button
+                    size="sm"
+                    variant={sort === "hot" ? "secondary" : "ghost"}
+                    className="h-7 px-2"
+                    onClick={() => {
+                      setSort("hot")
+                      setPage(1)
+                    }}
+                  >
+                    <Flame className="size-3.5" /> 热门
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={sort === "liked" ? "secondary" : "ghost"}
+                    className="h-7 px-2"
+                    onClick={() => {
+                      setSort("liked")
+                      setPage(1)
+                    }}
+                  >
+                    <Heart className="size-3.5" /> 点赞
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={sort === "new" ? "secondary" : "ghost"}
+                    className="h-7 px-2"
+                    onClick={() => {
+                      setSort("new")
+                      setPage(1)
+                    }}
+                  >
+                    <Sparkles className="size-3.5" /> 最新
+                  </Button>
+                </div>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={page <= 1 || loading}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    上一页
+                  </Button>
+                  <span className="px-1">第 {page} 页</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={loading || items.length < 24}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    下一页
+                  </Button>
+                </div>
+              </div>
+            )}
 
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        )}
+            {error && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
 
-        <div className="flex-1 overflow-y-auto">
-          {loading && <p className="text-sm text-muted-foreground">加载中…</p>}
+            {loading && (
+              <p className="text-sm text-muted-foreground">加载中…</p>
+            )}
 
-          {tab === "discover" && !loading && items.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
-              <ImageOff className="size-6" />
-              {search ? "没有匹配结果。" : "还没有人发布图片。"}
-            </div>
-          )}
-          {tab === "mine" && !loading && mineItems.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
-              <Upload className="size-6" />
-              还没发布过图片；在聊天里生成后点图片右下角的「发布」按钮即可。
-            </div>
-          )}
+            {tab === "discover" && !loading && items.length === 0 && (
+              <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
+                <ImageOff className="size-6" />
+                {search ? "没有匹配结果。" : "还没有人发布图片。"}
+              </div>
+            )}
+            {tab === "mine" && !loading && mineItems.length === 0 && (
+              <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
+                <Upload className="size-6" />
+                还没发布过图片；在聊天里生成后点图片右下角的「发布」按钮即可。
+              </div>
+            )}
 
-          {tab === "discover" && (
-            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-              {items.map((p) => {
-                const liked = p.liked_by_me > 0
-                return (
+            {tab === "discover" && (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                {items.map((p) => {
+                  const liked = p.liked_by_me > 0
+                  return (
+                    <li
+                      key={p.id}
+                      className="flex flex-col overflow-hidden rounded-md border border-border bg-card"
+                    >
+                      <div className="relative aspect-square bg-muted">
+                        <img
+                          src={`/api/images/${p.filename}`}
+                          alt={p.prompt}
+                          loading="lazy"
+                          className="absolute inset-0 size-full cursor-zoom-in object-cover"
+                          onClick={() => openDetail("discover", p)}
+                        />
+                        <span
+                          className="absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white"
+                          title={`已被复用 ${p.clone_count} 次`}
+                        >
+                          <Flame className="size-3" />
+                          {p.clone_count}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-1.5 p-2">
+                        <p
+                          className="line-clamp-3 text-xs text-muted-foreground"
+                          title={p.prompt}
+                        >
+                          {p.prompt}
+                        </p>
+                        <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground/80">
+                          <span className="truncate">by @{p.author_username}</span>
+                          <span
+                            className="shrink-0"
+                            title={new Date(
+                              p.created_at.includes("T")
+                                ? p.created_at
+                                : p.created_at.replace(" ", "T") + "Z"
+                            ).toLocaleString()}
+                          >
+                            {formatTime(p.created_at)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="xs"
+                            variant={liked ? "secondary" : "ghost"}
+                            className="h-6 px-1.5"
+                            onClick={() => void toggleLike(p)}
+                            disabled={likeBusy === p.id}
+                            title={liked ? "取消点赞" : "点赞"}
+                          >
+                            <Heart
+                              className={
+                                liked
+                                  ? "size-3.5 fill-red-500 text-red-500"
+                                  : "size-3.5"
+                              }
+                            />
+                            <span className="text-[10px]">{p.like_count}</span>
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="h-6 px-1.5"
+                            onClick={() => openDetail("discover", p)}
+                            title="查看评论"
+                          >
+                            <MessageCircle className="size-3.5" />
+                            <span className="text-[10px]">{p.comment_count}</span>
+                          </Button>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => void handleUsePrompt(p)}
+                            disabled={busyId === p.id}
+                            title="用此提示词在图像工作室生成新图"
+                          >
+                            <Wand2 /> 用此提示词
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => void handleUseAsBase(p)}
+                            disabled={busyId === p.id}
+                            title="以此图为底图进入图像工作室"
+                          >
+                            <Upload className="-rotate-90" />
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => void copyPrompt(p)}
+                            title="复制提示词"
+                          >
+                            <Copy />
+                          </Button>
+                        </div>
+                        {copiedId === p.id && (
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
+                            已复制
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+
+            {tab === "mine" && (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                {mineItems.map((p) => (
                   <li
                     key={p.id}
-                    className="flex flex-col overflow-hidden rounded-md border border-border bg-background"
+                    className="flex flex-col overflow-hidden rounded-md border border-border bg-card"
                   >
                     <div className="relative aspect-square bg-muted">
                       <img
@@ -394,7 +527,7 @@ export function ImagePlazaDialog({
                         alt={p.prompt}
                         loading="lazy"
                         className="absolute inset-0 size-full cursor-zoom-in object-cover"
-                        onClick={() => openDetail("discover", p)}
+                        onClick={() => openDetail("mine", p)}
                       />
                       <span
                         className="absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white"
@@ -411,8 +544,23 @@ export function ImagePlazaDialog({
                       >
                         {p.prompt}
                       </p>
-                      <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground/80">
-                        <span className="truncate">by @{p.author_username}</span>
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="inline-flex items-center gap-0.5"
+                            title="点赞"
+                          >
+                            <Heart className="size-3" /> {p.like_count}
+                          </span>
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-0.5 hover:text-foreground"
+                            title="查看评论"
+                            onClick={() => openDetail("mine", p)}
+                          >
+                            <MessageCircle className="size-3" /> {p.comment_count}
+                          </button>
+                        </div>
                         <span
                           className="shrink-0"
                           title={new Date(
@@ -427,59 +575,20 @@ export function ImagePlazaDialog({
                       <div className="flex items-center gap-1">
                         <Button
                           size="xs"
-                          variant={liked ? "secondary" : "ghost"}
-                          className="h-6 px-1.5"
-                          onClick={() => void toggleLike(p)}
-                          disabled={likeBusy === p.id}
-                          title={liked ? "取消点赞" : "点赞"}
-                        >
-                          <Heart
-                            className={
-                              liked
-                                ? "size-3.5 fill-red-500 text-red-500"
-                                : "size-3.5"
-                            }
-                          />
-                          <span className="text-[10px]">{p.like_count}</span>
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          className="h-6 px-1.5"
-                          onClick={() => openDetail("discover", p)}
-                          title="查看评论"
-                        >
-                          <MessageCircle className="size-3.5" />
-                          <span className="text-[10px]">{p.comment_count}</span>
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          className="flex-1"
-                          onClick={() => void handleUsePrompt(p)}
-                          disabled={busyId === p.id}
-                          title="用此提示词新生成一张"
-                        >
-                          <Wand2 /> 用此提示词
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => void handleUseAsBase(p)}
-                          disabled={busyId === p.id}
-                          title="以此图为底图进行编辑"
-                        >
-                          <Upload className="-rotate-90" />
-                        </Button>
-                        <Button
-                          size="xs"
                           variant="ghost"
                           onClick={() => void copyPrompt(p)}
+                          className="flex-1"
                           title="复制提示词"
                         >
-                          <Copy />
+                          <Copy /> 复制
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => remove(p)}
+                          title="从广场撤回"
+                        >
+                          <Trash2 />
                         </Button>
                       </div>
                       {copiedId === p.id && (
@@ -489,123 +598,29 @@ export function ImagePlazaDialog({
                       )}
                     </div>
                   </li>
-                )
-              })}
-            </ul>
-          )}
-
-          {tab === "mine" && (
-            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-              {mineItems.map((p) => (
-                <li
-                  key={p.id}
-                  className="flex flex-col overflow-hidden rounded-md border border-border bg-background"
-                >
-                  <div className="relative aspect-square bg-muted">
-                    <img
-                      src={`/api/images/${p.filename}`}
-                      alt={p.prompt}
-                      loading="lazy"
-                      className="absolute inset-0 size-full cursor-zoom-in object-cover"
-                      onClick={() => openDetail("mine", p)}
-                    />
-                    <span
-                      className="absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white"
-                      title={`已被复用 ${p.clone_count} 次`}
-                    >
-                      <Flame className="size-3" />
-                      {p.clone_count}
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-1.5 p-2">
-                    <p
-                      className="line-clamp-3 text-xs text-muted-foreground"
-                      title={p.prompt}
-                    >
-                      {p.prompt}
-                    </p>
-                    <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-flex items-center gap-0.5"
-                          title="点赞"
-                        >
-                          <Heart className="size-3" /> {p.like_count}
-                        </span>
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-0.5 hover:text-foreground"
-                          title="查看评论"
-                          onClick={() => openDetail("mine", p)}
-                        >
-                          <MessageCircle className="size-3" /> {p.comment_count}
-                        </button>
-                      </div>
-                      <span
-                        className="shrink-0"
-                        title={new Date(
-                          p.created_at.includes("T")
-                            ? p.created_at
-                            : p.created_at.replace(" ", "T") + "Z"
-                        ).toLocaleString()}
-                      >
-                        {formatTime(p.created_at)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => void copyPrompt(p)}
-                        className="flex-1"
-                        title="复制提示词"
-                      >
-                        <Copy /> 复制
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => remove(p)}
-                        title="从广场撤回"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                    {copiedId === p.id && (
-                      <p className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                        已复制
-                      </p>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="flex justify-end">
-          <Button variant="outline" onClick={onClose}>
-            关闭
-          </Button>
-        </div>
-
-        {detail && (
-          <DetailOverlay
-            detail={detail}
-            currentUsername={currentUsername}
-            currentUserIsAdmin={currentUserIsAdmin}
-            likeBusy={likeBusy === detail.image.id}
-            onClose={() => setDetail(null)}
-            onToggleLike={() => {
-              if (detail.kind === "discover") void toggleLike(detail.image)
-            }}
-            onCommentCountChange={(delta) =>
-              handleCommentCountChange(detail.image.id, delta)
-            }
-            onError={(msg) => setError(msg)}
-          />
-        )}
+                ))}
+              </ul>
+            )}
+          </div>
+        </main>
       </div>
+
+      {detail && (
+        <DetailOverlay
+          detail={detail}
+          currentUsername={currentUsername}
+          currentUserIsAdmin={currentUserIsAdmin}
+          likeBusy={likeBusy === detail.image.id}
+          onClose={() => setDetail(null)}
+          onToggleLike={() => {
+            if (detail.kind === "discover") void toggleLike(detail.image)
+          }}
+          onCommentCountChange={(delta) =>
+            handleCommentCountChange(detail.image.id, delta)
+          }
+          onError={(msg) => setError(msg)}
+        />
+      )}
     </div>
   )
 }
@@ -714,7 +729,7 @@ function DetailOverlay({
 
   return (
     <div
-      className="absolute inset-0 z-10 grid place-items-center bg-background/95 p-4"
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
       onClick={onClose}
     >
       <div

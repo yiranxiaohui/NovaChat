@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
   ImageIcon,
+  Images,
   LogOut,
   MoreHorizontal,
   Pencil,
@@ -238,6 +239,14 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
           title="多轮对话式生图（Responses API）"
         >
           <ImageIcon className="size-4" /> 图像工作室
+        </Link>
+        <Link
+          to="/plaza"
+          onClick={() => onNavigate?.()}
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+          title="浏览公开发布的生成图"
+        >
+          <Images className="size-4" /> 图片广场
         </Link>
         {user?.is_admin && (
           <Link

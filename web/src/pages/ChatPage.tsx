@@ -47,7 +47,6 @@ import { Sidebar } from "@/components/app/Sidebar"
 import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
 import { SkillsDialog } from "@/components/app/SkillsDialog"
-import { ImagePlazaDialog } from "@/components/app/ImagePlazaDialog"
 import { ImagePreview } from "@/components/app/ImagePreview"
 import { conversationsApi } from "@/lib/conversations"
 import {
@@ -656,7 +655,6 @@ export default function ChatPage() {
   const [rechargeOpen, setRechargeOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
-  const [plazaOpen, setPlazaOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(
     new Set()
@@ -853,11 +851,6 @@ export default function ChatPage() {
     } finally {
       setPublishingFilename(null)
     }
-  }
-
-  function applyPlazaPrompt(prompt: string) {
-    setInput(prompt)
-    textareaRef.current?.focus()
   }
 
   const effectiveSystemPrompt = useMemo(
@@ -1369,7 +1362,7 @@ export default function ChatPage() {
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setPlazaOpen(true)}
+              onClick={() => nav("/plaza")}
               title="图片广场"
               className="size-8 md:size-9"
             >
@@ -1682,11 +1675,6 @@ export default function ChatPage() {
         }}
       />
 
-      <ImagePlazaDialog
-        open={plazaOpen}
-        onClose={() => setPlazaOpen(false)}
-        onUsePrompt={applyPlazaPrompt}
-      />
     </div>
   )
 }

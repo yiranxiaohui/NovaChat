@@ -7,6 +7,7 @@ import SetupPage from "@/pages/SetupPage"
 import AdminPage from "@/pages/AdminPage"
 import PaymentReturnPage from "@/pages/PaymentReturnPage"
 import ImageStudioPage from "@/pages/ImageStudioPage"
+import ImagePlazaPage from "@/pages/ImagePlazaPage"
 
 function Loading() {
   return (
@@ -113,6 +114,14 @@ export default function App() {
             element={
               <Protected>
                 <ImageStudioPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/plaza"
+            element={
+              <Protected>
+                <ImagePlazaPage />
               </Protected>
             }
           />

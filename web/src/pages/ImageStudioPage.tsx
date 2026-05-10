@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   ArrowLeft,
   ArrowLeftToLine,
@@ -28,7 +28,6 @@ import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { creditsApi, type SharedStatus } from "@/lib/credits"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
-import { ImagePlazaDialog } from "@/components/app/ImagePlazaDialog"
 import { ImagePreview } from "@/components/app/ImagePreview"
 
 const SIZE_OPTIONS = [
@@ -156,6 +155,8 @@ async function copyImageToClipboard(url: string): Promise<void> {
 export default function ImageStudioPage() {
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
+  const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [prompt, setPrompt] = useState("")
   const [model, setModel] = useState<string>("gpt-image-1")
@@ -188,7 +189,6 @@ export default function ImageStudioPage() {
     null
   )
   const [pastedFlash, setPastedFlash] = useState(false)
-  const [plazaOpen, setPlazaOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const tickRef = useRef<number | null>(null)
 
@@ -220,6 +220,38 @@ export default function ImageStudioPage() {
     setAttachedUrl(u)
     return () => URL.revokeObjectURL(u)
   }, [attached])
+
+  // Hydrate prompt/base from URL — used by the Image Plaza when the user
+  // clicks 「用此提示词」 or 「以此图生图」 to land here with state. We strip
+  // the params after consuming them so a refresh doesn't keep re-applying.
+  useEffect(() => {
+    const promptQ = searchParams.get("prompt")
+    const baseQ = searchParams.get("base")
+    if (!promptQ && !baseQ) return
+    if (promptQ) setPrompt(promptQ)
+    if (baseQ) {
+      const safeBase = filenameFromPath(`/api/images/${baseQ}`)
+      if (!safeBase) {
+        setError("载入底图失败：图片文件名无效")
+      } else {
+        void (async () => {
+          try {
+            const f = await urlToImageFile(`/api/images/${safeBase}`, safeBase)
+            setAttached(f)
+          } catch (e) {
+            setError(
+              `载入底图失败：${e instanceof Error ? e.message : String(e)}`
+            )
+          }
+        })()
+      }
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete("prompt")
+    next.delete("base")
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Accept pasted images anywhere on the page → attach as base image. We
   // preventDefault only when we actually consume an image, so plain text
@@ -778,7 +810,7 @@ export default function ImageStudioPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setPlazaOpen(true)}
+              onClick={() => nav("/plaza")}
               title="图片广场"
             >
               <Images className="size-3.5" />
@@ -899,14 +931,6 @@ export default function ImageStudioPage() {
         </main>
       </div>
 
-      <ImagePlazaDialog
-        open={plazaOpen}
-        onClose={() => setPlazaOpen(false)}
-        onUsePrompt={(p) => {
-          setPrompt(p)
-          setPlazaOpen(false)
-        }}
-      />
     </div>
   )
 }

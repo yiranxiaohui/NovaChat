@@ -517,7 +517,8 @@ function Bubble({
             "border border-border/70 shadow-sm",
             "[&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:whitespace-pre",
             "[&_*]:break-words [&_a]:break-all",
-            "prose-pre:bg-muted prose-pre:border prose-pre:border-border",
+            "prose-pre:bg-muted prose-pre:text-foreground prose-pre:border prose-pre:border-border",
+            "[&_pre_code]:!text-foreground [&_pre_code]:!bg-transparent",
             "prose-img:max-w-full prose-img:rounded-xl prose-img:border prose-img:border-border prose-img:shadow-sm",
             "prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.85em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none"
           )}

@@ -139,9 +139,9 @@ pub fn guarded_client_with_timeout(
 pub async fn client_for_upstream(
     shared_client: &Client,
     url: &str,
-    used_shared: bool,
+    is_channel: bool,
 ) -> Result<Client, Response> {
-    if used_shared {
+    if is_channel {
         return Ok(shared_client.clone());
     }
     let (_parsed, host, addrs) = validate_upstream_url(url).await?;
@@ -151,10 +151,10 @@ pub async fn client_for_upstream(
 pub async fn client_for_upstream_with_timeout(
     shared_client: &Client,
     url: &str,
-    used_shared: bool,
+    is_channel: bool,
     timeout: Duration,
 ) -> Result<Client, Response> {
-    if used_shared {
+    if is_channel {
         return Ok(shared_client.clone());
     }
     let (_parsed, host, addrs) = validate_upstream_url(url).await?;

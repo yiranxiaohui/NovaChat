@@ -60,14 +60,32 @@ pub struct ChannelModel {
 // ---------------------------------------------------------------------------
 
 pub async fn list_channels(pool: &Pool, kind: DbKind) -> Result<Vec<Channel>, sqlx::Error> {
+    // Fetch `enabled` as i64 across all three backends (sqlx::Any on SQLite
+    // reports INTEGER as BIGINT, which can't decode straight to Rust bool).
+    let enabled_col = db::bool_as_int(kind, "enabled");
     let sql = db::q(
         kind,
-        "SELECT id, name, protocol, kind, base_url, api_key, \
-         CASE WHEN enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled, \
-         priority \
-         FROM upstream_channels ORDER BY priority ASC, id ASC",
+        &format!(
+            "SELECT id, name, protocol, kind, base_url, api_key, \
+             {enabled_col}, priority \
+             FROM upstream_channels ORDER BY priority ASC, id ASC"
+        ),
     );
-    sqlx::query_as::<_, Channel>(&sql).fetch_all(pool).await
+    let rows: Vec<(i64, String, String, String, String, String, i64, i64)> =
+        sqlx::query_as(&sql).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority)| Channel {
+            id,
+            name,
+            protocol,
+            kind: kind_,
+            base_url,
+            api_key,
+            enabled: enabled != 0,
+            priority,
+        })
+        .collect())
 }
 
 /// All enabled channels that can serve `model` (must be in `channel_models`),
@@ -79,17 +97,20 @@ pub async fn channels_for_model(
     model: &str,
     flavor: &str,
 ) -> Result<Vec<(Channel, Option<String>)>, sqlx::Error> {
+    let enabled_c = db::bool_as_int(kind, "c.enabled");
+    let bool_true = db::bool_true(kind);
     let sql = db::q(
         kind,
-        "SELECT c.id, c.name, c.protocol, c.kind, c.base_url, c.api_key, \
-         CASE WHEN c.enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled, \
-         c.priority, cm.upstream_id \
-         FROM upstream_channels c \
-         INNER JOIN channel_models cm ON cm.channel_id = c.id \
-         WHERE cm.model = ? AND c.kind = ? AND c.enabled IN (1,TRUE) \
-         ORDER BY c.priority ASC, c.id ASC",
+        &format!(
+            "SELECT c.id, c.name, c.protocol, c.kind, c.base_url, c.api_key, \
+             {enabled_c}, c.priority, cm.upstream_id \
+             FROM upstream_channels c \
+             INNER JOIN channel_models cm ON cm.channel_id = c.id \
+             WHERE cm.model = ? AND c.kind = ? AND c.enabled = {bool_true} \
+             ORDER BY c.priority ASC, c.id ASC"
+        ),
     );
-    let rows: Vec<(i64, String, String, String, String, String, bool, i64, Option<String>)> =
+    let rows: Vec<(i64, String, String, String, String, String, i64, i64, Option<String>)> =
         sqlx::query_as(&sql)
             .bind(model)
             .bind(flavor)
@@ -106,7 +127,7 @@ pub async fn channels_for_model(
                     kind: kind_,
                     base_url,
                     api_key,
-                    enabled,
+                    enabled: enabled != 0,
                     priority,
                 },
                 upstream_id,
@@ -342,13 +363,27 @@ pub async fn set_channel_models(
 // ---------------------------------------------------------------------------
 
 pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, sqlx::Error> {
+    let enabled_col = db::bool_as_int(kind, "enabled");
     let sql = db::q(
         kind,
-        "SELECT id, model, kind, cost_credits, display_name, \
-         CASE WHEN enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled \
-         FROM model_pricing ORDER BY kind, model",
+        &format!(
+            "SELECT id, model, kind, cost_credits, display_name, {enabled_col} \
+             FROM model_pricing ORDER BY kind, model"
+        ),
     );
-    sqlx::query_as::<_, ModelPrice>(&sql).fetch_all(pool).await
+    let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as(&sql).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, model, kind_, cost_credits, display_name, enabled)| ModelPrice {
+            id,
+            model,
+            kind: kind_,
+            cost_credits,
+            display_name,
+            enabled: enabled != 0,
+        })
+        .collect())
 }
 
 #[allow(dead_code)] // consumed by Task 2.3 try_deduct rewrite
@@ -357,16 +392,24 @@ pub async fn get_price(
     kind: DbKind,
     model: &str,
 ) -> Result<Option<ModelPrice>, sqlx::Error> {
+    let enabled_col = db::bool_as_int(kind, "enabled");
     let sql = db::q(
         kind,
-        "SELECT id, model, kind, cost_credits, display_name, \
-         CASE WHEN enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled \
-         FROM model_pricing WHERE model = ?",
+        &format!(
+            "SELECT id, model, kind, cost_credits, display_name, {enabled_col} \
+             FROM model_pricing WHERE model = ?"
+        ),
     );
-    sqlx::query_as::<_, ModelPrice>(&sql)
-        .bind(model)
-        .fetch_optional(pool)
-        .await
+    let row: Option<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as(&sql).bind(model).fetch_optional(pool).await?;
+    Ok(row.map(|(id, model, kind_, cost_credits, display_name, enabled)| ModelPrice {
+        id,
+        model,
+        kind: kind_,
+        cost_credits,
+        display_name,
+        enabled: enabled != 0,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,20 +475,34 @@ pub async fn any_enabled_channel(
     protocol: &str,
     flavor: &str,
 ) -> Result<Option<Channel>, sqlx::Error> {
+    let enabled_col = db::bool_as_int(kind, "enabled");
+    let bool_true = db::bool_true(kind);
     let sql = db::q(
         kind,
-        "SELECT id, name, protocol, kind, base_url, api_key, \
-         CASE WHEN enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled, \
-         priority \
-         FROM upstream_channels \
-         WHERE protocol = ? AND kind = ? AND enabled IN (1,TRUE) \
-         ORDER BY priority ASC, id ASC LIMIT 1",
+        &format!(
+            "SELECT id, name, protocol, kind, base_url, api_key, \
+             {enabled_col}, priority \
+             FROM upstream_channels \
+             WHERE protocol = ? AND kind = ? AND enabled = {bool_true} \
+             ORDER BY priority ASC, id ASC LIMIT 1"
+        ),
     );
-    sqlx::query_as::<_, Channel>(&sql)
-        .bind(protocol)
-        .bind(flavor)
-        .fetch_optional(pool)
-        .await
+    let row: Option<(i64, String, String, String, String, String, i64, i64)> =
+        sqlx::query_as(&sql)
+            .bind(protocol)
+            .bind(flavor)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority)| Channel {
+        id,
+        name,
+        protocol,
+        kind: kind_,
+        base_url,
+        api_key,
+        enabled: enabled != 0,
+        priority,
+    }))
 }
 
 // ---------------------------------------------------------------------------

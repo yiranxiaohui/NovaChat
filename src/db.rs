@@ -83,6 +83,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (16, include_str!("../migrations/sqlite/0016_image_jobs.sql")),
     (17, include_str!("../migrations/sqlite/0017_image_studio.sql")),
     (18, include_str!("../migrations/sqlite/0018_studio_generations.sql")),
+    (19, include_str!("../migrations/sqlite/0019_channels_pricing.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -103,6 +104,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (16, include_str!("../migrations/mysql/0016_image_jobs.sql")),
     (17, include_str!("../migrations/mysql/0017_image_studio.sql")),
     (18, include_str!("../migrations/mysql/0018_studio_generations.sql")),
+    (19, include_str!("../migrations/mysql/0019_channels_pricing.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -123,6 +125,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (16, include_str!("../migrations/postgres/0016_image_jobs.sql")),
     (17, include_str!("../migrations/postgres/0017_image_studio.sql")),
     (18, include_str!("../migrations/postgres/0018_studio_generations.sql")),
+    (19, include_str!("../migrations/postgres/0019_channels_pricing.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

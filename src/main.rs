@@ -523,58 +523,10 @@ pub fn models_endpoint(host: &str, protocol: Protocol) -> String {
     }
 }
 
-/// Resolve the upstream for a chat request. Prefers client-supplied headers;
-/// falls back to admin-configured shared upstream (host-only, model stored
-/// separately) when enabled.
-///
-/// Returned URL is always the fully-qualified endpoint.
-/// When `used_shared=true`, `shared_model` carries the admin's configured
-/// model — it always wins over any client hint so users can't switch models
-/// on shared credits.
-async fn resolve_chat_upstream(
-    installed: &InstalledState,
-    protocol: Protocol,
-    headers: &HeaderMap,
-) -> Result<(String, String, bool, Option<String>), Response> {
-    let want_shared = header_truthy(headers, "x-use-shared");
-    if !want_shared {
-        let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
-        let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-            if !u.is_empty() && !k.is_empty() {
-                return Ok((u.to_string(), k.to_string(), false, None));
-            }
-        }
-    }
-    match credits::read_shared(
-        &installed.pool,
-        installed.kind,
-        protocol.name(),
-        credits::SharedFlavor::Chat,
-    )
-    .await
-    {
-        Some(s) => {
-            // Shared mode: the client picks the model freely via X-Upstream-Model.
-            let client_model = header_str(headers, "x-upstream-model")
-                .unwrap_or_default();
-            if client_model.is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "请先在设置里选择模型（X-Upstream-Model 头缺失）",
-                )
-                    .into_response());
-            }
-            let url = chat_endpoint(&s.url, protocol, &client_model);
-            Ok((url, s.key, true, Some(client_model)))
-        }
-        None => Err((
-            StatusCode::BAD_REQUEST,
-            "missing X-Upstream-Url/Key header (and no shared backend configured)",
-        )
-            .into_response()),
-    }
-}
+/// Rewrite the `model` field of a JSON body, returning the new bytes.
+/// OpenAI and Claude chat bodies have `{"model": "...", ...}`; Gemini does
+/// not (model lives in URL). Image generations (`/v1/images/generations`)
+/// also have `{"model": "..."}`. Image edits are multipart — don't rewrite.
 
 pub fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
@@ -592,11 +544,6 @@ pub fn header_truthy(headers: &HeaderMap, name: &str) -> bool {
         .map(|s| matches!(s.trim(), "1" | "true" | "TRUE" | "True"))
         .unwrap_or(false)
 }
-
-/// Rewrite the `model` field of a JSON body, returning the new bytes.
-/// OpenAI and Claude chat bodies have `{"model": "...", ...}`; Gemini does
-/// not (model lives in URL). Image generations (`/v1/images/generations`)
-/// also have `{"model": "..."}`. Image edits are multipart — don't rewrite.
 fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return axum::body::Bytes::copy_from_slice(body);
@@ -624,82 +571,157 @@ async fn proxy_forward(
         Err(r) => return r,
     };
 
-    let (url, key, used_shared, shared_model) =
-        match resolve_chat_upstream(&installed, protocol, headers).await {
-            Ok(v) => v,
-            Err(r) => return r,
-        };
+    // Extract the requested model (used for channel lookup + body rewrite).
+    let req_model = channels::extract_chat_model(&body, headers).unwrap_or_default();
 
-    let client = match net_guard::client_for_upstream(&state.http, &url, used_shared).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-
-    // When falling back to shared upstream, override the model in the body
-    // (OpenAI / Claude embed it in the JSON payload; Gemini only in URL).
-    let body = if used_shared {
-        match (protocol, shared_model.as_deref()) {
-            (Protocol::OpenAi | Protocol::Claude, Some(m)) if !m.is_empty() => {
-                override_json_model(&body, m)
-            }
-            _ => body,
-        }
-    } else {
-        body
-    };
-
-    if used_shared {
-        let cost = credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
-        match credits::try_deduct(
-            &installed.pool,
-            installed.kind,
-            user.id,
-            cost,
-            &format!("chat_{}", protocol.name()),
-        )
-        .await
-        {
-            Ok(_) => {}
-            Err(bal) => {
-                return (
-                    StatusCode::PAYMENT_REQUIRED,
-                    format!("积分不足：当前 {bal}，每次请求需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    let mut req = client
-        .post(&url)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "text/event-stream")
-        .body(body);
-
-    req = match protocol {
-        Protocol::OpenAi => req.bearer_auth(&key),
-        Protocol::Claude => req
-            .header("x-api-key", key.as_str())
-            .header("anthropic-version", "2023-06-01"),
-        Protocol::Gemini => req.header("x-goog-api-key", key.as_str()),
-    };
-
-    let resp = match req.send().await {
+    // Resolve route: BYOK (client headers) or server channel chain.
+    let route = match channels::resolve_route(
+        &installed.pool,
+        installed.kind,
+        headers,
+        "chat",
+        &req_model,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => {
-            if used_shared {
-                // refund on connect failure
-                let cost =
-                    credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
+        Err(resp) => return resp,
+    };
+
+    match route {
+        channels::Route::Byok(byok) => {
+            // BYOK: single shot, no credits, no fallback.
+            let client = match net_guard::client_for_upstream(&state.http, &byok.base_url, false).await {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            send_chat_once(client, &byok.base_url, &byok.api_key, protocol, &body, headers).await
+        }
+        channels::Route::Channels { chain, model } => {
+            // Deduct once up front (per-model price; defaults to cost_chat KV
+            // until Task 2.3 plumbs model_pricing). Refund on hard failure.
+            let cost =
+                credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
+            if cost > 0 {
+                if let Err(bal) = credits::try_deduct(
+                    &installed.pool,
+                    installed.kind,
+                    user.id,
+                    cost,
+                    &format!("chat_{}", protocol.name()),
+                )
+                .await
+                {
+                    return (
+                        StatusCode::PAYMENT_REQUIRED,
+                        format!("积分不足：当前 {bal}，每次请求需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"),
+                    )
+                        .into_response();
+                }
+            }
+
+            // Iterate chain. Fall back on:
+            //   * connect error
+            //   * non-success status BEFORE we start streaming (pre-stream 5xx/429)
+            // First success is streamed back. After streaming starts we can't
+            // recover, so any mid-stream error surfaces to the client as-is.
+            let mut last_err: Option<(StatusCode, String)> = None;
+            for choice in chain {
+                let endpoint = chat_endpoint(&choice.channel.base_url, protocol, &choice.upstream_model);
+                let client = match net_guard::client_for_upstream(&state.http, &endpoint, true).await {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                // Rewrite model in body for protocols that embed it.
+                let attempt_body = match protocol {
+                    Protocol::OpenAi | Protocol::Claude if !choice.upstream_model.is_empty() => {
+                        override_json_model(&body, &choice.upstream_model)
+                    }
+                    _ => axum::body::Bytes::copy_from_slice(&body),
+                };
+
+                let mut req = client
+                    .post(&endpoint)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, "text/event-stream")
+                    .body(attempt_body);
+                req = match protocol {
+                    Protocol::OpenAi => req.bearer_auth(&choice.channel.api_key),
+                    Protocol::Claude => req
+                        .header("x-api-key", choice.channel.api_key.as_str())
+                        .header("anthropic-version", "2023-06-01"),
+                    Protocol::Gemini => req.header("x-goog-api-key", choice.channel.api_key.as_str()),
+                };
+
+                let resp = match req.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("[chat] channel {} connect failed: {e} — trying next", choice.channel.name);
+                        last_err = Some((StatusCode::BAD_GATEWAY, format!("upstream connect: {e}")));
+                        continue;
+                    }
+                };
+                let status = resp.status();
+                if !status.is_success() {
+                    let text = resp.text().await.unwrap_or_default();
+                    eprintln!("[chat] channel {} status {status}: {text} — trying next", choice.channel.name);
+                    last_err = Some((StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}")));
+                    continue;
+                }
+
+                let stream = resp.bytes_stream();
+                return Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .header("x-accel-buffering", "no")
+                    .body(Body::from_stream(stream))
+                    .unwrap();
+            }
+
+            // All channels failed — refund.
+            if cost > 0 {
                 let _ = credits::grant(
                     &installed.pool,
                     installed.kind,
                     user.id,
                     cost,
-                    "refund_connect_error",
+                    "refund_chain_exhausted",
                 )
                 .await;
             }
+            let (status, msg) = last_err
+                .unwrap_or((StatusCode::BAD_GATEWAY, format!("模型 {model} 所有渠道均不可用")));
+            (status, msg).into_response()
+        }
+    }
+}
+
+/// Send one chat request (BYOK path — no fallback, no credits).
+async fn send_chat_once(
+    client: reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    protocol: Protocol,
+    body: &axum::body::Bytes,
+    _headers: &HeaderMap,
+) -> Response {
+    // BYOK clients supply the full URL already (it points at /v1/chat/...).
+    let url = base_url.to_string();
+    let mut req = client
+        .post(&url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "text/event-stream")
+        .body(body.clone());
+    req = match protocol {
+        Protocol::OpenAi => req.bearer_auth(api_key),
+        Protocol::Claude => req
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01"),
+        Protocol::Gemini => req.header("x-goog-api-key", api_key),
+    };
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("upstream connect error: {e}"),
@@ -707,26 +729,12 @@ async fn proxy_forward(
                 .into_response();
         }
     };
-
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        if used_shared {
-            let cost =
-                credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
-            let _ = credits::grant(
-                &installed.pool,
-                installed.kind,
-                user.id,
-                cost,
-                "refund_upstream_error",
-            )
-            .await;
-        }
         return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
             .into_response();
     }
-
     let stream = resp.bytes_stream();
     Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -789,8 +797,8 @@ async fn proxy_get_forward(
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
     {
-        Some("image") => credits::SharedFlavor::Image,
-        _ => credits::SharedFlavor::Chat,
+        Some("image") => "image",
+        _ => "chat",
     };
 
     let (url, key, used_shared) = if use_client_headers {
@@ -800,20 +808,22 @@ async fn proxy_get_forward(
             false,
         )
     } else {
-        match credits::read_shared(
+        match channels::any_enabled_channel(
             &installed.pool,
             installed.kind,
             protocol.name(),
             flavor,
         )
         .await
+        .ok()
+        .flatten()
         {
-            Some(s) => (models_endpoint(&s.url, protocol), s.key, true),
+            Some(ch) => (models_endpoint(&ch.base_url, protocol), ch.api_key, true),
             None => {
                 let msg = if want_shared {
-                    "shared backend not configured"
+                    "未配置任何启用的上游渠道"
                 } else {
-                    "missing X-Upstream-Url/Key header (and no shared backend configured)"
+                    "缺少 X-Upstream-Url/Key 头，且后台未配置任何上游渠道"
                 };
                 return (StatusCode::BAD_REQUEST, msg).into_response();
             }

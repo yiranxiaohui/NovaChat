@@ -10,7 +10,7 @@
 use axum::{
     Extension, Json, Router,
     extract::Path,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, patch},
@@ -406,6 +406,32 @@ pub async fn delete_price(pool: &Pool, kind: DbKind, model: &str) -> Result<(), 
     sqlx::query(&sql).bind(model).execute(pool).await.map(|_| ())
 }
 
+/// Convenience: top-priority enabled channel matching (protocol, flavor),
+/// regardless of any specific model binding. Used by GET /v1/models to
+/// surface an upstream catalog when in shared mode.
+#[allow(dead_code)] // consumed by main.rs proxy_get_forward
+pub async fn any_enabled_channel(
+    pool: &Pool,
+    kind: DbKind,
+    protocol: &str,
+    flavor: &str,
+) -> Result<Option<Channel>, sqlx::Error> {
+    let sql = db::q(
+        kind,
+        "SELECT id, name, protocol, kind, base_url, api_key, \
+         CASE WHEN enabled IN (1,TRUE) THEN TRUE ELSE FALSE END as enabled, \
+         priority \
+         FROM upstream_channels \
+         WHERE protocol = ? AND kind = ? AND enabled IN (1,TRUE) \
+         ORDER BY priority ASC, id ASC LIMIT 1",
+    );
+    sqlx::query_as::<_, Channel>(&sql)
+        .bind(protocol)
+        .bind(flavor)
+        .fetch_optional(pool)
+        .await
+}
+
 // ---------------------------------------------------------------------------
 // admin routes
 // ---------------------------------------------------------------------------
@@ -549,4 +575,112 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/admin/pricing", get(admin_list_pricing).post(admin_upsert_pricing))
         .route("/admin/pricing/{model}", delete(admin_delete_pricing))
         .route_layer(middleware::from_fn(admin::require_admin))
+}
+
+// ---------------------------------------------------------------------------
+// routing — call-site helpers (Task 2.2)
+// ---------------------------------------------------------------------------
+//
+// Two-tier resolution:
+//   1. BYOK — client supplies X-Upstream-Url/Key headers and didn't set
+//      X-Use-Shared=1: no credits deducted, no routing.
+//   2. Channels — admin-configured upstream_channels matching (model, kind),
+//      sorted by priority ASC. Caller iterates the chain on transient errors.
+
+fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    h.get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn header_truthy(h: &HeaderMap, name: &str) -> bool {
+    h.get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| matches!(s.trim(), "1" | "true" | "TRUE" | "True"))
+        .unwrap_or(false)
+}
+
+/// BYOK route: a single concrete upstream (base_url + key) provided by the
+/// client. No credits, no fallback.
+#[derive(Debug, Clone)]
+pub struct ByokRoute {
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// Resolved route for a request.
+#[derive(Debug)]
+pub enum Route {
+    /// Client supplied X-Upstream-Url/Key and didn't ask for shared.
+    Byok(ByokRoute),
+    /// Server-side channels matching (model, kind). Empty Vec means
+    /// "no upstream available" — caller should return 400.
+    Channels {
+        model: String,
+        chain: Vec<ChannelChoice>,
+    },
+}
+
+/// Extract `model` from a chat request body / header.
+/// OpenAI + Claude: JSON body `{"model": "..."}`. Gemini: URL path, but the
+/// client sets `X-Upstream-Model` header for shared mode — we accept either.
+pub fn extract_chat_model(body: &[u8], headers: &HeaderMap) -> Option<String> {
+    if let Some(m) = header_str(headers, "x-upstream-model") {
+        return Some(m.to_string());
+    }
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    v.get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve a request to either a BYOK route or a channel chain.
+///
+/// `flavor` is "chat" or "image". `model` is the user-requested model name.
+/// For BYOK requests `model` may be empty — it's only used to look up channels.
+pub async fn resolve_route(
+    pool: &Pool,
+    kind: DbKind,
+    headers: &HeaderMap,
+    flavor: &str,
+    model: &str,
+) -> Result<Route, Response> {
+    let want_shared = header_truthy(headers, "x-use-shared");
+    if !want_shared {
+        let hdr_url = header_str(headers, "x-upstream-url");
+        let hdr_key = header_str(headers, "x-upstream-key");
+        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+            return Ok(Route::Byok(ByokRoute {
+                base_url: u.to_string(),
+                api_key: k.to_string(),
+            }));
+        }
+    }
+    if model.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "请求体缺少 model 字段（或 X-Upstream-Model 头）",
+        )
+            .into_response());
+    }
+    let chain = select_chain(pool, kind, model, flavor).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("channel lookup failed: {e}"),
+        )
+            .into_response()
+    })?;
+    if chain.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("模型 {model} 未配置任何可用渠道"),
+        )
+            .into_response());
+    }
+    Ok(Route::Channels {
+        model: model.to_string(),
+        chain,
+    })
 }

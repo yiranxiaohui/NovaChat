@@ -11,9 +11,11 @@ import {
   Menu,
   Plug,
   RefreshCw,
+  Route,
   Send,
   Server,
   Shield,
+  Tag,
   Ticket,
   Trash2,
   UserCog,
@@ -37,6 +39,8 @@ import {
   type AdminSettingsUpdate,
   type AdminUserCredits,
 } from "@/lib/credits"
+import { ChannelsPanel } from "./admin/ChannelsPanel"
+import { PricingPanel } from "./admin/PricingPanel"
 import {
   adminPaymentsApi,
   type AdminOrder,
@@ -50,6 +54,8 @@ type Section =
   | "credits"
   | "payments"
   | "invites"
+  | "channels"
+  | "pricing"
   | "shared"
   | "email"
   | "system"
@@ -60,7 +66,9 @@ const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?
   { key: "credits", label: "积分", icon: Coins },
   { key: "payments", label: "支付 / 充值", icon: CreditCard },
   { key: "invites", label: "邀请", icon: Ticket },
-  { key: "shared", label: "共享后端", icon: Plug },
+  { key: "channels", label: "上游渠道", icon: Route },
+  { key: "pricing", label: "模型计费", icon: Tag },
+  { key: "shared", label: "共享后端（旧）", icon: Plug },
   { key: "email", label: "邮箱 / SMTP", icon: Mail },
   { key: "system", label: "系统信息", icon: Server },
 ]
@@ -183,6 +191,8 @@ export default function AdminPage() {
           {section === "credits" && <CreditsPanel />}
           {section === "payments" && <PaymentsPanel />}
           {section === "invites" && <InvitesPanel />}
+          {section === "channels" && <ChannelsPanel />}
+          {section === "pricing" && <PricingPanel />}
           {section === "shared" && <SharedBackendPanel />}
           {section === "email" && <EmailPanel />}
           {section === "system" && <SystemPanel />}

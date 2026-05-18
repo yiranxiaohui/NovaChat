@@ -115,6 +115,46 @@ pub async fn channels_for_model(
         .collect())
 }
 
+/// Resolved channel + the model id to send upstream (alias or original).
+#[allow(dead_code)] // consumed by Task 2.2 chat/image callers
+#[derive(Debug, Clone)]
+pub struct ChannelChoice {
+    pub channel: Channel,
+    /// Upstream model identifier — channel_models.upstream_id if set, else `model`.
+    pub upstream_model: String,
+}
+
+/// Priority-sorted list of channels that can serve (model, flavor).
+///
+/// Caller iterates the list; on 5xx / network error, falls back to the next.
+/// Returns empty vec when the model has no channel binding (caller should 404 / "no upstream available").
+pub async fn select_chain(
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Result<Vec<ChannelChoice>, sqlx::Error> {
+    let rows = channels_for_model(pool, kind, model, flavor).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(channel, upstream_id)| ChannelChoice {
+            upstream_model: upstream_id.unwrap_or_else(|| model.to_string()),
+            channel,
+        })
+        .collect())
+}
+
+/// Convenience: just the top-priority enabled channel, or None.
+#[allow(dead_code)] // consumed by Task 2.2 single-shot callers (no fallback needed)
+pub async fn select_one(
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Result<Option<ChannelChoice>, sqlx::Error> {
+    Ok(select_chain(pool, kind, model, flavor).await?.into_iter().next())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChannelInput {
     pub name: String,

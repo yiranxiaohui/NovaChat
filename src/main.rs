@@ -537,13 +537,6 @@ pub fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-pub fn header_truthy(headers: &HeaderMap, name: &str) -> bool {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| matches!(s.trim(), "1" | "true" | "TRUE" | "True"))
-        .unwrap_or(false)
-}
 fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return axum::body::Bytes::copy_from_slice(body);
@@ -792,15 +785,13 @@ async fn proxy_get_forward(
     };
 
     // Client-supplied URL wins (it already points at /v1/models etc.).
-    // Otherwise — when X-Use-Shared=1, or when the client sent empty
-    // X-Upstream-Url/Key headers — fall back to the admin-configured
-    // shared upstream and build the models endpoint server-side.
+    // Otherwise — when the client sent empty X-Upstream-Url/Key headers —
+    // fall back to any admin-configured channel for this protocol+flavor.
     let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
     let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-    let want_shared = header_truthy(headers, "x-use-shared");
 
-    let use_client_headers = !want_shared
-        && matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
+    let use_client_headers =
+        matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
 
     let flavor = match headers
         .get("x-upstream-flavor")
@@ -830,12 +821,11 @@ async fn proxy_get_forward(
         {
             Some(ch) => (models_endpoint(&ch.base_url, protocol), ch.api_key, true),
             None => {
-                let msg = if want_shared {
-                    "未配置任何启用的上游渠道"
-                } else {
-                    "缺少 X-Upstream-Url/Key 头，且后台未配置任何上游渠道"
-                };
-                return (StatusCode::BAD_REQUEST, msg).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "未配置任何启用的上游渠道",
+                )
+                    .into_response();
             }
         }
     };

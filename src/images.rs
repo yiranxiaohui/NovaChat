@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState, CurrentUser, channels, credits, db,
-    header_truthy, net_guard,
+    net_guard,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,14 +60,12 @@ async fn resolve_image_upstream(
     kind: ImageKind,
     headers: &HeaderMap,
 ) -> Result<(String, String, bool, Option<String>, String), Response> {
-    let want_shared = header_truthy(headers, "x-use-shared");
-    if !want_shared {
-        let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
-        let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
-        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-            if !u.is_empty() && !k.is_empty() {
-                return Ok((u.to_string(), k.to_string(), false, None, String::new()));
-            }
+    // BYOK when both upstream URL+key are supplied. No opt-out header needed.
+    let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
+    let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
+    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
+            return Ok((u.to_string(), k.to_string(), false, None, String::new()));
         }
     }
     let installed = state.require_installed().await?;

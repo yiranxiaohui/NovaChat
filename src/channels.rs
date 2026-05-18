@@ -667,12 +667,6 @@ fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-fn header_truthy(h: &HeaderMap, name: &str) -> bool {
-    h.get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| matches!(s.trim(), "1" | "true" | "TRUE" | "True"))
-        .unwrap_or(false)
-}
 
 /// BYOK route: a single concrete upstream (base_url + key) provided by the
 /// client. No credits, no fallback.
@@ -720,11 +714,12 @@ pub async fn resolve_route(
     flavor: &str,
     model: &str,
 ) -> Result<Route, Response> {
-    let want_shared = header_truthy(headers, "x-use-shared");
-    if !want_shared {
-        let hdr_url = header_str(headers, "x-upstream-url");
-        let hdr_key = header_str(headers, "x-upstream-key");
-        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+    // BYOK only when both URL and key are present. `X-Use-Shared` header is
+    // no longer consulted — admin-configured channels are the default path.
+    let hdr_url = header_str(headers, "x-upstream-url");
+    let hdr_key = header_str(headers, "x-upstream-key");
+    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
             return Ok(Route::Byok(ByokRoute {
                 base_url: u.to_string(),
                 api_key: k.to_string(),

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
     AppState, CurrentUser, InstalledState, channels, credits, db,
-    header_truthy, net_guard,
+    net_guard,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,16 +73,14 @@ async fn resolve_openai_image_upstream(
     edit: bool,
     model: &str,
 ) -> Result<(String, String, bool, Option<String>), Response> {
-    let want_shared = header_truthy(headers, "x-use-shared");
-    if !want_shared {
-        let hdr_url = read_header(headers, "x-upstream-url");
-        let hdr_key = read_header(headers, "x-upstream-key");
-        if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
-            if !u.is_empty() && !k.is_empty() {
-                let base = u.trim_end_matches('/');
-                let path = if edit { "/v1/images/edits" } else { "/v1/images/generations" };
-                return Ok((format!("{base}{path}"), k.to_string(), false, None));
-            }
+    // BYOK when both upstream URL+key are supplied. No opt-out header needed.
+    let hdr_url = read_header(headers, "x-upstream-url");
+    let hdr_key = read_header(headers, "x-upstream-key");
+    if let (Some(u), Some(k)) = (hdr_url, hdr_key) {
+        if !u.is_empty() && !k.is_empty() {
+            let base = u.trim_end_matches('/');
+            let path = if edit { "/v1/images/edits" } else { "/v1/images/generations" };
+            return Ok((format!("{base}{path}"), k.to_string(), false, None));
         }
     }
     let installed = state.require_installed().await?;
@@ -768,9 +766,7 @@ async fn list_models(
     Extension(_user): Extension<CurrentUser>,
     headers: HeaderMap,
 ) -> Response {
-    let want_shared = header_truthy(&headers, "x-use-shared");
-
-    let (base_url, key, used_shared) = if !want_shared {
+    let (base_url, key, used_shared) = {
         let hdr_url = read_header(&headers, "x-upstream-url");
         let hdr_key = read_header(&headers, "x-upstream-key");
         match (hdr_url, hdr_key) {
@@ -778,31 +774,33 @@ async fn list_models(
                 (u.trim_end_matches('/').to_string(), k.to_string(), false)
             }
             _ => {
-                return err(
-                    StatusCode::BAD_REQUEST,
-                    "缺少 X-Upstream-Url/Key 头",
-                );
-            }
-        }
-    } else {
-        let installed = match state.require_installed().await {
-            Ok(s) => s,
-            Err(r) => return r,
-        };
-        match credits::read_shared(
-            &installed.pool,
-            installed.kind,
-            "openai",
-            credits::SharedFlavor::Image,
-        )
-        .await
-        {
-            Some(s) => (s.url.trim_end_matches('/').to_string(), s.key, true),
-            None => {
-                return err(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "共享图像后端未配置",
-                );
+                // Fall back to any admin-configured OpenAI image channel.
+                let installed = match state.require_installed().await {
+                    Ok(s) => s,
+                    Err(r) => return r,
+                };
+                match channels::any_enabled_channel(
+                    &installed.pool,
+                    installed.kind,
+                    "openai",
+                    "image",
+                )
+                .await
+                .ok()
+                .flatten()
+                {
+                    Some(ch) => (
+                        ch.base_url.trim_end_matches('/').to_string(),
+                        ch.api_key,
+                        true,
+                    ),
+                    None => {
+                        return err(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "未配置任何启用的 OpenAI 图像渠道",
+                        );
+                    }
+                }
             }
         }
     };

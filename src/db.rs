@@ -235,11 +235,13 @@ pub fn now_expr(kind: DbKind) -> &'static str {
     }
 }
 
-/// Returns a fragment that appends "RETURNING id" on Postgres or empty for others.
+/// Returns a fragment that appends "RETURNING id" on Postgres / SQLite
+/// (SQLite 3.35+).  MySQL doesn't support it, so callers fall back to
+/// `LAST_INSERT_ID()` via `last_insert_id()`.
 pub fn returning_id(kind: DbKind) -> &'static str {
     match kind {
-        DbKind::Postgres => " RETURNING id",
-        _ => "",
+        DbKind::Postgres | DbKind::Sqlite => " RETURNING id",
+        DbKind::Mysql => "",
     }
 }
 

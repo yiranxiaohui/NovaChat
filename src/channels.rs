@@ -184,30 +184,46 @@ pub async fn create_channel(
         ),
     );
     let enabled_v: i64 = if input.enabled { 1 } else { 0 };
-    if matches!(kind, DbKind::Postgres) {
-        let row: (i64,) = sqlx::query_as(&sql)
-            .bind(&input.name)
-            .bind(&input.protocol)
-            .bind(&input.kind)
-            .bind(&input.base_url)
-            .bind(&input.api_key)
-            .bind(input.enabled)
-            .bind(input.priority)
-            .fetch_one(pool)
-            .await?;
-        Ok(row.0)
-    } else {
-        let r = sqlx::query(&sql)
-            .bind(&input.name)
-            .bind(&input.protocol)
-            .bind(&input.kind)
-            .bind(&input.base_url)
-            .bind(&input.api_key)
-            .bind(enabled_v)
-            .bind(input.priority)
-            .execute(pool)
-            .await?;
-        Ok(r.last_insert_id().unwrap_or(0))
+    match kind {
+        DbKind::Postgres => {
+            let row: (i64,) = sqlx::query_as(&sql)
+                .bind(&input.name)
+                .bind(&input.protocol)
+                .bind(&input.kind)
+                .bind(&input.base_url)
+                .bind(&input.api_key)
+                .bind(input.enabled)
+                .bind(input.priority)
+                .fetch_one(pool)
+                .await?;
+            Ok(row.0)
+        }
+        DbKind::Sqlite => {
+            let row: (i64,) = sqlx::query_as(&sql)
+                .bind(&input.name)
+                .bind(&input.protocol)
+                .bind(&input.kind)
+                .bind(&input.base_url)
+                .bind(&input.api_key)
+                .bind(enabled_v)
+                .bind(input.priority)
+                .fetch_one(pool)
+                .await?;
+            Ok(row.0)
+        }
+        DbKind::Mysql => {
+            let r = sqlx::query(&sql)
+                .bind(&input.name)
+                .bind(&input.protocol)
+                .bind(&input.kind)
+                .bind(&input.base_url)
+                .bind(&input.api_key)
+                .bind(enabled_v)
+                .bind(input.priority)
+                .execute(pool)
+                .await?;
+            Ok(r.last_insert_id().unwrap_or(0))
+        }
     }
 }
 

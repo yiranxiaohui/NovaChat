@@ -598,27 +598,37 @@ async fn proxy_forward(
             send_chat_once(client, &byok.base_url, &byok.api_key, protocol, &body, headers).await
         }
         channels::Route::Channels { chain, model } => {
-            // Deduct once up front (per-model price; defaults to cost_chat KV
-            // until Task 2.3 plumbs model_pricing). Refund on hard failure.
-            let cost =
-                credits::get_setting_i64(&installed.pool, installed.kind, "cost_chat", 1).await;
-            if cost > 0 {
-                if let Err(bal) = credits::try_deduct(
-                    &installed.pool,
-                    installed.kind,
-                    user.id,
-                    cost,
-                    &format!("chat_{}", protocol.name()),
-                )
-                .await
-                {
+            // Deduct based on per-model pricing (whitelist gate).
+            // Refund on hard failure.
+            let cost = match channels::try_deduct_for_model(
+                &installed.pool,
+                installed.kind,
+                user.id,
+                &model,
+                "chat",
+                &format!("chat_{}", protocol.name()),
+            )
+            .await
+            {
+                Ok(_new_bal) => channels::cost_for_model(&installed.pool, installed.kind, &model, "chat")
+                    .await
+                    .unwrap_or(0),
+                Err(channels::DeductError::NotWhitelisted) => {
                     return (
-                        StatusCode::PAYMENT_REQUIRED,
-                        format!("积分不足：当前 {bal}，每次请求需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"),
+                        StatusCode::FORBIDDEN,
+                        format!("模型 {model} 未启用：管理员尚未在「模型计费」中开放此模型，或请在设置里使用自己的 API Key"),
                     )
                         .into_response();
                 }
-            }
+                Err(channels::DeductError::Insufficient { balance, cost }) => {
+                    return (
+                        StatusCode::PAYMENT_REQUIRED,
+                        format!("积分不足：当前 {balance}，本次请求需要 {cost}；请在设置里填入自己的 API Key，或联系管理员充值"),
+                    )
+                        .into_response();
+                }
+            };
+
 
             // Iterate chain. Fall back on:
             //   * connect error

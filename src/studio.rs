@@ -355,21 +355,27 @@ async fn submit_generate(
 
     // Credits.
     if used_shared {
-        let cost =
-            credits::get_setting_i64(&installed.pool, installed.kind, "cost_image", 5).await;
-        if cost > 0 {
-            if let Err(bal) = credits::try_deduct(
-                &installed.pool,
-                installed.kind,
-                user.id,
-                cost,
-                "studio_generate",
-            )
-            .await
-            {
+        match channels::try_deduct_for_model(
+            &installed.pool,
+            installed.kind,
+            user.id,
+            &model,
+            "image",
+            "studio_generate",
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(channels::DeductError::NotWhitelisted) => {
+                return err(
+                    StatusCode::FORBIDDEN,
+                    format!("模型 {model} 未启用：管理员尚未在「模型计费」中开放此图像模型"),
+                );
+            }
+            Err(channels::DeductError::Insufficient { balance, cost }) => {
                 return err(
                     StatusCode::PAYMENT_REQUIRED,
-                    format!("积分不足：当前 {bal}，本次需要 {cost}"),
+                    format!("积分不足：当前 {balance}，本次需要 {cost}"),
                 );
             }
         }
@@ -420,8 +426,8 @@ async fn submit_generate(
             Err(_) => {
                 finalize_failed(&pool, kind, &token_c, "HTTP client 构建失败").await;
                 if used_shared {
-                    let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                    let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                    let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
                 }
                 return;
             }
@@ -447,8 +453,8 @@ async fn submit_generate(
                     Err(e) => {
                         finalize_failed(&pool, kind, &token_c, &format!("multipart: {e}")).await;
                         if used_shared {
-                            let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                            let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                            let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
                         }
                         return;
                     }
@@ -529,8 +535,8 @@ async fn submit_generate(
                         };
                         finalize_failed(&pool, kind, &token_c, &msg).await;
                         if used_shared {
-                            let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                            let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                            let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
                         }
                         return;
                     }
@@ -555,8 +561,8 @@ async fn submit_generate(
             };
             finalize_failed(&pool, kind, &token_c, &msg).await;
             if used_shared {
-                let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
             }
             return;
         }
@@ -576,8 +582,8 @@ async fn submit_generate(
         let Some(item) = first else {
             finalize_failed(&pool, kind, &token_c, "上游未返回图像数据").await;
             if used_shared {
-                let cost = credits::get_setting_i64(&pool, kind, "cost_image", 5).await;
-                let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await;
+                let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
             }
             return;
         };

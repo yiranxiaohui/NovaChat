@@ -772,3 +772,60 @@ pub async fn seed_from_legacy(pool: &Pool, kind: DbKind) -> Result<(), sqlx::Err
     eprintln!("channels: seeded from legacy shared_* settings");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// pricing-aware deduct (Task 2.3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum DeductError {
+    /// model is not registered in `model_pricing`, or its row is disabled.
+    NotWhitelisted,
+    /// user's balance is below the model's cost. Carries (current_balance, cost).
+    Insufficient { balance: i64, cost: i64 },
+}
+
+/// Look up `model` in `model_pricing` (must match `flavor` and be enabled),
+/// then atomically deduct that many credits from `user_id`.
+///
+/// Returns the new balance on success. Errors:
+///   * `NotWhitelisted` — model is missing or disabled in `model_pricing`.
+///     Caller should respond 403 "model not enabled".
+///   * `Insufficient` — pricing OK but balance too low. Caller responds 402.
+pub async fn try_deduct_for_model(
+    pool: &Pool,
+    kind: DbKind,
+    user_id: i64,
+    model: &str,
+    flavor: &str,
+    reason: &str,
+) -> Result<i64, DeductError> {
+    let price = match get_price(pool, kind, model).await {
+        Ok(Some(p)) => p,
+        Ok(None) | Err(_) => return Err(DeductError::NotWhitelisted),
+    };
+    if !price.enabled || price.kind != flavor {
+        return Err(DeductError::NotWhitelisted);
+    }
+    let cost = price.cost_credits.max(0);
+    match crate::credits::try_deduct(pool, kind, user_id, cost, reason).await {
+        Ok(bal) => Ok(bal),
+        Err(bal) => Err(DeductError::Insufficient { balance: bal, cost }),
+    }
+}
+
+/// Look up the cost of `model` (whitelist gate) without deducting — used by
+/// refund paths that already deducted via `try_deduct_for_model` and need to
+/// compute the credit amount to grant back on upstream failure.
+pub async fn cost_for_model(
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Option<i64> {
+    let p = get_price(pool, kind, model).await.ok().flatten()?;
+    if !p.enabled || p.kind != flavor {
+        return None;
+    }
+    Some(p.cost_credits.max(0))
+}

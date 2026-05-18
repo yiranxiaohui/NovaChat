@@ -1,5 +1,6 @@
 mod admin;
 mod auth;
+mod channels;
 mod conversations;
 mod credits;
 mod db;
@@ -955,6 +956,7 @@ fn build_router(state: AppState) -> Router {
         .merge(admin::routes())
         .merge(credits::user_routes())
         .merge(credits::admin_routes())
+        .merge(channels::admin_routes())
         .merge(payments::user_routes())
         .merge(payments::admin_routes())
         .merge(studio::routes())

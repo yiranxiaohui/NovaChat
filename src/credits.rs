@@ -401,12 +401,10 @@ pub async fn read_shared(
     };
     let url = get_setting(pool, kind, &format!("{prefix}{protocol}_url")).await;
     let key = get_setting(pool, kind, &format!("{prefix}{protocol}_key")).await;
-    let model = get_setting(pool, kind, &format!("{prefix}{protocol}_model")).await;
     match (url, key) {
         (Some(u), Some(k)) if !u.is_empty() && !k.is_empty() => Some(SharedUpstream {
             url: u,
             key: k,
-            model: model.filter(|s| !s.is_empty()),
         }),
         _ => None,
     }
@@ -421,7 +419,6 @@ pub enum SharedFlavor {
 pub struct SharedUpstream {
     pub url: String,
     pub key: String,
-    pub model: Option<String>,
 }
 
 async fn get_shared_status(

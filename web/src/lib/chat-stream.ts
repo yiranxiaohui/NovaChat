@@ -296,7 +296,6 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Use-Shared": "1",
         "X-Upstream-Model": o.model,
       },
       body: payload,

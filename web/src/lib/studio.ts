@@ -40,9 +40,7 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 
 function headersFor(o: GenerateParams): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json" }
-  if (o.useShared) {
-    h["X-Use-Shared"] = "1"
-  } else if (o.upstreamUrl && o.upstreamKey) {
+  if (o.upstreamUrl && o.upstreamKey) {
     h["X-Upstream-Url"] = o.upstreamUrl
     h["X-Upstream-Key"] = o.upstreamKey
   }
@@ -59,9 +57,7 @@ export type ListModelsOptions = {
 export const studioApi = {
   async listModels(o: ListModelsOptions): Promise<string[]> {
     const headers: Record<string, string> = {}
-    if (o.useShared) {
-      headers["X-Use-Shared"] = "1"
-    } else if (o.upstreamUrl && o.upstreamKey) {
+    if (o.upstreamUrl && o.upstreamKey) {
       headers["X-Upstream-Url"] = o.upstreamUrl
       headers["X-Upstream-Key"] = o.upstreamKey
     }

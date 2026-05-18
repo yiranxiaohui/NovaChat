@@ -125,14 +125,11 @@ export async function generateWithResponses(
   o: ResponsesImageOptions
 ): Promise<GeneratedImage[]> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (o.useShared) {
-    headers["X-Use-Shared"] = "1"
-    if (o.model) headers["X-Upstream-Model"] = o.model
-  } else if (o.baseUrl && o.apiKey) {
+  if (o.baseUrl && o.apiKey) {
     headers["X-Upstream-Url"] = o.baseUrl.replace(/\/+$/, "")
     headers["X-Upstream-Key"] = o.apiKey
   } else {
-    throw new Error("缺少 baseUrl / apiKey（或启用共享后端）")
+    throw new Error("缺少 baseUrl / apiKey")
   }
   const body: Record<string, unknown> = { history: o.history }
   if (o.model) body.model = o.model
@@ -199,7 +196,6 @@ export async function generateImages(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Use-Shared": "1",
         "X-Upstream-Model": o.model ?? "",
       },
       body: JSON.stringify(body),
@@ -325,7 +321,6 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Use-Shared": "1",
           "X-Upstream-Model": model,
         },
         body: JSON.stringify(body),
@@ -398,7 +393,6 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
     const token = await submitJob(`/api/images/jobs/openai/edits`, {
       method: "POST",
       headers: {
-        "X-Use-Shared": "1",
         "X-Upstream-Model": o.model ?? "",
       },
       body: form,

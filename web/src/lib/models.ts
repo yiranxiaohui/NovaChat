@@ -5,7 +5,7 @@ export type ListModelsOptions = {
   baseUrl: string
   apiKey: string
   useProxy: boolean
-  /// When true, sends X-Use-Shared=1 instead of per-request URL/Key; backend
+  /// When true, omits per-request URL/Key headers; backend
   /// resolves the admin-configured shared upstream.
   useShared?: boolean
   /// Whether this lookup is for the image upstream (shared_image_*) vs the
@@ -74,7 +74,7 @@ export async function listModels(o: ListModelsOptions): Promise<string[]> {
   if (o.useShared) {
     // Let the backend resolve the shared upstream's URL + key. Flavor tells
     // it whether to look up shared_chat_* or shared_image_* settings.
-    const headers: Record<string, string> = { "X-Use-Shared": "1" }
+    const headers: Record<string, string> = {}
     if (o.flavor === "image") headers["X-Upstream-Flavor"] = "image"
     res = await fetch(`/api/proxy/${o.protocol}/models`, {
       headers,

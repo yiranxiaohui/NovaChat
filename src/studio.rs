@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    AppState, CurrentUser, InstalledState, credits, db,
+    AppState, CurrentUser, InstalledState, channels, credits, db,
     header_truthy, net_guard,
 };
 
@@ -71,6 +71,7 @@ async fn resolve_openai_image_upstream(
     state: &AppState,
     headers: &HeaderMap,
     edit: bool,
+    model: &str,
 ) -> Result<(String, String, bool, Option<String>), Response> {
     let want_shared = header_truthy(headers, "x-use-shared");
     if !want_shared {
@@ -85,24 +86,26 @@ async fn resolve_openai_image_upstream(
         }
     }
     let installed = state.require_installed().await?;
-    match credits::read_shared(
-        &installed.pool,
-        installed.kind,
-        "openai",
-        credits::SharedFlavor::Image,
-    )
-    .await
-    {
-        Some(s) => {
-            let base = s.url.trim_end_matches('/');
-            let path = if edit { "/v1/images/edits" } else { "/v1/images/generations" };
-            Ok((format!("{base}{path}"), s.key, true, s.model))
-        }
-        None => Err(err(
-            StatusCode::BAD_REQUEST,
-            "缺少 X-Upstream-Url/Key 头，且未配置共享 OpenAI 图像后端",
-        )),
-    }
+    // Pick highest-priority enabled OpenAI image channel that serves `model`.
+    let choice = channels::select_chain(&installed.pool, installed.kind, model, "image")
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("channels query: {e}")))?
+        .into_iter()
+        .find(|c| c.channel.protocol == "openai")
+        .ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("模型 {model} 未绑定任何 OpenAI 图像渠道；请联系管理员在后台「渠道/模型定价」中添加"),
+            )
+        })?;
+    let base = choice.channel.base_url.trim_end_matches('/');
+    let path = if edit { "/v1/images/edits" } else { "/v1/images/generations" };
+    let upstream_model = if choice.upstream_model.is_empty() {
+        None
+    } else {
+        Some(choice.upstream_model.clone())
+    };
+    Ok((format!("{base}{path}"), choice.channel.api_key, true, upstream_model))
 }
 
 // ---------------------------------------------------------------------------
@@ -332,21 +335,23 @@ async fn submit_generate(
     }
 
     let edit = source_bytes.is_some();
-    let (url, key, used_shared, admin_model) =
-        match resolve_openai_image_upstream(&state, &headers, edit).await {
-            Ok(v) => v,
-            Err(r) => return r,
-        };
-
-    // Model is always client-chosen now (body.model from studio UI).
-    // admin_model is ignored — the admin-configured model field was removed
-    // from the shared-backend panel so users can freely pick any model.
-    let _ = admin_model;
+    // Compute model first (used by both channel selection and request body).
     let model = body
         .model
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "gpt-image-1".into());
+
+    let (url, key, used_shared, admin_model) =
+        match resolve_openai_image_upstream(&state, &headers, edit, &model).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+
+    // admin_model now carries the upstream alias from the chosen channel.
+    // When non-empty, override the client-facing model name in the request body.
+    let upstream_model = admin_model.clone().unwrap_or_else(|| model.clone());
+    let _ = admin_model;
 
     // Credits.
     if used_shared {
@@ -393,7 +398,7 @@ async fn submit_generate(
     let state_c = state.clone();
     let token_c = token.clone();
     let prompt_c = prompt.clone();
-    let model_c = model.clone();
+    let model_c = upstream_model.clone();
     let size_c = body.size.clone();
     let quality_c = body.quality.clone();
     let style_c = body.style.clone();

@@ -13,7 +13,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState, CurrentUser, credits, db,
+    AppState, CurrentUser, channels, credits, db,
     header_truthy, net_guard,
 };
 
@@ -71,39 +71,44 @@ async fn resolve_image_upstream(
         }
     }
     let installed = state.require_installed().await?;
-    match credits::read_shared(
-        &installed.pool,
-        installed.kind,
-        protocol,
-        credits::SharedFlavor::Image,
-    )
-    .await
-    {
-        Some(s) => {
-            // Shared mode: model is client-chosen via X-Upstream-Model.
-            let client_model = headers
-                .get("x-upstream-model")
-                .and_then(|v| v.to_str().ok())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default()
-                .to_string();
-            if client_model.is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "请先在设置里选择模型（X-Upstream-Model 头缺失）",
-                )
-                    .into_response());
-            }
-            let url = image_endpoint(&s.url, protocol, &client_model, kind);
-            Ok((url, s.key, true, Some(client_model)))
-        }
-        None => Err((
+    // Shared mode: model is client-chosen via X-Upstream-Model header.
+    let client_model = headers
+        .get("x-upstream-model")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    if client_model.is_empty() {
+        return Err((
             StatusCode::BAD_REQUEST,
-            "missing X-Upstream-Url/Key header (and no shared image backend configured)",
+            "请先在设置里选择模型（X-Upstream-Model 头缺失）",
         )
-            .into_response()),
+            .into_response());
     }
+    // Pick highest-priority enabled channel that serves (model, "image").
+    // Chain fallback is deferred to a follow-up task — image generation
+    // already has retry/refund semantics that complicate mid-flight failover.
+    let chain = channels::select_chain(&installed.pool, installed.kind, &client_model, "image")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("channels query: {e}")).into_response())?;
+    let choice = chain
+        .into_iter()
+        .find(|c| c.channel.protocol == protocol)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("模型 {client_model} 未绑定任何 {protocol} 图像渠道；请联系管理员在后台「渠道/模型定价」中添加"),
+            )
+                .into_response()
+        })?;
+    let upstream_model = if choice.upstream_model.is_empty() {
+        client_model.clone()
+    } else {
+        choice.upstream_model.clone()
+    };
+    let url = image_endpoint(&choice.channel.base_url, protocol, &upstream_model, kind);
+    Ok((url, choice.channel.api_key, true, Some(upstream_model)))
 }
 
 fn override_json_model(body: &[u8], new_model: &str) -> Vec<u8> {

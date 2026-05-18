@@ -1043,6 +1043,9 @@ async fn main() {
             Ok(s) => {
                 images::cleanup_stale_jobs(&s.pool, s.kind).await;
                 studio::cleanup_stale_jobs(&s.pool, s.kind).await;
+                if let Err(e) = channels::seed_from_legacy(&s.pool, s.kind).await {
+                    eprintln!("WARNING: channels seed_from_legacy failed: {e}");
+                }
                 *state.installed.write().await = Some(s.clone());
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }

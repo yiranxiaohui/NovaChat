@@ -684,3 +684,91 @@ pub async fn resolve_route(
         chain,
     })
 }
+
+// ---------------------------------------------------------------------------
+// legacy KV → channels/pricing seed (Task 3.1)
+// ---------------------------------------------------------------------------
+
+/// One-shot migration from the legacy `shared_*` settings into
+/// `upstream_channels` + `model_pricing` + `channel_models`.
+///
+/// Idempotent contract: runs only when `upstream_channels` is empty AND the
+/// legacy flag `shared_enabled = true` was set.  Otherwise it's a no-op so
+/// fresh installs stay blank (admin adds channels via UI).
+pub async fn seed_from_legacy(pool: &Pool, kind: DbKind) -> Result<(), sqlx::Error> {
+    // guard: skip if already seeded
+    let sql = db::q(kind, "SELECT COUNT(*) FROM upstream_channels");
+    let (count,): (i64,) = sqlx::query_as(&sql).fetch_one(pool).await?;
+    if count > 0 {
+        return Ok(());
+    }
+    if !crate::credits::get_setting_bool(pool, kind, "shared_enabled", false).await {
+        return Ok(());
+    }
+
+    let cost_chat = crate::credits::get_setting_i64(pool, kind, "cost_chat", 1).await;
+    let cost_image = crate::credits::get_setting_i64(pool, kind, "cost_image", 5).await;
+
+    // (flavor, protocol, default-name, default-priority)
+    let specs: &[(&str, &str, &str, i64)] = &[
+        ("chat",  "openai", "Legacy OpenAI (chat)",  100),
+        ("chat",  "claude", "Legacy Claude (chat)",  110),
+        ("chat",  "gemini", "Legacy Gemini (chat)",  120),
+        ("image", "openai", "Legacy OpenAI (image)", 200),
+        ("image", "gemini", "Legacy Gemini (image)", 210),
+    ];
+
+    for (flavor, protocol, name, priority) in specs.iter().copied() {
+        let prefix = if flavor == "chat" { "shared_chat_" } else { "shared_image_" };
+        let url = crate::credits::get_setting(pool, kind, &format!("{prefix}{protocol}_url")).await;
+        let key = crate::credits::get_setting(pool, kind, &format!("{prefix}{protocol}_key")).await;
+        let model = crate::credits::get_setting(pool, kind, &format!("{prefix}{protocol}_model")).await;
+        let (Some(u), Some(k)) = (url, key) else { continue };
+        if u.is_empty() || k.is_empty() {
+            continue;
+        }
+
+        let channel_id = create_channel(
+            pool,
+            kind,
+            &ChannelInput {
+                name: name.to_string(),
+                protocol: protocol.to_string(),
+                kind: flavor.to_string(),
+                base_url: u,
+                api_key: k,
+                enabled: true,
+                priority,
+            },
+        )
+        .await?;
+
+        // bind the default model (if any) and seed pricing for it.
+        if let Some(m) = model.filter(|s| !s.is_empty()) {
+            set_channel_models(
+                pool,
+                kind,
+                channel_id,
+                &[ChannelModelEntry { model: m.clone(), upstream_id: None }],
+            )
+            .await?;
+
+            let cost = if flavor == "chat" { cost_chat } else { cost_image };
+            upsert_price(
+                pool,
+                kind,
+                &PricingInput {
+                    model: m,
+                    kind: flavor.to_string(),
+                    cost_credits: cost,
+                    display_name: None,
+                    enabled: true,
+                },
+            )
+            .await?;
+        }
+    }
+
+    eprintln!("channels: seeded from legacy shared_* settings");
+    Ok(())
+}

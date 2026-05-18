@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowUp,
+  ArrowDown,
   BookMarked,
   Check,
   ClipboardCheck,
@@ -745,6 +746,9 @@ export default function ChatPage() {
   >([])
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const atBottomRef = useRef(true)
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const attachInputRef = useRef<HTMLInputElement>(null)
 
@@ -924,9 +928,27 @@ export default function ChatPage() {
     [systemPrompt, attachedSkills]
   )
 
+  // Sticky-bottom auto-scroll: only follow the stream when the user is already
+  // pinned to the bottom. As soon as they scroll up to read earlier content we
+  // stop fighting them — `atBottomRef` is updated by the container's onScroll.
   useEffect(() => {
+    if (!atBottomRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, streaming])
+
+  function handleScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const atBottom = distanceFromBottom < 50
+    atBottomRef.current = atBottom
+    setShowJumpToBottom(!atBottom)
+  }
+
+  function jumpToBottom() {
+    atBottomRef.current = true
+    setShowJumpToBottom(false)
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+  }
 
   const configured =
     settings.useShared ||
@@ -1070,6 +1092,11 @@ export default function ChatPage() {
     setInput("")
     setError(null)
     clearAttachments()
+    // User just hit send — they definitely want to see their own message and
+    // the incoming response, so re-arm sticky-bottom regardless of where they
+    // were scrolled before.
+    atBottomRef.current = true
+    setShowJumpToBottom(false)
 
     // Compose the user message. Text first, then each uploaded image
     // referenced as standard markdown — the chat-stream layer later
@@ -1446,7 +1473,11 @@ export default function ChatPage() {
           </div>
         </header>
 
-        <div className="nc-scroll flex-1 overflow-y-auto">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="nc-scroll relative flex-1 overflow-y-auto"
+        >
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 md:px-5 md:py-6">
             {banner}
             {loadingMessages && (
@@ -1529,6 +1560,16 @@ export default function ChatPage() {
             )}
             <div ref={bottomRef} />
           </div>
+          {showJumpToBottom && (
+            <button
+              type="button"
+              onClick={jumpToBottom}
+              aria-label="回到底部"
+              className="sticky bottom-4 ml-auto mr-4 flex size-9 items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-panel backdrop-blur-sm transition hover:bg-accent"
+            >
+              <ArrowDown className="size-4" />
+            </button>
+          )}
         </div>
 
         <div className="bg-background px-3 pb-3 pt-2 md:px-5 md:pb-4">

@@ -5,12 +5,6 @@ export type ListModelsOptions = {
   baseUrl: string
   apiKey: string
   useProxy: boolean
-  /// When true, omits per-request URL/Key headers; backend
-  /// resolves the admin-configured shared upstream.
-  useShared?: boolean
-  /// Whether this lookup is for the image upstream (shared_image_*) vs the
-  /// chat upstream (shared_chat_*). Only meaningful with useShared.
-  flavor?: "chat" | "image"
   signal?: AbortSignal
 }
 
@@ -71,17 +65,7 @@ function parseModels(protocol: Protocol, json: unknown): string[] {
 export async function listModels(o: ListModelsOptions): Promise<string[]> {
   const url = listUrl(o.protocol, o.baseUrl)
   let res: Response
-  if (o.useShared) {
-    // Let the backend resolve the shared upstream's URL + key. Flavor tells
-    // it whether to look up shared_chat_* or shared_image_* settings.
-    const headers: Record<string, string> = {}
-    if (o.flavor === "image") headers["X-Upstream-Flavor"] = "image"
-    res = await fetch(`/api/proxy/${o.protocol}/models`, {
-      headers,
-      credentials: "same-origin",
-      signal: o.signal,
-    })
-  } else if (o.useProxy) {
+  if (o.useProxy) {
     res = await fetch(`/api/proxy/${o.protocol}/models`, {
       headers: {
         "X-Upstream-Url": url,

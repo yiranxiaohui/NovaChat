@@ -14,7 +14,6 @@ export type GenerateImageOptions = {
   size?: "1024x1024" | "1024x1792" | "1792x1024" | "auto"
   n?: number
   useProxy?: boolean
-  useShared?: boolean
   signal?: AbortSignal
 }
 
@@ -115,8 +114,7 @@ export type ResponsesImageOptions = {
   model?: string
   size?: GenerateImageOptions["size"]
   quality?: string
-  useShared?: boolean
-  baseUrl?: string   // used when not shared — backend appends /v1/responses
+  baseUrl?: string
   apiKey?: string    // used when not shared
   signal?: AbortSignal
 }
@@ -188,22 +186,9 @@ export async function generateImages(
   const { url: upstream, body } =
     protocol === "gemini" ? geminiRequest(o) : openaiRequest(o)
 
-  // Proxy / shared modes → async job (poll until done). Direct mode stays
+  // Proxy mode → async job (poll until done). Direct mode stays
   // synchronous since it hits the provider directly without going through
   // our backend.
-  if (o.useShared) {
-    const token = await submitJob(`/api/images/jobs/${protocol}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Upstream-Model": o.model ?? "",
-      },
-      body: JSON.stringify(body),
-      credentials: "same-origin",
-      signal: o.signal,
-    })
-    return pollImageJob(token, o.signal)
-  }
   if (useProxy) {
     const token = await submitJob(`/api/images/jobs/${protocol}`, {
       method: "POST",
@@ -279,7 +264,6 @@ export type EditImageOptions = {
   size?: GenerateImageOptions["size"]
   n?: number
   useProxy?: boolean
-  useShared?: boolean
   signal?: AbortSignal
 }
 
@@ -315,19 +299,6 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
     const body = {
       contents: [{ role: "user", parts }],
       generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
-    }
-    if (o.useShared) {
-      const token = await submitJob(`/api/images/jobs/gemini`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Upstream-Model": model,
-        },
-        body: JSON.stringify(body),
-        credentials: "same-origin",
-        signal: o.signal,
-      })
-      return pollImageJob(token, o.signal)
     }
     if (useProxy) {
       const token = await submitJob(`/api/images/jobs/gemini`, {
@@ -389,18 +360,6 @@ export async function editImages(o: EditImageOptions): Promise<GeneratedImage[]>
   if (o.size && o.size !== "auto") form.append("size", o.size)
 
   const upstream = `${trimSlash(o.baseUrl)}/v1/images/edits`
-  if (o.useShared) {
-    const token = await submitJob(`/api/images/jobs/openai/edits`, {
-      method: "POST",
-      headers: {
-        "X-Upstream-Model": o.model ?? "",
-      },
-      body: form,
-      credentials: "same-origin",
-      signal: o.signal,
-    })
-    return pollImageJob(token, o.signal)
-  }
   if (useProxy) {
     const token = await submitJob(`/api/images/jobs/openai/edits`, {
       method: "POST",

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Coins, ImageIcon, MessageSquare, RefreshCw } from "lucide-react"
+import { ImageIcon, MessageSquare, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,7 +13,6 @@ import {
 } from "@/lib/settings"
 import { listModels } from "@/lib/models"
 import { cn } from "@/lib/utils"
-import { creditsApi, type SharedStatus } from "@/lib/credits"
 
 type Props = {
   open: boolean
@@ -35,7 +34,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const [model, setModel] = useState(initial.model)
   const [useProxy, setUseProxy] = useState(initial.useProxy)
   const [webSearch, setWebSearch] = useState(initial.webSearch)
-  const [useShared, setUseShared] = useState(initial.useShared)
 
   // --- Image state ---
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>(initial.imageProtocol)
@@ -43,11 +41,9 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const [imageApiKey, setImageApiKey] = useState(initial.imageApiKey)
   const [imageModel, setImageModel] = useState(initial.imageModel)
   const [imageUseProxy, setImageUseProxy] = useState(initial.imageUseProxy)
-  const [imageUseShared, setImageUseShared] = useState(initial.imageUseShared)
 
   const [cloudSync, setCloudSync] = useState(initial.cloudSync)
   const [tab, setTab] = useState<Tab>("chat")
-  const [shared, setShared] = useState<SharedStatus | null>(null)
 
   const [chatModels, setChatModels] = useState<string[]>([])
   const [chatLoading, setChatLoading] = useState(false)
@@ -66,13 +62,11 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setModel(initial.model)
       setUseProxy(initial.useProxy)
       setWebSearch(initial.webSearch)
-      setUseShared(initial.useShared)
       setImageProtocol(initial.imageProtocol)
       setImageBaseUrl(initial.imageBaseUrl)
       setImageApiKey(initial.imageApiKey)
       setImageModel(initial.imageModel)
       setImageUseProxy(initial.imageUseProxy)
-      setImageUseShared(initial.imageUseShared)
       setCloudSync(initial.cloudSync)
       setTab("chat")
       setChatModels([])
@@ -81,22 +75,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setImageError(null)
     }
   }, [open, initial])
-
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    creditsApi
-      .sharedStatus()
-      .then((s) => {
-        if (!cancelled) setShared(s)
-      })
-      .catch(() => {
-        if (!cancelled) setShared(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [open])
 
   useEffect(() => {
     setChatModels([])
@@ -112,9 +90,8 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   const meta = PROTOCOL_META[protocol]
   const imgMeta = IMAGE_PROTOCOL_META[imageProtocol]
-  const canLoadChat = useShared || Boolean(baseUrl.trim() && apiKey.trim())
-  const canLoadImage =
-    imageUseShared || Boolean(imageBaseUrl.trim() && imageApiKey.trim())
+  const canLoadChat = Boolean(baseUrl.trim() && apiKey.trim())
+  const canLoadImage = Boolean(imageBaseUrl.trim() && imageApiKey.trim())
 
   function pickProtocol(next: Protocol) {
     if (next === protocol) return
@@ -155,7 +132,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim(),
         useProxy,
-        useShared,
         signal: ctrl.signal,
       })
       setChatModels(list)
@@ -183,8 +159,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
         baseUrl: imageBaseUrl.trim(),
         apiKey: imageApiKey.trim(),
         useProxy: imageUseProxy,
-        useShared: imageUseShared,
-        flavor: "image",
         signal: ctrl.signal,
       })
       const filter =
@@ -240,22 +214,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             : "仅保存在当前浏览器 (localStorage)，不会上传到服务器。"}
         </p>
 
-        {shared?.enabled && (
-          <div className="mt-3 flex items-start gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
-            <Coins className="mt-0.5 size-3.5 text-primary" />
-            <div className="flex-1">
-              <p>
-                <b>站点已开启共享后端。</b>{" "}
-                勾选下方「使用站点共享后端」即可走站点通道，模型由管理员指定，每次按积分扣费。
-              </p>
-              <p className="mt-0.5 text-muted-foreground">
-                对话 {shared.cost_chat} 分/次，生图 {shared.cost_image} 分/次；当前余额{" "}
-                <b>{shared.balance}</b> 分。
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Tabs */}
         <div className="mt-4 inline-flex rounded-lg border border-border bg-muted/40 p-1 text-sm">
           <TabBtn active={tab === "chat"} onClick={() => setTab("chat")}>
@@ -268,20 +226,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
         {tab === "chat" ? (
           <div className="mt-4 flex flex-col gap-3">
-            {shared?.enabled && (
-              <label className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={useShared}
-                  onChange={(e) => setUseShared(e.target.checked)}
-                />
-                <span>
-                  使用站点共享后端（按积分扣费；无需填写 Base URL / API Key，模型由管理员指定）
-                </span>
-              </label>
-            )}
-
             <div className="flex flex-col gap-1.5">
               <Label>协议</Label>
               <div className="grid grid-cols-3 gap-2">
@@ -303,21 +247,20 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </div>
             </div>
 
-            <div className={cn("flex flex-col gap-1.5", useShared && "opacity-50")}>
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="baseUrl">Base URL</Label>
               <Input
                 id="baseUrl"
-                placeholder={useShared ? "（共享后端模式下忽略）" : meta.defaultBaseUrl}
+                placeholder={meta.defaultBaseUrl}
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                disabled={useShared}
               />
               <p className="text-xs text-muted-foreground">
                 只填主机，路径自动补 <code>{meta.pathHint}</code>。
               </p>
             </div>
 
-            <div className={cn("flex flex-col gap-1.5", useShared && "opacity-50")}>
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="apiKey">API Key</Label>
               <Input
                 id="apiKey"
@@ -325,15 +268,12 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={
-                  useShared
-                    ? "（共享后端模式下忽略）"
-                    : protocol === "gemini"
-                      ? "AIza…"
-                      : "sk-…"
+                  protocol === "gemini"
+                    ? "AIza…"
+                    : "sk-…"
                 }
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                disabled={useShared}
               />
             </div>
 
@@ -349,25 +289,18 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               placeholder={meta.defaultModel}
               datalistId="chat-model-options"
             />
-            {useShared && (
-              <p className="-mt-2 text-xs text-muted-foreground">
-                共享后端模式：点「拉取」从站点上游获取可用模型列表，自由选择。
-              </p>
-            )}
 
-            {!useShared && (
-              <label className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={useProxy}
-                  onChange={(e) => setUseProxy(e.target.checked)}
-                />
-                <span>
-                  走服务端转发（推荐：规避浏览器 CORS 限制；key 只在浏览器，仅随每次请求发送）
-                </span>
-              </label>
-            )}
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={useProxy}
+                onChange={(e) => setUseProxy(e.target.checked)}
+              />
+              <span>
+                走服务端转发（推荐：规避浏览器 CORS 限制；key 只在浏览器，仅随每次请求发送）
+              </span>
+            </label>
 
             <label className="flex items-start gap-2 text-sm">
               <input
@@ -418,20 +351,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               图像生成支持 OpenAI（<code>/v1/images/generations</code>）和 Google Imagen（<code>:predict</code>）两种协议。可以独立配置（例如聊天走 Claude、生图走 Imagen）。留空则禁用图像模式。
             </div>
 
-            {shared?.enabled && (
-              <label className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={imageUseShared}
-                  onChange={(e) => setImageUseShared(e.target.checked)}
-                />
-                <span>
-                  使用站点共享后端生图（按积分扣费；无需填写 Base URL / API Key，模型由管理员指定）
-                </span>
-              </label>
-            )}
-
             <div className="flex flex-col gap-1.5">
               <Label>协议</Label>
               <div className="grid grid-cols-2 gap-2">
@@ -453,10 +372,10 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </div>
             </div>
 
-            <div className={cn("flex flex-col gap-1.5", imageUseShared && "opacity-50")}>
+            <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="imageBaseUrl">图像 Base URL</Label>
-                {!imageUseShared && (baseUrl || apiKey) && (
+                {(baseUrl || apiKey) && (
                   <button
                     type="button"
                     onClick={copyChatAsImage}
@@ -468,17 +387,16 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </div>
               <Input
                 id="imageBaseUrl"
-                placeholder={imageUseShared ? "（共享后端模式下忽略）" : imgMeta.defaultBaseUrl}
+                placeholder={imgMeta.defaultBaseUrl}
                 value={imageBaseUrl}
                 onChange={(e) => setImageBaseUrl(e.target.value)}
-                disabled={imageUseShared}
               />
               <p className="text-xs text-muted-foreground">
                 路径自动补 <code>{imgMeta.pathHint}</code>。
               </p>
             </div>
 
-            <div className={cn("flex flex-col gap-1.5", imageUseShared && "opacity-50")}>
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="imageApiKey">图像 API Key</Label>
               <Input
                 id="imageApiKey"
@@ -486,15 +404,12 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={
-                  imageUseShared
-                    ? "（共享后端模式下忽略）"
-                    : imageProtocol === "gemini"
-                      ? "AIza…"
-                      : "sk-…"
+                  imageProtocol === "gemini"
+                    ? "AIza…"
+                    : "sk-…"
                 }
                 value={imageApiKey}
                 onChange={(e) => setImageApiKey(e.target.value)}
-                disabled={imageUseShared}
               />
             </div>
 
@@ -510,23 +425,16 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               placeholder={imgMeta.defaultModel}
               datalistId="image-model-options"
             />
-            {imageUseShared && (
-              <p className="-mt-2 text-xs text-muted-foreground">
-                共享后端模式：点「拉取」从站点上游获取可用模型列表，自由选择。
-              </p>
-            )}
 
-            {!imageUseShared && (
-              <label className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={imageUseProxy}
-                  onChange={(e) => setImageUseProxy(e.target.checked)}
-                />
-                <span>走服务端转发（同上）</span>
-              </label>
-            )}
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={imageUseProxy}
+                onChange={(e) => setImageUseProxy(e.target.checked)}
+              />
+              <span>走服务端转发（同上）</span>
+            </label>
           </div>
         )}
 
@@ -555,13 +463,11 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 model: model.trim(),
                 useProxy,
                 webSearch,
-                useShared,
                 imageProtocol,
                 imageBaseUrl: imageBaseUrl.trim(),
                 imageApiKey: imageApiKey.trim(),
                 imageModel: imageModel.trim(),
                 imageUseProxy,
-                imageUseShared,
                 cloudSync,
               })
             }

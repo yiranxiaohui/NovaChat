@@ -9,9 +9,6 @@ export type UpstreamSettings = {
   model: string
   useProxy: boolean
   webSearch: boolean
-  // When true, requests use the site-shared backend (admin's URL/Key) and
-  // the user's chosen model; credits are billed per call. Local-only flag.
-  useShared: boolean
 
   // image generation (protocol-aware, independent from chat config)
   imageProtocol: ImageProtocol
@@ -19,7 +16,6 @@ export type UpstreamSettings = {
   imageApiKey: string
   imageModel: string
   imageUseProxy: boolean
-  imageUseShared: boolean
 
   cloudSync: boolean
 }
@@ -80,22 +76,12 @@ const EMPTY: UpstreamSettings = {
   model: "",
   useProxy: true,
   webSearch: false,
-  useShared: false,
   imageProtocol: "openai",
   imageBaseUrl: "",
   imageApiKey: "",
   imageModel: "",
   imageUseProxy: true,
-  imageUseShared: false,
   cloudSync: false,
-}
-
-// New users with no saved settings default to the site-shared backend so they
-// can chat and generate images out of the box without entering credentials.
-const FRESH_DEFAULTS: UpstreamSettings = {
-  ...EMPTY,
-  useShared: true,
-  imageUseShared: true,
 }
 
 function keyFor(userId: number | string) {
@@ -105,14 +91,9 @@ function keyFor(userId: number | string) {
 export function loadSettings(userId: number | string): UpstreamSettings {
   try {
     const raw = localStorage.getItem(keyFor(userId))
-    if (!raw) return FRESH_DEFAULTS
+    if (!raw) return EMPTY
     const parsed = JSON.parse(raw) as Partial<UpstreamSettings>
     const merged: UpstreamSettings = { ...EMPTY, ...parsed }
-    // Migration: pre-toggle versions inferred shared mode from an empty key.
-    // Preserve that intent for users upgrading without touching their settings.
-    if (parsed.useShared === undefined && !parsed.apiKey) merged.useShared = true
-    if (parsed.imageUseShared === undefined && !parsed.imageApiKey)
-      merged.imageUseShared = true
     return merged
   } catch {
     return EMPTY
@@ -132,7 +113,6 @@ export function trimSlash(url: string): string {
 }
 
 export function isImageConfigured(s: UpstreamSettings): boolean {
-  if (s.imageUseShared) return true
   return Boolean(s.imageBaseUrl && s.imageApiKey && s.imageModel)
 }
 
@@ -212,16 +192,12 @@ function fromCloud(p: CloudPayload): Omit<UpstreamSettings, "cloudSync"> {
     apiKey: p.api_key ?? "",
     model: p.model ?? "",
     useProxy: Boolean(p.use_proxy),
-    useShared: false,
-    imageUseShared: false,
-    // webSearch is a local-only behavior flag for now; cloud sync preserves
-    // prior local value via the spread in loadEffectiveSettings.
-    webSearch: false,
     imageProtocol: ip,
     imageBaseUrl: p.image_base_url ?? "",
     imageApiKey: p.image_api_key ?? "",
     imageModel: p.image_model ?? "",
     imageUseProxy: p.image_use_proxy == null ? true : Boolean(p.image_use_proxy),
+    webSearch: false,
   }
 }
 
@@ -265,12 +241,10 @@ export async function loadEffectiveSettings(
   try {
     const remote = await settingsApi.fetch()
     if (!remote) return local
-    // Preserve local-only flags (e.g. webSearch) when merging cloud data back in.
+    // Preserve local-only flags when merging cloud data back in.
     const merged: UpstreamSettings = {
       ...remote,
       webSearch: local.webSearch,
-      useShared: local.useShared,
-      imageUseShared: local.imageUseShared,
       cloudSync: true,
     }
     saveSettings(userId, merged)

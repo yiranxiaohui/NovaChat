@@ -12,26 +12,6 @@ export type LedgerEntry = {
   created_at: string
 }
 
-export type SharedStatus = {
-  enabled: boolean
-  openai_available: boolean
-  claude_available: boolean
-  gemini_available: boolean
-  image_openai_available: boolean
-  image_gemini_available: boolean
-  // Admin-configured model per protocol (empty string when unset). The
-  // settings dialog shows these as read-only when shared mode is on — the
-  // server always uses the admin's model and ignores any client override.
-  chat_openai_model: string
-  chat_claude_model: string
-  chat_gemini_model: string
-  image_openai_model: string
-  image_gemini_model: string
-  cost_chat: number
-  cost_image: number
-  balance: number
-}
-
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -53,31 +33,15 @@ export const creditsApi = {
       })
     )
   },
-  async sharedStatus(): Promise<SharedStatus> {
-    return jsonOrThrow(
-      await fetch("/api/shared/status", { credentials: "same-origin" })
-    )
-  },
 }
 
 export type AdminSettings = {
   registration_enabled: boolean
-  shared_enabled: boolean
   signup_grant: number
   cost_chat: number
   cost_image: number
   invite_grant_inviter: number
   invite_grant_invitee: number
-  shared_chat_openai_url: string
-  shared_chat_claude_url: string
-  shared_chat_gemini_url: string
-  shared_image_openai_url: string
-  shared_image_gemini_url: string
-  shared_chat_openai_key_set: boolean
-  shared_chat_claude_key_set: boolean
-  shared_chat_gemini_key_set: boolean
-  shared_image_openai_key_set: boolean
-  shared_image_gemini_key_set: boolean
   email_verification_required: boolean
   smtp_host: string
   smtp_port: number
@@ -89,20 +53,7 @@ export type AdminSettings = {
 }
 
 export type AdminSettingsUpdate = Partial<
-  Omit<
-    AdminSettings,
-    | "shared_chat_openai_key_set"
-    | "shared_chat_claude_key_set"
-    | "shared_chat_gemini_key_set"
-    | "shared_image_openai_key_set"
-    | "shared_image_gemini_key_set"
-    | "smtp_password_set"
-  > & {
-    shared_chat_openai_key: string
-    shared_chat_claude_key: string
-    shared_chat_gemini_key: string
-    shared_image_openai_key: string
-    shared_image_gemini_key: string
+  Omit<AdminSettings, "smtp_password_set"> & {
     smtp_password: string
   }
 >
@@ -148,22 +99,6 @@ export const adminCreditsApi = {
         credentials: "same-origin",
       })
     )
-  },
-  async listUpstreamModels(
-    which:
-      | "chat_openai"
-      | "chat_claude"
-      | "chat_gemini"
-      | "image_openai"
-      | "image_gemini"
-  ): Promise<string[]> {
-    const r = await jsonOrThrow<{ models: string[] }>(
-      await fetch(
-        `/api/admin/app-settings/models?which=${encodeURIComponent(which)}`,
-        { credentials: "same-origin" }
-      )
-    )
-    return r.models
   },
   async sendTestEmail(email: string): Promise<void> {
     const res = await fetch("/api/admin/email/test", {

@@ -67,9 +67,6 @@ export type ChatStreamOptions = {
   model: string
   messages: ChatMessage[]
   useProxy?: boolean
-  // When true, route through the server proxy targeting the site-shared
-  // backend (admin-configured URL/Key); baseUrl/apiKey are ignored.
-  useShared?: boolean
   webSearch?: boolean
   // OpenAI protocol only. Declares the hosted `image_generation` tool on
   // the /v1/responses request so the model can emit images inline during
@@ -289,20 +286,7 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   const payload = JSON.stringify(prepared.body)
 
   let res: Response
-  if (o.useShared) {
-    // Site-shared backend: server reads admin URL/Key, we just hand over
-    // the user's chosen model (Gemini needs it in the URL it builds).
-    res = await fetch(`/api/proxy/${o.protocol}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Upstream-Model": o.model,
-      },
-      body: payload,
-      credentials: "same-origin",
-      signal: o.signal,
-    })
-  } else if (o.useProxy) {
+  if (o.useProxy) {
     res = await fetch(`/api/proxy/${o.protocol}`, {
       method: "POST",
       headers: {

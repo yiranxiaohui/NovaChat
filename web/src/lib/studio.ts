@@ -24,7 +24,6 @@ export type GenerateParams = {
   quality?: string
   style?: string
   imageDataUrl?: string
-  useShared?: boolean
   upstreamUrl?: string
   upstreamKey?: string
   signal?: AbortSignal
@@ -48,7 +47,6 @@ function headersFor(o: GenerateParams): Record<string, string> {
 }
 
 export type ListModelsOptions = {
-  useShared?: boolean
   upstreamUrl?: string
   upstreamKey?: string
   signal?: AbortSignal

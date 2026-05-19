@@ -56,7 +56,7 @@ import {
   type Skill,
 } from "@/lib/skills"
 import { filenameFromPath, plazaApi } from "@/lib/image-plaza"
-import { creditsApi, type CreditsMe, type SharedStatus } from "@/lib/credits"
+import { creditsApi, type CreditsMe } from "@/lib/credits"
 
 type UiMessage = ChatMessage & { id?: number }
 
@@ -94,7 +94,6 @@ function ModelPicker({
     return () => window.removeEventListener("mousedown", onDown)
   }, [open])
 
-  const useShared = settings.useShared
   const baseUrl = settings.baseUrl
   const apiKey = settings.apiKey
   const useProxy = settings.useProxy
@@ -109,8 +108,6 @@ function ModelPicker({
         baseUrl,
         apiKey,
         useProxy,
-        useShared,
-        flavor: "chat",
       })
       setModels(list)
     } catch (e) {
@@ -126,11 +123,11 @@ function ModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Reset model cache when upstream context changes (protocol/baseUrl/shared).
+  // Reset model cache when upstream context changes (protocol/baseUrl).
   useEffect(() => {
     setModels([])
     setError(null)
-  }, [useShared, baseUrl, fetchProtocol])
+  }, [baseUrl, fetchProtocol])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -225,9 +222,7 @@ function ModelPicker({
             </ul>
           </div>
           <div className="mt-2 border-t border-border pt-2 text-[10px] text-muted-foreground">
-            {useShared
-              ? "共享后端 · 实时从上游获取"
-              : "自带 Key · 从你配置的上游获取"}
+            自带 Key · 从你配置的上游获取
           </div>
         </div>
       )}
@@ -707,13 +702,11 @@ export default function ChatPage() {
           apiKey: "",
           model: "",
           useProxy: true,
-          useShared: true,
           imageProtocol: "openai",
           imageBaseUrl: "",
           imageApiKey: "",
           imageModel: "",
           imageUseProxy: true,
-          imageUseShared: true,
           webSearch: false,
           cloudSync: false,
         }
@@ -730,7 +723,6 @@ export default function ChatPage() {
     null
   )
   const [creditsMe, setCreditsMe] = useState<CreditsMe | null>(null)
-  const [sharedStatus, setSharedStatus] = useState<SharedStatus | null>(null)
   const [attachedSkills, setAttachedSkills] = useState<Skill[]>([])
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
@@ -768,16 +760,10 @@ export default function ChatPage() {
       if (!cancelled) setSettings(s)
     })
     creditsApi
-      .sharedStatus()
-      .then((s) => {
+      .me()
+      .then((m) => {
         if (cancelled) return
-        setSharedStatus(s)
-        setCreditsMe({
-          balance: s.balance,
-          lifetime_used: 0,
-          cost_chat: s.cost_chat,
-          cost_image: s.cost_image,
-        })
+        setCreditsMe(m)
       })
       .catch(() => {
         /* non-fatal */
@@ -950,9 +936,7 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }
 
-  const configured =
-    settings.useShared ||
-    Boolean(settings.baseUrl && settings.apiKey && settings.model)
+  const configured = Boolean(settings.baseUrl && settings.apiKey && settings.model)
   const canSend =
     (input.trim().length > 0 || attachments.length > 0) &&
     !streaming &&
@@ -1134,7 +1118,6 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
-        useShared: settings.useShared,
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
         messages: toModel,
@@ -1240,7 +1223,6 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
-        useShared: settings.useShared,
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
         messages: toModel,
@@ -1400,7 +1382,7 @@ export default function ChatPage() {
             />
           </div>
           <div className="flex shrink-0 items-center">
-            {sharedStatus?.enabled && creditsMe && (
+            {creditsMe && (
               <button
                 type="button"
                 onClick={() => setRechargeOpen(true)}

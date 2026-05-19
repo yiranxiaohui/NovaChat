@@ -25,7 +25,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
 import { studioApi, type StudioGeneration } from "@/lib/studio"
-import { creditsApi, type SharedStatus } from "@/lib/credits"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
 import { ImagePreview } from "@/components/app/ImagePreview"
@@ -167,10 +166,6 @@ export default function ImageStudioPage() {
   const [attachedUrl, setAttachedUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const [shared, setShared] = useState<SharedStatus | null>(null)
-  const [sharedLoaded, setSharedLoaded] = useState(false)
-  const [useShared, setUseShared] = useState(true)
-
   const [models, setModels] = useState<string[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState<string | null>(null)
@@ -191,25 +186,6 @@ export default function ImageStudioPage() {
   const [pastedFlash, setPastedFlash] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const tickRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    creditsApi
-      .sharedStatus()
-      .then((s) => {
-        if (cancelled) return
-        setShared(s)
-        setSharedLoaded(true)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setShared(null)
-        setSharedLoaded(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     if (!attached) {
@@ -285,13 +261,9 @@ export default function ImageStudioPage() {
     try {
       const effective = await loadEffectiveSettings(user.id)
       const imgMeta = IMAGE_PROTOCOL_META.openai
-      const effectivelyShared = useShared && !!shared?.image_openai_available && !!shared?.enabled
       const list = await studioApi.listModels({
-        useShared: effectivelyShared,
-        upstreamUrl: effectivelyShared
-          ? undefined
-          : `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
-        upstreamKey: effectivelyShared ? undefined : effective.imageApiKey,
+        upstreamUrl: `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
+        upstreamKey: effective.imageApiKey,
       })
       setModels(list)
       // Snap to first available image-like model if current selection isn't in list.
@@ -329,16 +301,12 @@ export default function ImageStudioPage() {
       })
   }, [])
 
-  // Load models whenever the shared toggle (or availability) changes.
-  // Gate on sharedLoaded so we don't fire off a bogus "own key" request
-  // before the sharedStatus call has resolved.
+  // Load models on first user resolution.
   useEffect(() => {
-    if (!user || !sharedLoaded) return
+    if (!user) return
     void reloadModels()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, useShared, sharedLoaded, shared?.image_openai_available, shared?.enabled])
-
-  const sharedAvailable = !!shared?.image_openai_available && !!shared?.enabled
+  }, [user?.id])
 
   // Shared submit + poll path used by both the "生成图片" button and the
   // per-card 重试 action. Callers pre-resolve the image to a data URL.
@@ -373,11 +341,8 @@ export default function ImageStudioPage() {
         quality: params.quality === "auto" ? undefined : params.quality,
         style: params.style || undefined,
         imageDataUrl: params.imageDataUrl,
-        useShared: useShared && sharedAvailable,
-        upstreamUrl: !useShared || !sharedAvailable
-          ? effective.imageBaseUrl || imgMeta.defaultBaseUrl
-          : undefined,
-        upstreamKey: !useShared || !sharedAvailable ? effective.imageApiKey : undefined,
+        upstreamUrl: effective.imageBaseUrl || imgMeta.defaultBaseUrl,
+        upstreamKey: effective.imageApiKey,
       })
       const final = await studioApi.waitForJob(token)
       setCurrent(final)
@@ -561,27 +526,6 @@ export default function ImageStudioPage() {
             <Sparkles className="size-4 text-primary" /> 生成参数
           </h2>
 
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs">
-            <input
-              type="checkbox"
-              id="use-shared"
-              className="size-3.5 accent-primary"
-              checked={useShared}
-              onChange={(e) => setUseShared(e.target.checked)}
-              disabled={!sharedAvailable}
-            />
-            <label htmlFor="use-shared" className="cursor-pointer flex-1">
-              使用共享后端
-              {!sharedAvailable && (
-                <span className="ml-1 text-muted-foreground">（未启用）</span>
-              )}
-            </label>
-            {useShared && sharedAvailable && (
-              <span className="tabular-nums text-muted-foreground">
-                {shared?.balance ?? 0} 分
-              </span>
-            )}
-          </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
             <div className="flex items-center justify-between">

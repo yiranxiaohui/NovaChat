@@ -67,6 +67,13 @@ export type ChatStreamOptions = {
   model: string
   messages: ChatMessage[]
   useProxy?: boolean
+  /**
+   * When true, route through `/api/proxy/*` WITHOUT sending
+   * `X-Upstream-Url/Key` headers — the server resolves an admin-configured
+   * channel chain for the model and deducts credits. When false (default),
+   * BYOK: the client supplies its own upstream creds via headers.
+   */
+  usePlatform?: boolean
   webSearch?: boolean
   // OpenAI protocol only. Declares the hosted `image_generation` tool on
   // the /v1/responses request so the model can emit images inline during
@@ -287,13 +294,18 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
 
   let res: Response
   if (o.useProxy) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    }
+    // BYOK: forward upstream creds via headers. Platform mode: omit headers,
+    // server resolves admin channel and deducts credits.
+    if (!o.usePlatform) {
+      headers["X-Upstream-Url"] = prepared.url
+      headers["X-Upstream-Key"] = o.apiKey
+    }
     res = await fetch(`/api/proxy/${o.protocol}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Upstream-Url": prepared.url,
-        "X-Upstream-Key": o.apiKey,
-      },
+      headers,
       body: payload,
       credentials: "same-origin",
       signal: o.signal,

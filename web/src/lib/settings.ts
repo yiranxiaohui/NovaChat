@@ -1,8 +1,15 @@
 export type Protocol = "openai" | "claude" | "gemini"
 export type ImageProtocol = "openai" | "gemini"
+export type UpstreamMode = "platform" | "byok"
 
 export type UpstreamSettings = {
-  // chat (protocol-aware)
+  // mode: use admin-configured platform channels (deduct credits), or BYOK
+  chatMode: UpstreamMode
+  imageMode: UpstreamMode
+
+  // chat (protocol-aware) — only used in BYOK mode for baseUrl/apiKey,
+  // but `protocol` and `model` are still meaningful in platform mode so the
+  // user can pick which platform model to call.
   protocol: Protocol
   baseUrl: string
   apiKey: string
@@ -70,6 +77,8 @@ export const IMAGE_DEFAULTS = {
 }
 
 const EMPTY: UpstreamSettings = {
+  chatMode: "platform",
+  imageMode: "platform",
   protocol: "openai",
   baseUrl: "",
   apiKey: "",
@@ -113,6 +122,7 @@ export function trimSlash(url: string): string {
 }
 
 export function isImageConfigured(s: UpstreamSettings): boolean {
+  if (s.imageMode === "platform") return Boolean(s.imageModel)
   return Boolean(s.imageBaseUrl && s.imageApiKey && s.imageModel)
 }
 
@@ -187,6 +197,10 @@ function toCloud(s: UpstreamSettings): CloudPayload {
 function fromCloud(p: CloudPayload): Omit<UpstreamSettings, "cloudSync"> {
   const ip = p.image_protocol === "gemini" ? "gemini" : "openai"
   return {
+    // Mode is a client-only preference; default to "platform" when cloud sync
+    // omits it. Users can flip per-device.
+    chatMode: "platform",
+    imageMode: "platform",
     protocol: p.protocol,
     baseUrl: p.base_url ?? "",
     apiKey: p.api_key ?? "",
@@ -244,6 +258,8 @@ export async function loadEffectiveSettings(
     // Preserve local-only flags when merging cloud data back in.
     const merged: UpstreamSettings = {
       ...remote,
+      chatMode: local.chatMode,
+      imageMode: local.imageMode,
       webSearch: local.webSearch,
       cloudSync: true,
     }

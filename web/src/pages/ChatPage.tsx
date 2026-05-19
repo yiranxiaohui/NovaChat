@@ -697,6 +697,8 @@ export default function ChatPage() {
     user
       ? loadSettings(user.id)
       : {
+          chatMode: "platform",
+          imageMode: "platform",
           protocol: "openai",
           baseUrl: "",
           apiKey: "",
@@ -1118,6 +1120,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        usePlatform: settings.chatMode === "platform",
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
         messages: toModel,
@@ -1223,6 +1226,7 @@ export default function ChatPage() {
         apiKey: settings.apiKey,
         model: settings.model,
         useProxy: settings.useProxy,
+        usePlatform: settings.chatMode === "platform",
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
         messages: toModel,

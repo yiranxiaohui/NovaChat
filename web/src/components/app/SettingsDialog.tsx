@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ImageIcon, MessageSquare, RefreshCw } from "lucide-react"
+import { Cloud, ImageIcon, KeyRound, MessageSquare, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,9 +9,11 @@ import {
   likelyWebSearchCapable,
   type ImageProtocol,
   type Protocol,
+  type UpstreamMode,
   type UpstreamSettings,
 } from "@/lib/settings"
 import { listModels } from "@/lib/models"
+import { listPlatformModels, type PlatformModel } from "@/lib/platform-models"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -27,6 +29,10 @@ const PROTOCOL_OPTIONS: Protocol[] = ["openai", "claude", "gemini"]
 const IMAGE_PROTOCOL_OPTIONS: ImageProtocol[] = ["openai", "gemini"]
 
 export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
+  // --- Mode ---
+  const [chatMode, setChatMode] = useState<UpstreamMode>(initial.chatMode)
+  const [imageMode, setImageMode] = useState<UpstreamMode>(initial.imageMode)
+
   // --- Chat state ---
   const [protocol, setProtocol] = useState<Protocol>(initial.protocol)
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl)
@@ -54,8 +60,16 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   const chatAbortRef = useRef<AbortController | null>(null)
   const imageAbortRef = useRef<AbortController | null>(null)
 
+  // Platform-mode model catalogues — loaded from /api/channels/models.
+  const [platformChat, setPlatformChat] = useState<PlatformModel[] | null>(null)
+  const [platformImage, setPlatformImage] = useState<PlatformModel[] | null>(null)
+  const [platformChatError, setPlatformChatError] = useState<string | null>(null)
+  const [platformImageError, setPlatformImageError] = useState<string | null>(null)
+
   useEffect(() => {
     if (open) {
+      setChatMode(initial.chatMode)
+      setImageMode(initial.imageMode)
       setProtocol(initial.protocol)
       setBaseUrl(initial.baseUrl)
       setApiKey(initial.apiKey)
@@ -73,8 +87,58 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       setImageModels([])
       setChatError(null)
       setImageError(null)
+      setPlatformChat(null)
+      setPlatformImage(null)
+      setPlatformChatError(null)
+      setPlatformImageError(null)
     }
   }, [open, initial])
+
+  // Fetch platform models when dialog opens and platform mode is active.
+  useEffect(() => {
+    if (!open || chatMode !== "platform") return
+    const ctrl = new AbortController()
+    setPlatformChatError(null)
+    listPlatformModels("chat", ctrl.signal)
+      .then((list) => {
+        setPlatformChat(list)
+        // If current model not in catalogue, auto-pick first.
+        if (list.length > 0 && !list.some((m) => m.model === model)) {
+          setModel(list[0].model)
+          setProtocol(list[0].protocol)
+        }
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string }).name !== "AbortError") {
+          setPlatformChatError(e instanceof Error ? e.message : String(e))
+        }
+      })
+    return () => ctrl.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, chatMode])
+
+  useEffect(() => {
+    if (!open || imageMode !== "platform") return
+    const ctrl = new AbortController()
+    setPlatformImageError(null)
+    listPlatformModels("image", ctrl.signal)
+      .then((list) => {
+        setPlatformImage(list)
+        if (list.length > 0 && !list.some((m) => m.model === imageModel)) {
+          setImageModel(list[0].model)
+          if (list[0].protocol === "openai" || list[0].protocol === "gemini") {
+            setImageProtocol(list[0].protocol)
+          }
+        }
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string }).name !== "AbortError") {
+          setPlatformImageError(e instanceof Error ? e.message : String(e))
+        }
+      })
+    return () => ctrl.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, imageMode])
 
   useEffect(() => {
     setChatModels([])
@@ -226,6 +290,26 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
         {tab === "chat" ? (
           <div className="mt-4 flex flex-col gap-3">
+            <ModeToggle
+              mode={chatMode}
+              onChange={setChatMode}
+              platformLabel="云端积分"
+              byokLabel="自带 API Key"
+            />
+
+            {chatMode === "platform" ? (
+              <PlatformModelPicker
+                label="对话模型"
+                models={platformChat}
+                error={platformChatError}
+                value={model}
+                onPick={(m) => {
+                  setModel(m.model)
+                  setProtocol(m.protocol)
+                }}
+              />
+            ) : (
+              <>
             <div className="flex flex-col gap-1.5">
               <Label>协议</Label>
               <div className="grid grid-cols-3 gap-2">
@@ -344,9 +428,33 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 <code>/models</code> 接口里返回工具能力元数据。
               </div>
             )}
+              </>
+            )}
           </div>
         ) : (
           <div className="mt-4 flex flex-col gap-3">
+            <ModeToggle
+              mode={imageMode}
+              onChange={setImageMode}
+              platformLabel="云端积分"
+              byokLabel="自带 API Key"
+            />
+
+            {imageMode === "platform" ? (
+              <PlatformModelPicker
+                label="图像模型"
+                models={platformImage}
+                error={platformImageError}
+                value={imageModel}
+                onPick={(m) => {
+                  setImageModel(m.model)
+                  if (m.protocol === "openai" || m.protocol === "gemini") {
+                    setImageProtocol(m.protocol)
+                  }
+                }}
+              />
+            ) : (
+              <>
             <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               图像生成支持 OpenAI（<code>/v1/images/generations</code>）和 Google Imagen（<code>:predict</code>）两种协议。可以独立配置（例如聊天走 Claude、生图走 Imagen）。留空则禁用图像模式。
             </div>
@@ -435,6 +543,8 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               />
               <span>走服务端转发（同上）</span>
             </label>
+              </>
+            )}
           </div>
         )}
 
@@ -457,6 +567,8 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           <Button
             onClick={() =>
               onSave({
+                chatMode,
+                imageMode,
                 protocol,
                 baseUrl: baseUrl.trim(),
                 apiKey: apiKey.trim(),
@@ -579,6 +691,120 @@ function ModelField({
         </>
       )}
       {error && <p className="text-xs text-destructive">加载失败：{error}</p>}
+    </div>
+  )
+}
+
+function ModeToggle({
+  mode,
+  onChange,
+  platformLabel,
+  byokLabel,
+}: {
+  mode: UpstreamMode
+  onChange: (m: UpstreamMode) => void
+  platformLabel: string
+  byokLabel: string
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onChange("platform")}
+          className={cn(
+            "flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm transition-colors",
+            mode === "platform"
+              ? "border-primary bg-primary/10 text-foreground"
+              : "border-border bg-background hover:bg-accent"
+          )}
+        >
+          <Cloud className="size-3.5" /> {platformLabel}
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange("byok")}
+          className={cn(
+            "flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm transition-colors",
+            mode === "byok"
+              ? "border-primary bg-primary/10 text-foreground"
+              : "border-border bg-background hover:bg-accent"
+          )}
+        >
+          <KeyRound className="size-3.5" /> {byokLabel}
+        </button>
+      </div>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        {mode === "platform"
+          ? "使用管理员配置的上游，按模型扣除账户积分。无需填写 Base URL / API Key。"
+          : "使用你自己的上游服务（OpenAI / Anthropic / Gemini 或自建中转），不消耗积分。"}
+      </p>
+    </div>
+  )
+}
+
+function PlatformModelPicker({
+  label,
+  models,
+  error,
+  value,
+  onPick,
+}: {
+  label: string
+  models: PlatformModel[] | null
+  error: string | null
+  value: string
+  onPick: (m: PlatformModel) => void
+}) {
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+        加载平台模型失败：{error}
+      </div>
+    )
+  }
+  if (!models) {
+    return (
+      <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+        加载平台模型中…
+      </div>
+    )
+  }
+  if (models.length === 0) {
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-muted-foreground">
+        管理员尚未配置可用的平台模型。请联系管理员或切换到「自带 API Key」模式。
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      <div className="flex flex-col gap-1">
+        {models.map((m) => (
+          <button
+            key={m.model}
+            type="button"
+            onClick={() => onPick(m)}
+            className={cn(
+              "flex items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors",
+              m.model === value
+                ? "border-primary bg-primary/10"
+                : "border-border bg-background hover:bg-accent"
+            )}
+          >
+            <div className="flex flex-col">
+              <span className="font-medium">{m.display_name || m.model}</span>
+              {m.display_name && (
+                <span className="text-xs text-muted-foreground">{m.model}</span>
+              )}
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {m.cost_credits} 积分/次
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

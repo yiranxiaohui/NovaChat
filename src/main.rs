@@ -967,6 +967,7 @@ fn build_router(state: AppState) -> Router {
         .merge(credits::user_routes())
         .merge(credits::admin_routes())
         .merge(channels::admin_routes())
+        .merge(channels::user_routes())
         .merge(payments::user_routes())
         .merge(payments::admin_routes())
         .merge(studio::routes())

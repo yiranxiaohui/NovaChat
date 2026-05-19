@@ -651,6 +651,62 @@ pub fn admin_routes() -> Router<AppState> {
 }
 
 // ---------------------------------------------------------------------------
+// user-facing routes (no admin gate; auth via parent router)
+// ---------------------------------------------------------------------------
+
+/// Public model listing for the "use platform credits" mode in settings.
+/// Returns every model in `model_pricing` (enabled=1) that has at least one
+/// enabled `upstream_channels` row bound via `channel_models`. Each entry
+/// carries the protocol of its top-priority channel so the client can group
+/// chat models by OpenAI / Claude / Gemini in the picker.
+#[derive(Serialize)]
+struct PlatformModel {
+    model: String,
+    display_name: Option<String>,
+    kind: String, // "chat" | "image"
+    cost_credits: i64,
+    protocol: String, // top-priority channel's protocol
+}
+
+async fn user_list_platform_models(
+    Extension(s): Extension<InstalledState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let flavor_filter = q.get("flavor").cloned();
+    let pricing = match list_pricing(&s.pool, s.kind).await {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut out: Vec<PlatformModel> = Vec::new();
+    for p in pricing {
+        if !p.enabled { continue; }
+        if let Some(ref f) = flavor_filter {
+            if &p.kind != f { continue; }
+        }
+        // top-priority enabled channel for (model, kind)
+        let chain = match select_chain(&s.pool, s.kind, &p.model, &p.kind).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let Some(first) = chain.into_iter().find(|c| c.channel.enabled) else {
+            continue;
+        };
+        out.push(PlatformModel {
+            model: p.model,
+            display_name: p.display_name,
+            kind: p.kind,
+            cost_credits: p.cost_credits,
+            protocol: first.channel.protocol,
+        });
+    }
+    Json(out).into_response()
+}
+
+pub fn user_routes() -> Router<AppState> {
+    Router::new().route("/channels/models", get(user_list_platform_models))
+}
+
+// ---------------------------------------------------------------------------
 // routing — call-site helpers (Task 2.2)
 // ---------------------------------------------------------------------------
 //

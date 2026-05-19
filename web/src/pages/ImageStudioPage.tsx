@@ -261,10 +261,15 @@ export default function ImageStudioPage() {
     try {
       const effective = await loadEffectiveSettings(user.id)
       const imgMeta = IMAGE_PROTOCOL_META.openai
-      const list = await studioApi.listModels({
-        upstreamUrl: `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
-        upstreamKey: effective.imageApiKey,
-      })
+      const isPlatform = effective.imageMode === "platform"
+      const list = await studioApi.listModels(
+        isPlatform
+          ? {}
+          : {
+              upstreamUrl: `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
+              upstreamKey: effective.imageApiKey,
+            }
+      )
       setModels(list)
       // Snap to first available image-like model if current selection isn't in list.
       if (list.length > 0) {
@@ -341,8 +346,12 @@ export default function ImageStudioPage() {
         quality: params.quality === "auto" ? undefined : params.quality,
         style: params.style || undefined,
         imageDataUrl: params.imageDataUrl,
-        upstreamUrl: effective.imageBaseUrl || imgMeta.defaultBaseUrl,
-        upstreamKey: effective.imageApiKey,
+        upstreamUrl:
+          effective.imageMode === "platform"
+            ? undefined
+            : effective.imageBaseUrl || imgMeta.defaultBaseUrl,
+        upstreamKey:
+          effective.imageMode === "platform" ? undefined : effective.imageApiKey,
       })
       const final = await studioApi.waitForJob(token)
       setCurrent(final)

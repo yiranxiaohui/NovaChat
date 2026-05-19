@@ -89,6 +89,13 @@ export type PricingInput = {
   enabled?: boolean
 }
 
+export type AllChannelModel = {
+  model: string
+  kind: ChannelKind
+  /** channel names that whitelist this model — UI hint */
+  channels: string[]
+}
+
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
@@ -146,6 +153,18 @@ export const channelsAdminApi = {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models }),
+        credentials: "same-origin",
+      })
+    )
+  },
+
+  // aggregated whitelist across all enabled channels (for "new pricing" picker)
+  async listAllChannelModels(
+    flavor?: ChannelKind
+  ): Promise<AllChannelModel[]> {
+    const qs = flavor ? `?flavor=${flavor}` : ""
+    return jsonOrThrow(
+      await fetch(`/api/admin/channels/all-models${qs}`, {
         credentials: "same-origin",
       })
     )

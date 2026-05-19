@@ -587,6 +587,60 @@ async fn admin_put_channel_models(
     }
 }
 
+/// Aggregate model list across all enabled channels' whitelists.
+/// `?flavor=chat|image` filters by channel kind. Used by the pricing
+/// panel's "new model" picker so admins don't have to type model ids
+/// they've already entered in some channel.
+#[derive(Serialize)]
+struct AllChannelModel {
+    model: String,
+    kind: String,
+    /// channel names that have this model in their whitelist (for UI hint)
+    channels: Vec<String>,
+}
+
+async fn admin_list_all_channel_models(
+    Extension(s): Extension<InstalledState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let flavor = q.get("flavor").cloned();
+    let bool_true = db::bool_true(s.kind);
+    let where_kind = match flavor.as_deref() {
+        Some("chat") | Some("image") => " AND c.kind = ?",
+        _ => "",
+    };
+    let sql = db::q(
+        s.kind,
+        &format!(
+            "SELECT cm.model, c.kind, c.name \
+             FROM channel_models cm \
+             INNER JOIN upstream_channels c ON c.id = cm.channel_id \
+             WHERE c.enabled = {bool_true}{where_kind} \
+             ORDER BY cm.model ASC, c.priority ASC, c.id ASC"
+        ),
+    );
+    let rows: Result<Vec<(String, String, String)>, _> = match flavor.as_deref() {
+        Some(f) if matches!(f, "chat" | "image") => {
+            sqlx::query_as(&sql).bind(f).fetch_all(&s.pool).await
+        }
+        _ => sqlx::query_as(&sql).fetch_all(&s.pool).await,
+    };
+    let rows = match rows {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut map: std::collections::BTreeMap<(String, String), Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (model, kind, name) in rows {
+        map.entry((model, kind)).or_default().push(name);
+    }
+    let out: Vec<AllChannelModel> = map
+        .into_iter()
+        .map(|((model, kind), channels)| AllChannelModel { model, kind, channels })
+        .collect();
+    Json(out).into_response()
+}
+
 async fn admin_list_pricing(Extension(s): Extension<InstalledState>) -> Response {
     match list_pricing(&s.pool, s.kind).await {
         Ok(v) => Json(v).into_response(),
@@ -645,6 +699,7 @@ pub fn admin_routes() -> Router<AppState> {
             "/admin/channels/{id}/models",
             get(admin_get_channel_models).put(admin_put_channel_models),
         )
+        .route("/admin/channels/all-models", get(admin_list_all_channel_models))
         .route("/admin/pricing", get(admin_list_pricing).post(admin_upsert_pricing))
         .route("/admin/pricing/{model}", delete(admin_delete_pricing))
         .route_layer(middleware::from_fn(admin::require_admin))

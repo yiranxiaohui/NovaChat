@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   channelsAdminApi,
+  type AllChannelModel,
   type ChannelKind,
   type ModelPrice,
   type PricingInput,
@@ -224,6 +225,20 @@ function PricingDialog({
   const [form, setForm] = useState<PricingInput>(initial)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [allModels, setAllModels] = useState<AllChannelModel[]>([])
+
+  // Load aggregated channel model list for the "new model" picker.
+  useEffect(() => {
+    if (mode.kind !== "create") return
+    channelsAdminApi
+      .listAllChannelModels()
+      .then(setAllModels)
+      .catch(() => setAllModels([]))
+  }, [mode.kind])
+
+  // Suggestions filtered by current kind; selecting one fills the form.
+  const suggestions = allModels.filter((m) => m.kind === form.kind)
+  const currentMatch = suggestions.find((m) => m.model === form.model)
 
   async function submit() {
     setSaving(true)
@@ -250,16 +265,39 @@ function PricingDialog({
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Label>模型 ID</Label>
-            <Input
-              value={form.model}
-              onChange={(e) => setForm({ ...form, model: e.target.value })}
-              disabled={mode.kind === "edit"}
-              placeholder="gpt-4o-mini"
-            />
-            {mode.kind === "edit" && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                模型 ID 不可改；如需改名请先删除再新建。
-              </p>
+            {mode.kind === "create" ? (
+              <>
+                <Input
+                  value={form.model}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                  list="pricing-model-suggestions"
+                  placeholder="从已配渠道中选择，或输入自定义模型 ID"
+                  autoComplete="off"
+                />
+                <datalist id="pricing-model-suggestions">
+                  {suggestions.map((m) => (
+                    <option key={m.model} value={m.model}>
+                      {m.channels.join(", ")}
+                    </option>
+                  ))}
+                </datalist>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {currentMatch
+                    ? `已绑定渠道：${currentMatch.channels.join("、")}`
+                    : form.model.trim()
+                    ? "⚠️ 该模型未被任何渠道白名单包含，保存后无法路由（需先在「上游渠道」里加入白名单）。"
+                    : suggestions.length > 0
+                    ? `下拉列表聚合自所有启用渠道的白名单（${suggestions.length} 个候选）`
+                    : "暂无候选——请先在「上游渠道」面板为某个渠道添加白名单模型。"}
+                </p>
+              </>
+            ) : (
+              <>
+                <Input value={form.model} disabled />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  模型 ID 不可改；如需改名请先删除再新建。
+                </p>
+              </>
             )}
           </div>
           <div>

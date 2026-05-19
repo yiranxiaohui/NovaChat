@@ -1391,7 +1391,7 @@ export default function ChatPage() {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-2 py-3 backdrop-blur md:gap-3 md:px-5">
+        <header className="relative z-30 flex items-center justify-between gap-2 border-b border-border bg-background/70 px-2 py-3 backdrop-blur md:gap-3 md:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 md:gap-3">
             <Button
               variant="ghost"

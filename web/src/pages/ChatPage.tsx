@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
 import { listModels } from "@/lib/models"
+import { listPlatformModels, type PlatformModel } from "@/lib/platform-models"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import {
@@ -75,10 +76,10 @@ function ModelPicker({
   protocol: Protocol
   model: string
   settings: UpstreamSettings
-  onChangeModel: (next: string) => void
+  onChangeModel: (next: string, protocol?: Protocol) => void
 }) {
   const [open, setOpen] = useState(false)
-  const [models, setModels] = useState<string[]>([])
+  const [models, setModels] = useState<PlatformModel[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
@@ -98,17 +99,29 @@ function ModelPicker({
   const apiKey = settings.apiKey
   const useProxy = settings.useProxy
   const fetchProtocol = settings.protocol
+  const chatMode = settings.chatMode
 
   async function fetchList() {
     setError(null)
     setLoading(true)
     try {
-      const list = await listModels({
-        protocol: fetchProtocol as Protocol,
-        baseUrl,
-        apiKey,
-        useProxy,
-      })
+      const list =
+        chatMode === "platform"
+          ? await listPlatformModels("chat")
+          : (
+              await listModels({
+                protocol: fetchProtocol as Protocol,
+                baseUrl,
+                apiKey,
+                useProxy,
+              })
+            ).map((model) => ({
+              model,
+              display_name: null,
+              kind: "chat" as const,
+              cost_credits: 0,
+              protocol: fetchProtocol as Protocol,
+            }))
       setModels(list)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -127,12 +140,19 @@ function ModelPicker({
   useEffect(() => {
     setModels([])
     setError(null)
-  }, [baseUrl, fetchProtocol])
+  }, [baseUrl, fetchProtocol, chatMode])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return models
-    return models.filter((m) => m.toLowerCase().includes(q))
+    return models.filter((m) => {
+      const display = m.display_name ?? ""
+      return (
+        m.model.toLowerCase().includes(q) ||
+        display.toLowerCase().includes(q) ||
+        m.protocol.toLowerCase().includes(q)
+      )
+    })
   }, [models, query])
 
   return (
@@ -199,13 +219,13 @@ function ModelPicker({
             )}
             <ul className="flex flex-col">
               {filtered.map((m) => {
-                const active = m === model
+                const active = m.model === model
                 return (
-                  <li key={m}>
+                  <li key={`${m.protocol}:${m.model}`}>
                     <button
                       type="button"
                       onClick={() => {
-                        onChangeModel(m)
+                        onChangeModel(m.model, m.protocol)
                         setOpen(false)
                       }}
                       className={cn(
@@ -213,8 +233,17 @@ function ModelPicker({
                         active && "bg-accent text-accent-foreground"
                       )}
                     >
-                      <span className="truncate font-mono">{m}</span>
-                      {active && <Check className="size-3.5 text-primary" />}
+                      <span className="min-w-0">
+                        <span className="block truncate font-mono">
+                          {m.display_name || m.model}
+                        </span>
+                        {chatMode === "platform" && (
+                          <span className="block truncate text-[10px] text-muted-foreground">
+                            {m.protocol} · {m.cost_credits} 积分/次
+                          </span>
+                        )}
+                      </span>
+                      {active && <Check className="ml-2 size-3.5 shrink-0 text-primary" />}
                     </button>
                   </li>
                 )
@@ -222,7 +251,9 @@ function ModelPicker({
             </ul>
           </div>
           <div className="mt-2 border-t border-border pt-2 text-[10px] text-muted-foreground">
-            自带 Key · 从你配置的上游获取
+            {chatMode === "platform"
+              ? "云端积分 · 从管理员开放的模型获取"
+              : "自带 Key · 从你配置的上游获取"}
           </div>
         </div>
       )}
@@ -1378,8 +1409,12 @@ export default function ChatPage() {
               protocol={settings.protocol}
               model={settings.model}
               settings={settings}
-              onChangeModel={(next) => {
-                const updated: UpstreamSettings = { ...settings, model: next }
+              onChangeModel={(next, nextProtocol) => {
+                const updated: UpstreamSettings = {
+                  ...settings,
+                  model: next,
+                  ...(nextProtocol ? { protocol: nextProtocol } : {}),
+                }
                 setSettings(updated)
                 if (user) saveSettings(user.id, updated)
                 if (updated.cloudSync) {

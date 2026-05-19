@@ -599,46 +599,126 @@ struct AllChannelModel {
     channels: Vec<String>,
 }
 
+/// Probe a single channel's upstream `/models` endpoint and return the list of
+/// model IDs it advertises. Returns Err(string) for caller-facing display.
+async fn probe_channel_models(
+    http: &reqwest::Client,
+    ch: &Channel,
+) -> Result<Vec<String>, String> {
+    let base = ch.base_url.trim_end_matches('/');
+    let (url, protocol) = match ch.protocol.as_str() {
+        "openai" => (format!("{base}/v1/models"), "openai"),
+        "claude" => (format!("{base}/v1/models"), "claude"),
+        "gemini" => (format!("{base}/v1beta/models?pageSize=200"), "gemini"),
+        other => return Err(format!("unknown protocol {other}")),
+    };
+    let mut req = http
+        .get(&url)
+        .header(axum::http::header::ACCEPT, "application/json")
+        .timeout(std::time::Duration::from_secs(15));
+    req = match protocol {
+        "openai" => req.bearer_auth(&ch.api_key),
+        "claude" => req
+            .header("x-api-key", ch.api_key.as_str())
+            .header("anthropic-version", "2023-06-01"),
+        "gemini" => req.header("x-goog-api-key", ch.api_key.as_str()),
+        _ => req,
+    };
+    let resp = req.send().await.map_err(|e| format!("connect: {e}"))?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|e| format!("read: {e}"))?;
+    if !status.is_success() {
+        let body = String::from_utf8_lossy(&bytes);
+        let snippet: String = body.chars().take(120).collect();
+        return Err(format!("upstream {status}: {snippet}"));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse: {e}"))?;
+    // OpenAI: {"data":[{"id":"gpt-4o", ...}, ...]}
+    // Claude: {"data":[{"id":"claude-3-5-sonnet-...", ...}, ...]}
+    // Gemini: {"models":[{"name":"models/gemini-1.5-pro", ...}, ...]}
+    let mut out: Vec<String> = Vec::new();
+    if protocol == "gemini" {
+        if let Some(arr) = v.get("models").and_then(|m| m.as_array()) {
+            for item in arr {
+                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                    // strip "models/" prefix if present
+                    let id = name.strip_prefix("models/").unwrap_or(name).to_string();
+                    out.push(id);
+                }
+            }
+        }
+    } else if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|s| s.as_str()) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 async fn admin_list_all_channel_models(
+    axum::extract::State(state): axum::extract::State<AppState>,
     Extension(s): Extension<InstalledState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let flavor = q.get("flavor").cloned();
-    let bool_true = db::bool_true(s.kind);
-    let where_kind = match flavor.as_deref() {
-        Some("chat") | Some("image") => " AND c.kind = ?",
-        _ => "",
-    };
-    let sql = db::q(
-        s.kind,
-        &format!(
-            "SELECT cm.model, c.kind, c.name \
-             FROM channel_models cm \
-             INNER JOIN upstream_channels c ON c.id = cm.channel_id \
-             WHERE c.enabled = {bool_true}{where_kind} \
-             ORDER BY cm.model ASC, c.priority ASC, c.id ASC"
-        ),
-    );
-    let rows: Result<Vec<(String, String, String)>, _> = match flavor.as_deref() {
-        Some(f) if matches!(f, "chat" | "image") => {
-            sqlx::query_as(&sql).bind(f).fetch_all(&s.pool).await
-        }
-        _ => sqlx::query_as(&sql).fetch_all(&s.pool).await,
-    };
-    let rows = match rows {
+    let channels = match list_channels(&s.pool, s.kind).await {
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
+    let channels: Vec<Channel> = channels
+        .into_iter()
+        .filter(|c| c.enabled)
+        .filter(|c| match flavor.as_deref() {
+            Some(f) if matches!(f, "chat" | "image") => c.kind == f,
+            _ => true,
+        })
+        .collect();
+
+    // Probe all channels concurrently.
+    let http = state.http.clone();
+    let mut futs = Vec::with_capacity(channels.len());
+    for ch in &channels {
+        let http = http.clone();
+        let ch_clone = ch.clone();
+        futs.push(async move {
+            let res = probe_channel_models(&http, &ch_clone).await;
+            (ch_clone, res)
+        });
+    }
+    let results = futures_util::future::join_all(futs).await;
+
     let mut map: std::collections::BTreeMap<(String, String), Vec<String>> =
         std::collections::BTreeMap::new();
-    for (model, kind, name) in rows {
-        map.entry((model, kind)).or_default().push(name);
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    for (ch, res) in results {
+        match res {
+            Ok(models) => {
+                for model in models {
+                    map.entry((model, ch.kind.clone()))
+                        .or_default()
+                        .push(ch.name.clone());
+                }
+            }
+            Err(e) => {
+                errors.push(serde_json::json!({
+                    "channel": ch.name,
+                    "error": e,
+                }));
+            }
+        }
     }
-    let out: Vec<AllChannelModel> = map
+    let models: Vec<AllChannelModel> = map
         .into_iter()
         .map(|((model, kind), channels)| AllChannelModel { model, kind, channels })
         .collect();
-    Json(out).into_response()
+    Json(serde_json::json!({
+        "models": models,
+        "errors": errors,
+    }))
+    .into_response()
 }
 
 async fn admin_list_pricing(Extension(s): Extension<InstalledState>) -> Response {

@@ -92,8 +92,14 @@ export type PricingInput = {
 export type AllChannelModel = {
   model: string
   kind: ChannelKind
-  /** channel names that whitelist this model — UI hint */
+  /** channel names that advertise this model — UI hint */
   channels: string[]
+}
+
+export type AllChannelModelsResponse = {
+  models: AllChannelModel[]
+  /** per-channel probe failures (timeout, 4xx, parse errors) */
+  errors: { channel: string; error: string }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +164,11 @@ export const channelsAdminApi = {
     )
   },
 
-  // aggregated whitelist across all enabled channels (for "new pricing" picker)
+  // aggregated model list across all enabled channels, by live-probing each
+  // upstream's /models endpoint (no DB whitelist required).
   async listAllChannelModels(
     flavor?: ChannelKind
-  ): Promise<AllChannelModel[]> {
+  ): Promise<AllChannelModelsResponse> {
     const qs = flavor ? `?flavor=${flavor}` : ""
     return jsonOrThrow(
       await fetch(`/api/admin/channels/all-models${qs}`, {

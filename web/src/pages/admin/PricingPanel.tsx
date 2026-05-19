@@ -226,14 +226,23 @@ function PricingDialog({
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [allModels, setAllModels] = useState<AllChannelModel[]>([])
+  const [probeErrors, setProbeErrors] = useState<
+    { channel: string; error: string }[]
+  >([])
 
   // Load aggregated channel model list for the "new model" picker.
   useEffect(() => {
     if (mode.kind !== "create") return
     channelsAdminApi
       .listAllChannelModels()
-      .then(setAllModels)
-      .catch(() => setAllModels([]))
+      .then((res) => {
+        setAllModels(res.models)
+        setProbeErrors(res.errors)
+      })
+      .catch(() => {
+        setAllModels([])
+        setProbeErrors([])
+      })
   }, [mode.kind])
 
   // Suggestions filtered by current kind; selecting one fills the form.
@@ -287,9 +296,16 @@ function PricingDialog({
                     : form.model.trim()
                     ? "⚠️ 该模型未被任何渠道白名单包含，保存后无法路由（需先在「上游渠道」里加入白名单）。"
                     : suggestions.length > 0
-                    ? `下拉列表聚合自所有启用渠道的白名单（${suggestions.length} 个候选）`
-                    : "暂无候选——请先在「上游渠道」面板为某个渠道添加白名单模型。"}
+                    ? `下拉列表聚合自所有启用渠道的实时探测（${suggestions.length} 个候选）`
+                    : "暂无候选——请检查上游渠道是否可连通。"}
                 </p>
+                {probeErrors.length > 0 && (
+                  <div className="mt-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-800">
+                    部分渠道探测失败：
+                    {probeErrors.map((e) => e.channel).join("、")}
+                    （不影响可用渠道）
+                  </div>
+                )}
               </>
             ) : (
               <>

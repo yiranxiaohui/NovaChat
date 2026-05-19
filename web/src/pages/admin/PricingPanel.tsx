@@ -229,6 +229,7 @@ function PricingDialog({
   const [probeErrors, setProbeErrors] = useState<
     { channel: string; error: string }[]
   >([])
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
 
   // Load aggregated channel model list for the "new model" picker.
   useEffect(() => {
@@ -245,8 +246,17 @@ function PricingDialog({
       })
   }, [mode.kind])
 
-  // Suggestions filtered by current kind; selecting one fills the form.
+  // Suggestions filtered by current kind and current input; selecting one fills the form.
   const suggestions = allModels.filter((m) => m.kind === form.kind)
+  const modelQuery = form.model.trim().toLowerCase()
+  const filteredSuggestions = suggestions
+    .filter(
+      (m) =>
+        !modelQuery ||
+        m.model.toLowerCase().includes(modelQuery) ||
+        m.channels.some((c) => c.toLowerCase().includes(modelQuery))
+    )
+    .slice(0, 80)
   const currentMatch = suggestions.find((m) => m.model === form.model)
 
   async function submit() {
@@ -276,27 +286,59 @@ function PricingDialog({
             <Label>模型 ID</Label>
             {mode.kind === "create" ? (
               <>
-                <Input
-                  value={form.model}
-                  onChange={(e) => setForm({ ...form, model: e.target.value })}
-                  list="pricing-model-suggestions"
-                  placeholder="从已配渠道中选择，或输入自定义模型 ID"
-                  autoComplete="off"
-                />
-                <datalist id="pricing-model-suggestions">
-                  {suggestions.map((m) => (
-                    <option key={m.model} value={m.model}>
-                      {m.channels.join(", ")}
-                    </option>
-                  ))}
-                </datalist>
+                <div className="relative">
+                  <Input
+                    value={form.model}
+                    onFocus={() => setModelPickerOpen(true)}
+                    onBlur={() => window.setTimeout(() => setModelPickerOpen(false), 120)}
+                    onChange={(e) => {
+                      setForm({ ...form, model: e.target.value })
+                      setModelPickerOpen(true)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setModelPickerOpen(false)
+                    }}
+                    placeholder="搜索上游模型，或输入自定义模型 ID"
+                    autoComplete="off"
+                  />
+                  {modelPickerOpen && filteredSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-[60] max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
+                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                        {modelQuery
+                          ? `匹配 ${filteredSuggestions.length} / ${suggestions.length} 个候选`
+                          : `实时探测到 ${suggestions.length} 个候选模型`}
+                      </div>
+                      {filteredSuggestions.map((m) => (
+                        <button
+                          key={m.model}
+                          type="button"
+                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-accent focus:bg-accent focus:outline-none"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setForm({
+                              ...form,
+                              model: m.model,
+                              display_name: form.display_name || m.model.toUpperCase(),
+                            })
+                            setModelPickerOpen(false)
+                          }}
+                        >
+                          <span className="font-mono text-sm font-medium">{m.model}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {m.channels.join("、")}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {currentMatch
-                    ? `已绑定渠道：${currentMatch.channels.join("、")}`
+                    ? `可用渠道：${currentMatch.channels.join("、")}`
                     : form.model.trim()
-                    ? "⚠️ 该模型未被任何渠道白名单包含，保存后无法路由（需先在「上游渠道」里加入白名单）。"
+                    ? "⚠️ 未在实时候选中找到；仍可保存为自定义模型 ID，请确认上游渠道实际支持。"
                     : suggestions.length > 0
-                    ? `下拉列表聚合自所有启用渠道的实时探测（${suggestions.length} 个候选）`
+                    ? `候选来自所有启用渠道的实时 /models 探测（${suggestions.length} 个）`
                     : "暂无候选——请检查上游渠道是否可连通。"}
                 </p>
                 {probeErrors.length > 0 && (

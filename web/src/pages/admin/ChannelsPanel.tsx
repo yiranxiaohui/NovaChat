@@ -8,7 +8,6 @@ import {
   type Channel,
   type ChannelInput,
   type ChannelKind,
-  type ChannelModelEntry,
   type ChannelPatch,
   type ChannelProtocol,
 } from "@/lib/channels"
@@ -27,7 +26,6 @@ export function ChannelsPanel() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [dialog, setDialog] = useState<DialogMode>(null)
-  const [modelsFor, setModelsFor] = useState<Channel | null>(null)
 
   async function load() {
     setLoading(true)
@@ -56,7 +54,7 @@ export function ChannelsPanel() {
     : rows
 
   async function onDelete(c: Channel) {
-    if (!confirm(`确认删除渠道「${c.name}」？关联的模型绑定也会被清除。`)) return
+    if (!confirm(`确认删除渠道「${c.name}」？`)) return
     try {
       await channelsAdminApi.deleteChannel(c.id)
       await load()
@@ -175,13 +173,6 @@ export function ChannelsPanel() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setModelsFor(c)}
-                    >
-                      模型
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
                       onClick={() => setDialog({ kind: "edit", channel: c })}
                     >
                       <Pencil />
@@ -209,12 +200,6 @@ export function ChannelsPanel() {
             setDialog(null)
             await load()
           }}
-        />
-      )}
-      {modelsFor && (
-        <ChannelModelsDialog
-          channel={modelsFor}
-          onClose={() => setModelsFor(null)}
         />
       )}
     </div>
@@ -382,111 +367,6 @@ function ChannelDialog({
             取消
           </Button>
           <Button onClick={() => void submit()} disabled={saving}>
-            {saving ? "保存中…" : "保存"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ChannelModelsDialog({
-  channel,
-  onClose,
-}: {
-  channel: Channel
-  onClose: () => void
-}) {
-  const [text, setText] = useState("")
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        const items = await channelsAdminApi.getChannelModels(channel.id)
-        if (!alive) return
-        setText(
-          items
-            .map((m) =>
-              m.upstream_id ? `${m.model}=${m.upstream_id}` : m.model
-            )
-            .join("\n")
-        )
-      } catch (e) {
-        if (alive) setErr(e instanceof Error ? e.message : String(e))
-      } finally {
-        if (alive) setLoading(false)
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [channel.id])
-
-  function parse(): ChannelModelEntry[] {
-    const out: ChannelModelEntry[] = []
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim()
-      if (!line || line.startsWith("#")) continue
-      const eq = line.indexOf("=")
-      if (eq === -1) {
-        out.push({ model: line })
-      } else {
-        const m = line.slice(0, eq).trim()
-        const up = line.slice(eq + 1).trim()
-        if (m) out.push({ model: m, upstream_id: up || null })
-      }
-    }
-    return out
-  }
-
-  async function submit() {
-    setSaving(true)
-    setErr(null)
-    try {
-      await channelsAdminApi.setChannelModels(channel.id, parse())
-      onClose()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-lg">
-        <h3 className="mb-1 text-base font-semibold">
-          绑定模型 · #{channel.id} {channel.name}
-        </h3>
-        <p className="mb-3 text-xs text-muted-foreground">
-          每行一个模型；可写 <code>client_model=upstream_id</code> 重写上游模型名。空行 / <code>#</code> 注释忽略。
-        </p>
-        {loading ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            加载中…
-          </div>
-        ) : (
-          <textarea
-            className="h-64 w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={"gpt-4o-mini\ngpt-4o=gpt-4o-2024-11-20"}
-          />
-        )}
-        {err && (
-          <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {err}
-          </div>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={saving}>
-            取消
-          </Button>
-          <Button onClick={() => void submit()} disabled={saving || loading}>
             {saving ? "保存中…" : "保存"}
           </Button>
         </div>

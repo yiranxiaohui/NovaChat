@@ -938,7 +938,10 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }
 
-  const configured = Boolean(settings.baseUrl && settings.apiKey && settings.model)
+  const configured =
+    settings.chatMode === "platform"
+      ? Boolean(settings.model)
+      : Boolean(settings.baseUrl && settings.apiKey && settings.model)
   const canSend =
     (input.trim().length > 0 || attachments.length > 0) &&
     !streaming &&
@@ -999,7 +1002,9 @@ export default function ChatPage() {
       return (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3">
           <p className="text-sm">
-            尚未配置模型。点击右上角 <b>设置</b> 填入 Base URL、Key 和模型名。
+            {settings.chatMode === "platform"
+              ? <>尚未选择模型。点击右上角 <b>设置</b> 在「云端积分」模式下选择一个模型。</>
+              : <>尚未配置模型。点击右上角 <b>设置</b> 填入 Base URL、Key 和模型名。</>}
           </p>
           <Button
             size="sm"

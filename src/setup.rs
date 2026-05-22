@@ -191,6 +191,9 @@ async fn test_connection(
     if state.installed.read().await.is_some() {
         return err(StatusCode::FORBIDDEN, "already installed");
     }
+    if state.config_path.exists() {
+        return err(StatusCode::FORBIDDEN, "already configured; setup is locked");
+    }
     let (_kind, url) = match build_url(&form, &state.data_dir) {
         Ok(v) => v,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
@@ -210,6 +213,13 @@ async fn install(
 ) -> Response {
     if state.installed.read().await.is_some() {
         return err(StatusCode::FORBIDDEN, "already installed");
+    }
+    // Defense in depth: once a config file exists on disk the app is already
+    // configured — refuse setup even if the in-memory state is None (e.g. the
+    // DB was briefly unreachable at boot). Otherwise the wizard could be
+    // hijacked to repoint the app at an attacker-controlled database.
+    if state.config_path.exists() {
+        return err(StatusCode::FORBIDDEN, "already configured; setup is locked");
     }
 
     let username = req.admin_username.trim();

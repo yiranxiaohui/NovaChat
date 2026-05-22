@@ -175,7 +175,8 @@ pub async fn migrate(pool: &Pool, kind: DbKind) -> Result<(), sqlx::Error> {
             }
             pool.execute(s).await?;
         }
-        sqlx::query("INSERT INTO _migrations (id) VALUES (?)")
+        let record = q(kind, "INSERT INTO _migrations (id) VALUES (?)");
+        sqlx::query(&record)
             .bind(id)
             .execute(pool)
             .await?;

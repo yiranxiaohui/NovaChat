@@ -106,22 +106,25 @@ pub async fn resolve_inviter(
     }
 }
 
+/// Claims the referral: sets `invited_by` only if it was still NULL.
+/// Returns `true` only if this call actually claimed the row — callers MUST
+/// gate reward grants on this so a replay can't grant the reward twice.
 pub async fn set_invited_by(
     pool: &Pool,
     kind: DbKind,
     user_id: i64,
     inviter_id: i64,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let sql = db::q(
         kind,
         "UPDATE users SET invited_by = ? WHERE id = ? AND invited_by IS NULL",
     );
-    sqlx::query(&sql)
+    let result = sqlx::query(&sql)
         .bind(inviter_id)
         .bind(user_id)
         .execute(pool)
-        .await
-        .map(|_| ())
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 // ---------------------------------------------------------------------------

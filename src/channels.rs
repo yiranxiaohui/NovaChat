@@ -982,7 +982,9 @@ pub enum DeductError {
 /// Look up `model` in `model_pricing` (must match `flavor` and be enabled),
 /// then atomically deduct that many credits from `user_id`.
 ///
-/// Returns the new balance on success. Errors:
+/// Returns `(new_balance, cost_deducted)` on success — callers MUST use the
+/// returned `cost` for any refund rather than re-reading the price, which could
+/// change between deduction and refund. Errors:
 ///   * `NotWhitelisted` — model is missing or disabled in `model_pricing`.
 ///     Caller should respond 403 "model not enabled".
 ///   * `Insufficient` — pricing OK but balance too low. Caller responds 402.
@@ -993,7 +995,7 @@ pub async fn try_deduct_for_model(
     model: &str,
     flavor: &str,
     reason: &str,
-) -> Result<i64, DeductError> {
+) -> Result<(i64, i64), DeductError> {
     let price = match get_price(pool, kind, model).await {
         Ok(Some(p)) => p,
         Ok(None) | Err(_) => return Err(DeductError::NotWhitelisted),
@@ -1003,7 +1005,7 @@ pub async fn try_deduct_for_model(
     }
     let cost = price.cost_credits.max(0);
     match crate::credits::try_deduct(pool, kind, user_id, cost, reason).await {
-        Ok(bal) => Ok(bal),
+        Ok(bal) => Ok((bal, cost)),
         Err(bal) => Err(DeductError::Insufficient { balance: bal, cost }),
     }
 }

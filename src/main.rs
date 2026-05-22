@@ -268,8 +268,10 @@ async fn register(
         if let Some(inviter_id) =
             invites::resolve_inviter(&installed.pool, installed.kind, raw, user_id).await
         {
-            let _ =
-                invites::set_invited_by(&installed.pool, installed.kind, user_id, inviter_id).await;
+            let claimed =
+                invites::set_invited_by(&installed.pool, installed.kind, user_id, inviter_id)
+                    .await
+                    .unwrap_or(false);
             let inviter_grant = credits::get_setting_i64(
                 &installed.pool,
                 installed.kind,
@@ -284,7 +286,7 @@ async fn register(
                 100,
             )
             .await;
-            if inviter_grant > 0 {
+            if claimed && inviter_grant > 0 {
                 let _ = credits::grant(
                     &installed.pool,
                     installed.kind,
@@ -294,7 +296,7 @@ async fn register(
                 )
                 .await;
             }
-            if invitee_grant > 0 {
+            if claimed && invitee_grant > 0 {
                 let _ = credits::grant(
                     &installed.pool,
                     installed.kind,
@@ -603,9 +605,10 @@ async fn proxy_forward(
             )
             .await
             {
-                Ok(_new_bal) => channels::cost_for_model(&installed.pool, installed.kind, &model, "chat")
-                    .await
-                    .unwrap_or(0),
+                // Use the amount actually deducted for any later refund — never
+                // re-read the price (an admin price change mid-request would
+                // otherwise refund a different amount than was charged).
+                Ok((_new_bal, deducted)) => deducted,
                 Err(channels::DeductError::NotWhitelisted) => {
                     return (
                         StatusCode::FORBIDDEN,
@@ -672,12 +675,25 @@ async fn proxy_forward(
                     continue;
                 }
 
-                let stream = resp.bytes_stream();
+                // Wrap the upstream stream so that if the channel returned 200
+                // but then died before sending any bytes, the deducted cost is
+                // refunded — otherwise the user pays full price for nothing.
+                let guarded = GuardedStream {
+                    inner: Box::pin(resp.bytes_stream()),
+                    guard: StreamRefundGuard {
+                        pool: installed.pool.clone(),
+                        kind: installed.kind,
+                        user_id: user.id,
+                        cost,
+                        model: model.to_string(),
+                        streamed: false,
+                    },
+                };
                 return Response::builder()
                     .header(header::CONTENT_TYPE, "text/event-stream")
                     .header(header::CACHE_CONTROL, "no-cache")
                     .header("x-accel-buffering", "no")
-                    .body(Body::from_stream(stream))
+                    .body(Body::from_stream(guarded))
                     .unwrap();
             }
 
@@ -696,6 +712,59 @@ async fn proxy_forward(
                 .unwrap_or((StatusCode::BAD_GATEWAY, format!("模型 {model} 所有渠道均不可用")));
             (status, msg).into_response()
         }
+    }
+}
+
+/// Refunds the chat cost on drop if the upstream stream never produced bytes —
+/// covers a channel that returned HTTP 200 then died before sending anything.
+struct StreamRefundGuard {
+    pool: db::Pool,
+    kind: db::DbKind,
+    user_id: i64,
+    cost: i64,
+    model: String,
+    streamed: bool,
+}
+
+impl Drop for StreamRefundGuard {
+    fn drop(&mut self) {
+        if self.streamed || self.cost <= 0 {
+            return;
+        }
+        let pool = self.pool.clone();
+        let kind = self.kind;
+        let user_id = self.user_id;
+        let cost = self.cost;
+        let reason = format!("refund_chat_{}_stream_empty", self.model);
+        tokio::spawn(async move {
+            let _ = credits::grant(&pool, kind, user_id, cost, &reason).await;
+        });
+    }
+}
+
+/// Byte-stream wrapper that marks its guard as soon as one non-empty chunk
+/// passes through; the guard refunds on drop if nothing ever did.
+struct GuardedStream {
+    inner: std::pin::Pin<
+        Box<dyn futures_util::stream::Stream<Item = reqwest::Result<axum::body::Bytes>> + Send>,
+    >,
+    guard: StreamRefundGuard,
+}
+
+impl futures_util::stream::Stream for GuardedStream {
+    type Item = reqwest::Result<axum::body::Bytes>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let polled = this.inner.as_mut().poll_next(cx);
+        if let std::task::Poll::Ready(Some(Ok(chunk))) = &polled {
+            if !chunk.is_empty() {
+                this.guard.streamed = true;
+            }
+        }
+        polled
     }
 }
 
@@ -1048,7 +1117,11 @@ async fn main() {
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }
             Err(e) => {
-                eprintln!("WARNING: failed to connect to configured database ({e}); falling back to setup wizard");
+                // A database is already configured. Refuse to start rather than
+                // fall back to the setup wizard, which could be hijacked to
+                // repoint the app at an attacker-controlled database.
+                eprintln!("FATAL: configured database is unreachable ({e}); refusing to start");
+                std::process::exit(1);
             }
         }
     }

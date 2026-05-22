@@ -770,6 +770,10 @@ export default function ChatPage() {
     Array<{ id: string; file: File; previewUrl: string }>
   >([])
   const abortRef = useRef<AbortController | null>(null)
+  // Set to a freshly-created conversation id so the conversation-load effect
+  // skips fetching it: send() already owns the message state and is about to
+  // stream into it; loading the (empty) server list would clobber the stream.
+  const skipLoadRef = useRef<number | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
@@ -844,6 +848,13 @@ export default function ChatPage() {
       setMessages([])
       setSystemPrompt("")
       setAttachedSkills([])
+      return
+    }
+    // A conversation just created by send() that we're about to stream into:
+    // skip the fetch — send() owns the message state, and loading the (still
+    // empty) server list here would clobber the in-flight stream.
+    if (skipLoadRef.current === conversationId) {
+      skipLoadRef.current = null
       return
     }
     let cancelled = false
@@ -1057,6 +1068,7 @@ export default function ChatPage() {
       const c = await conversationsApi.create()
       setSystemPrompt(c.system_prompt)
       setSidebarReload((x) => x + 1)
+      skipLoadRef.current = c.id
       nav(`/c/${c.id}`, { replace: true })
       return c.id
     } catch (e) {

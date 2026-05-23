@@ -20,6 +20,85 @@ function formatTime(s: string): string {
   return d.toLocaleString()
 }
 
+const PROTOCOL_LABEL: Record<string, string> = {
+  openai: "OpenAI",
+  claude: "Claude",
+  gemini: "Gemini",
+}
+
+/** Map a backend ledger reason string to a Chinese-friendly description.
+ *  Falls back to the raw text on unknown shapes. The raw value is still
+ *  surfaced via `title=` on the cell, for debugging / cross-referencing. */
+function prettifyReason(raw: string): string {
+  // signup
+  if (raw === "signup_grant") return "注册赠送"
+
+  // invites
+  if (raw === "invite_reward_invitee") return "受邀奖励"
+  const inviter = raw.match(/^invite_reward_inviter:(.+)$/)
+  if (inviter) return `邀请奖励(被邀: ${inviter[1]})`
+
+  // recharge
+  if (raw.startsWith("epay_recharge:")) {
+    return `充值 · 订单 ${raw.slice("epay_recharge:".length)}`
+  }
+
+  // refunds — must come BEFORE chat_/image_ matching since they all start "refund_"
+  if (raw === "refund_chain_exhausted") return "退款 · 对话 · 全渠道失败(旧记录)"
+  if (raw === "refund_upstream_error") return "退款 · 上游错误(旧记录)"
+  if (raw === "refund_job_create_error") return "退款 · 任务创建失败(旧记录)"
+  if (raw === "refund_studio_error") return "退款 · 工作室"
+  if (raw.startsWith("refund_chat_")) {
+    const rest = raw.slice("refund_chat_".length)
+    if (rest.endsWith("_all_failed")) {
+      return `退款 · 对话 · ${rest.slice(0, -"_all_failed".length)} · 全渠道失败`
+    }
+    if (rest.endsWith("_stream_empty")) {
+      return `退款 · 对话 · ${rest.slice(0, -"_stream_empty".length)} · 流为空`
+    }
+    return `退款 · 对话 · ${rest}`
+  }
+  if (raw.startsWith("refund_image_")) {
+    const rest = raw.slice("refund_image_".length)
+    const SUFFIXES: Array<[string, string]> = [
+      ["_upstream_error", "上游错误"],
+      ["_job_create_error", "任务创建失败"],
+    ]
+    for (const [suf, label] of SUFFIXES) {
+      if (rest.endsWith(suf)) {
+        return `退款 · 图像 · ${rest.slice(0, -suf.length)} · ${label}`
+      }
+    }
+    return `退款 · 图像 · ${rest}`
+  }
+
+  // chat / image — after refunds. Two shapes coexist:
+  //   "chat_<protocol>" (legacy) and "chat_<model>@<channel>" (current).
+  if (raw.startsWith("chat_")) {
+    const rest = raw.slice("chat_".length)
+    if (rest.includes("@")) {
+      const [model, channel] = rest.split("@")
+      return `对话 · ${model} · ${channel}`
+    }
+    return `对话 · ${PROTOCOL_LABEL[rest] ?? rest}`
+  }
+  if (raw.startsWith("image_")) {
+    const rest = raw.slice("image_".length)
+    if (rest.includes("@")) {
+      const [model, channel] = rest.split("@")
+      return `图像 · ${model} · ${channel}`
+    }
+    return `图像 · ${PROTOCOL_LABEL[rest] ?? rest}`
+  }
+  if (raw === "studio_generate") return "工作室生图"
+
+  // admin manual adjustments (admin-supplied reasons get the literal text)
+  if (raw.startsWith("admin_")) return `管理员调整 · ${raw.slice("admin_".length)}`
+
+  // unknown — show raw
+  return raw
+}
+
 export function CreditsLedgerDialog({ open, onClose }: Props) {
   const [entries, setEntries] = useState<LedgerEntry[]>([])
   const [page, setPage] = useState(1)
@@ -123,8 +202,11 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
                       {e.delta > 0 ? "+" : ""}
                       {e.delta}
                     </td>
-                    <td className="break-all px-3 py-1.5 font-mono text-xs">
-                      {e.reason}
+                    <td
+                      className="break-all px-3 py-1.5 text-xs"
+                      title={e.reason}
+                    >
+                      {prettifyReason(e.reason)}
                     </td>
                   </tr>
                 ))}

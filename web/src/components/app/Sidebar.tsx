@@ -1,20 +1,24 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
   ImageIcon,
   Images,
   LogOut,
+  MessageSquareText,
   MoreHorizontal,
   Pencil,
   Plus,
   Search,
   Shield,
+  Sparkles,
   Trash2,
+  User,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { conversationsApi, type Conversation } from "@/lib/conversations"
+import { searchApi, type SearchHit } from "@/lib/search"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import { BrandMark } from "./BrandMark"
@@ -56,6 +60,9 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   const [query, setQuery] = useState("")
   const [profileOpen, setProfileOpen] = useState(false)
   const [avatarBroken, setAvatarBroken] = useState(false)
+  const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
 
   useEffect(() => {
     setAvatarBroken(false)
@@ -80,11 +87,46 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
     }
   }, [reloadKey])
 
+  const trimmedQuery = query.trim()
+  const isApiSearch = trimmedQuery.length >= 2
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    if (isApiSearch) return items
+    const q = trimmedQuery.toLowerCase()
     if (!q) return items
     return items.filter((c) => c.title.toLowerCase().includes(q))
-  }, [items, query])
+  }, [items, trimmedQuery, isApiSearch])
+
+  useEffect(() => {
+    if (!isApiSearch) {
+      setSearchHits(null)
+      setSearching(false)
+      setSearchError(null)
+      return
+    }
+    let cancelled = false
+    setSearchError(null)
+    setSearching(true)
+    const handle = window.setTimeout(() => {
+      searchApi
+        .conversations(trimmedQuery)
+        .then((hits) => {
+          if (!cancelled) setSearchHits(hits)
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setSearchHits([])
+            setSearchError(e instanceof Error ? e.message : String(e))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false)
+        })
+    }, 280)
+    return () => {
+      cancelled = true
+      window.clearTimeout(handle)
+    }
+  }, [trimmedQuery, isApiSearch])
 
   async function createNew() {
     try {
@@ -154,6 +196,19 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
       </div>
 
       <div className="nc-scroll flex-1 overflow-y-auto px-2 pb-2">
+        {isApiSearch ? (
+          <SearchResultsView
+            query={trimmedQuery}
+            hits={searchHits}
+            searching={searching}
+            error={searchError}
+            onNavigate={() => {
+              setMenuFor(null)
+              onNavigate?.()
+            }}
+          />
+        ) : (
+          <>
         {loading && (
           <p className="px-2 py-1 text-xs text-muted-foreground">加载中…</p>
         )}
@@ -239,6 +294,8 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             )
           })}
         </ul>
+          </>
+        )}
       </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
@@ -309,5 +366,104 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
 
       <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
     </aside>
+  )
+}
+
+function highlightTerm(text: string, term: string): ReactNode[] {
+  if (!term) return [text]
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const re = new RegExp(`(${escaped})`, "ig")
+  const parts = text.split(re)
+  return parts.map((p, i) =>
+    i % 2 === 1 ? (
+      <mark
+        key={i}
+        className="rounded-sm bg-yellow-300/60 px-0.5 text-foreground dark:bg-yellow-400/40"
+      >
+        {p}
+      </mark>
+    ) : (
+      <span key={i}>{p}</span>
+    )
+  )
+}
+
+function SearchResultsView({
+  query,
+  hits,
+  searching,
+  error,
+  onNavigate,
+}: {
+  query: string
+  hits: SearchHit[] | null
+  searching: boolean
+  error: string | null
+  onNavigate: () => void
+}) {
+  if (error) {
+    return (
+      <p className="mx-2 my-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        搜索失败：{error}
+      </p>
+    )
+  }
+  if (hits == null) {
+    return (
+      <p className="px-2 py-3 text-xs text-muted-foreground">
+        {searching ? "搜索中…" : "输入关键词搜索"}
+      </p>
+    )
+  }
+  if (hits.length === 0) {
+    return (
+      <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+        {searching ? "搜索中…" : "没有匹配结果"}
+      </p>
+    )
+  }
+  return (
+    <>
+      {searching && (
+        <p className="px-2 py-1 text-[11px] text-muted-foreground">搜索中…</p>
+      )}
+      <ul className="flex flex-col gap-0.5">
+        {hits.map((h, idx) => {
+          const target =
+            h.kind === "content" && h.message_id != null
+              ? `/c/${h.conversation_id}?msg=${h.message_id}`
+              : `/c/${h.conversation_id}`
+          const key = `${h.kind}-${h.conversation_id}-${h.message_id ?? "t"}-${idx}`
+          const Icon =
+            h.kind === "title"
+              ? MessageSquareText
+              : h.role === "user"
+                ? User
+                : Sparkles
+          return (
+            <li key={key}>
+              <Link
+                to={target}
+                onClick={onNavigate}
+                className="flex flex-col gap-1 rounded-lg px-3 py-2 transition-colors hover:bg-sidebar-accent/60"
+                title={h.conversation_title}
+              >
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Icon className="size-3 shrink-0" />
+                  <span className="truncate">
+                    {highlightTerm(h.conversation_title, query)}
+                  </span>
+                </div>
+                {h.kind === "content" && (
+                  <div className="line-clamp-2 text-xs leading-snug text-foreground/90">
+                    {highlightTerm(h.snippet, query)}
+                  </div>
+                )}
+              </Link>
+            </li>
+          )
+        })}
+      </ul>
+    </>
   )
 }

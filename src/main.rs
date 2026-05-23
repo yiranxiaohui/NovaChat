@@ -13,6 +13,7 @@ mod payments;
 mod profile;
 mod prompts;
 mod rate_limit;
+mod search;
 mod settings;
 mod setup;
 mod skills;
@@ -1072,6 +1073,7 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::admin_routes())
         .merge(studio::routes())
         .merge(invites::routes())
+        .merge(search::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

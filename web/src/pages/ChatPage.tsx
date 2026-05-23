@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
   ArrowUp,
   ArrowDown,
@@ -724,6 +724,11 @@ export default function ChatPage() {
   const nav = useNavigate()
   const { id: paramId } = useParams()
   const conversationId = paramId ? Number(paramId) : null
+  const [searchParams] = useSearchParams()
+  const msgAnchorParam = searchParams.get("msg")
+  const targetMsgId = msgAnchorParam ? Number(msgAnchorParam) : null
+  const [highlightedMsgId, setHighlightedMsgId] = useState<number | null>(null)
+  const msgAnchorScrolledRef = useRef<string | null>(null)
 
   const [settings, setSettings] = useState<UpstreamSettings>(() =>
     user
@@ -923,6 +928,32 @@ export default function ChatPage() {
       }
     }
   }, [conversationId])
+
+  // Scroll to the anchored message when arriving via Sidebar search (?msg=<id>).
+  // Guarded by a per-(convId,msgId) ref so the effect doesn't re-scroll on
+  // every messages re-render (e.g. mid-stream token updates).
+  useEffect(() => {
+    if (targetMsgId == null || conversationId == null) return
+    if (loadingMessages) return
+    if (!messages.some((m) => m.id === targetMsgId)) return
+    const key = `${conversationId}-${targetMsgId}`
+    if (msgAnchorScrolledRef.current === key) return
+    const handle = requestAnimationFrame(() => {
+      const el = document.getElementById(`msg-${targetMsgId}`)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+        setHighlightedMsgId(targetMsgId)
+        msgAnchorScrolledRef.current = key
+      }
+    })
+    return () => cancelAnimationFrame(handle)
+  }, [targetMsgId, conversationId, loadingMessages, messages])
+
+  useEffect(() => {
+    if (highlightedMsgId == null) return
+    const t = window.setTimeout(() => setHighlightedMsgId(null), 2200)
+    return () => window.clearTimeout(t)
+  }, [highlightedMsgId])
 
   async function refreshAttachedSkills(convId: number) {
     try {
@@ -1579,27 +1610,39 @@ export default function ChatPage() {
                 m.id !== undefined &&
                 !streaming &&
                 messages[lastIdx]?.role === "assistant"
+              const isHighlighted =
+                m.id !== undefined && highlightedMsgId === m.id
               return (
-                <Bubble
+                <div
                   key={key}
-                  message={m}
-                  actions={{
-                    onCopy: () => copyText(m.content, key),
-                    copied: copiedKey === key,
-                    onRetry: isLastAssistant ? regenerateLastAssistant : undefined,
-                    onEdit:
-                      isLastUser || isSecondLastUser ? editLastUser : undefined,
-                  }}
-                  onPublishImage={
-                    m.role === "assistant" ? publishImage : undefined
-                  }
-                  publishedFilenames={publishedFilenames}
-                  publishingFilename={publishingFilename}
-                  userAvatarUrl={user?.avatar_url ?? null}
-                  userInitial={(
-                    user?.display_name?.trim() || user?.username || "?"
-                  ).slice(0, 1)}
-                />
+                  id={m.id != null ? `msg-${m.id}` : undefined}
+                  className={cn(
+                    "scroll-mt-24 rounded-2xl transition-colors duration-700",
+                    isHighlighted
+                      ? "bg-yellow-300/20 dark:bg-yellow-400/15"
+                      : "bg-transparent"
+                  )}
+                >
+                  <Bubble
+                    message={m}
+                    actions={{
+                      onCopy: () => copyText(m.content, key),
+                      copied: copiedKey === key,
+                      onRetry: isLastAssistant ? regenerateLastAssistant : undefined,
+                      onEdit:
+                        isLastUser || isSecondLastUser ? editLastUser : undefined,
+                    }}
+                    onPublishImage={
+                      m.role === "assistant" ? publishImage : undefined
+                    }
+                    publishedFilenames={publishedFilenames}
+                    publishingFilename={publishingFilename}
+                    userAvatarUrl={user?.avatar_url ?? null}
+                    userInitial={(
+                      user?.display_name?.trim() || user?.username || "?"
+                    ).slice(0, 1)}
+                  />
+                </div>
               )
             })}
             {error && (

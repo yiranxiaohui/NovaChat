@@ -132,6 +132,16 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         <Button onClick={createNew} className="w-full justify-start gap-2" size="sm">
           <Plus className="size-4" /> 新建会话
         </Button>
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2"
+        >
+          <Link to="/studio" onClick={() => onNavigate?.()} title="多轮对话式生图（Responses API）">
+            <ImageIcon className="size-4" /> 图像工作室
+          </Link>
+        </Button>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -232,14 +242,6 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
       </div>
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
-        <Link
-          to="/studio"
-          onClick={() => onNavigate?.()}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
-          title="多轮对话式生图（Responses API）"
-        >
-          <ImageIcon className="size-4" /> 图像工作室
-        </Link>
         <Link
           to="/plaza"
           onClick={() => onNavigate?.()}

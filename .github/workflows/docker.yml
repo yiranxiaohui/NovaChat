@@ -19,10 +19,9 @@ env:
   IMAGE: ${{ github.repository }}
 
 jobs:
-  # Build each platform on its own runner (native arm64 on ubuntu-24.04-arm)
-  # and push "by digest" only — no tags yet. The merge job stitches them
-  # together into the final multi-arch manifest. This roughly halves wall
-  # time vs. single-runner QEMU cross-build.
+  # Build amd64 on its own runner and push "by digest" only — no tags yet.
+  # The merge job applies the user-facing tags afterwards. The matrix shape is
+  # kept so adding arm64 (or another arch) later is just one matrix entry.
   build:
     strategy:
       fail-fast: false
@@ -31,9 +30,6 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-latest
             cache_scope: amd64
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            cache_scope: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout

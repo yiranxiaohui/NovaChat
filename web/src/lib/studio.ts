@@ -15,6 +15,9 @@ export type StudioGeneration = {
   used_shared: boolean
   created_at: string
   finished_at: string | null
+  negative_prompt: string | null
+  seed: number | null
+  background: string | null
 }
 
 export type GenerateParams = {
@@ -24,6 +27,14 @@ export type GenerateParams = {
   quality?: string
   style?: string
   imageDataUrl?: string
+  /** 1-10. Clamped server-side; storage currently keeps only the first image. */
+  n?: number
+  /** Forwarded to providers that accept it (Gemini Imagen, SD-compatible relays). */
+  negativePrompt?: string
+  /** Random seed for reproducibility. Forwarded to providers that accept it. */
+  seed?: number
+  /** gpt-image-1: "transparent" / "opaque" / "auto". */
+  background?: string
   upstreamUrl?: string
   upstreamKey?: string
   signal?: AbortSignal
@@ -80,6 +91,10 @@ export const studioApi = {
           quality: o.quality,
           style: o.style,
           image_data_url: o.imageDataUrl,
+          n: o.n,
+          negative_prompt: o.negativePrompt,
+          seed: o.seed,
+          background: o.background,
         }),
         credentials: "same-origin",
         signal: o.signal,

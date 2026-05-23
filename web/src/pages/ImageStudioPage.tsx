@@ -162,6 +162,10 @@ export default function ImageStudioPage() {
   const [size, setSize] = useState<string>("1024x1024")
   const [quality, setQuality] = useState<string>("auto")
   const [style, setStyle] = useState<string>("")
+  const [n, setN] = useState<number>(1)
+  const [negativePrompt, setNegativePrompt] = useState<string>("")
+  const [seed, setSeed] = useState<string>("")
+  const [background, setBackground] = useState<string>("")
   const [attached, setAttached] = useState<File | null>(null)
   const [attachedUrl, setAttachedUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -322,6 +326,10 @@ export default function ImageStudioPage() {
     quality?: string
     style?: string
     imageDataUrl?: string
+    n?: number
+    negativePrompt?: string
+    seed?: number
+    background?: string
   }) {
     if (!user) return
     const effective = await loadEffectiveSettings(user.id)
@@ -346,6 +354,10 @@ export default function ImageStudioPage() {
         quality: params.quality === "auto" ? undefined : params.quality,
         style: params.style || undefined,
         imageDataUrl: params.imageDataUrl,
+        n: params.n,
+        negativePrompt: params.negativePrompt,
+        seed: params.seed,
+        background: params.background,
         upstreamUrl:
           effective.imageMode === "platform"
             ? undefined
@@ -386,6 +398,7 @@ export default function ImageStudioPage() {
         return
       }
     }
+    const parsedSeed = seed.trim() ? Number(seed.trim()) : NaN
     await runGeneration({
       prompt: p,
       model,
@@ -393,6 +406,10 @@ export default function ImageStudioPage() {
       quality,
       style,
       imageDataUrl,
+      n,
+      negativePrompt: negativePrompt.trim() || undefined,
+      seed: Number.isFinite(parsedSeed) ? parsedSeed : undefined,
+      background: background || undefined,
     })
   }
 
@@ -405,6 +422,10 @@ export default function ImageStudioPage() {
     setSize(gen.size || "auto")
     setQuality(gen.quality || "auto")
     setStyle(gen.style || "")
+    setN(gen.n || 1)
+    setNegativePrompt(gen.negative_prompt || "")
+    setSeed(gen.seed != null ? String(gen.seed) : "")
+    setBackground(gen.background || "")
     if (gen.source_path) {
       try {
         const f = await urlToImageFile(gen.source_path, "source")
@@ -442,6 +463,10 @@ export default function ImageStudioPage() {
       quality: gen.quality || undefined,
       style: gen.style || undefined,
       imageDataUrl,
+      n: gen.n || undefined,
+      negativePrompt: gen.negative_prompt || undefined,
+      seed: gen.seed ?? undefined,
+      background: gen.background || undefined,
     })
     // Drop the old failed record once the retry has finished — leaving it
     // around just clutters the history with stale "失败" tiles. Best-effort;
@@ -651,6 +676,63 @@ export default function ImageStudioPage() {
                   {o.label}
                 </option>
               ))}
+            </select>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">张数 (n)</Label>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={n}
+              onChange={(e) =>
+                setN(Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 1)))
+              }
+            />
+            <p className="text-[11px] text-muted-foreground">
+              1-10。当前仅保存首张，多图存储待后续。
+            </p>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">
+              反向提示词 <span className="text-muted-foreground">(Gemini / SD 等)</span>
+            </Label>
+            <Textarea
+              value={negativePrompt}
+              onChange={(e) => setNegativePrompt(e.target.value)}
+              rows={2}
+              placeholder="不想出现的元素…"
+              className="text-sm"
+            />
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">
+              随机种子 <span className="text-muted-foreground">(留空 = 随机)</span>
+            </Label>
+            <Input
+              type="number"
+              value={seed}
+              onChange={(e) => setSeed(e.target.value)}
+              placeholder="例如 1234"
+            />
+          </div>
+
+          <div className="mb-3 flex flex-col gap-1.5">
+            <Label className="text-xs">
+              背景 <span className="text-muted-foreground">(仅 gpt-image-1)</span>
+            </Label>
+            <select
+              value={background}
+              onChange={(e) => setBackground(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="">默认</option>
+              <option value="auto">auto</option>
+              <option value="opaque">不透明</option>
+              <option value="transparent">透明（PNG/WebP）</option>
             </select>
           </div>
 

@@ -128,49 +128,62 @@ struct Generation {
     used_shared: bool,
     created_at: String,
     finished_at: Option<String>,
+    negative_prompt: Option<String>,
+    seed: Option<i64>,
+    background: Option<String>,
 }
 
-type GenRow = (
-    i64,
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    i64,
-    Option<String>,
-    Option<String>,
-    i64,
-    String,
-    Option<String>,
-);
+// Named struct (rather than a tuple) — sqlx's tuple `FromRow` impls only go
+// up to ~16 elements, and we have 19 columns now.
+#[derive(sqlx::FromRow)]
+struct GenRow {
+    id: i64,
+    token: String,
+    status: String,
+    error: Option<String>,
+    prompt: String,
+    revised_prompt: Option<String>,
+    model: Option<String>,
+    size: Option<String>,
+    quality: Option<String>,
+    style: Option<String>,
+    n: i64,
+    image_path: Option<String>,
+    source_path: Option<String>,
+    used_shared: i64,
+    created_at: String,
+    finished_at: Option<String>,
+    negative_prompt: Option<String>,
+    seed: Option<i64>,
+    background: Option<String>,
+}
 
 const GEN_COLS: &str =
     "id, token, status, error, prompt, revised_prompt, model, size, quality, style,
-     n, image_path, source_path, used_shared, created_at, finished_at";
+     n, image_path, source_path, used_shared, created_at, finished_at,
+     negative_prompt, seed, background";
 
 fn gen_from_row(r: GenRow) -> Generation {
     Generation {
-        id: r.0,
-        token: r.1,
-        status: r.2,
-        error: r.3,
-        prompt: r.4,
-        revised_prompt: r.5,
-        model: r.6,
-        size: r.7,
-        quality: r.8,
-        style: r.9,
-        n: r.10,
-        image_path: r.11,
-        source_path: r.12,
-        used_shared: r.13 != 0,
-        created_at: r.14,
-        finished_at: r.15,
+        id: r.id,
+        token: r.token,
+        status: r.status,
+        error: r.error,
+        prompt: r.prompt,
+        revised_prompt: r.revised_prompt,
+        model: r.model,
+        size: r.size,
+        quality: r.quality,
+        style: r.style,
+        n: r.n,
+        image_path: r.image_path,
+        source_path: r.source_path,
+        used_shared: r.used_shared != 0,
+        created_at: r.created_at,
+        finished_at: r.finished_at,
+        negative_prompt: r.negative_prompt,
+        seed: r.seed,
+        background: r.background,
     }
 }
 
@@ -192,6 +205,21 @@ struct GenerateReq {
     /// Optional attached source image (data: URL) — switches to /v1/images/edits.
     #[serde(default)]
     image_data_url: Option<String>,
+    /// Number of images to ask the upstream for (1-10). Storage currently
+    /// keeps only the first image; the DB still records the requested `n`.
+    #[serde(default)]
+    n: Option<i32>,
+    /// Negative prompt — forwarded to providers that accept it (Gemini Imagen,
+    /// SD-compatible relays). OpenAI ignores it; harmless on those upstreams.
+    #[serde(default)]
+    negative_prompt: Option<String>,
+    /// Random seed for reproducibility — forwarded to providers that accept it.
+    #[serde(default)]
+    seed: Option<i64>,
+    /// gpt-image-1 specific: `transparent` / `opaque` / `auto`. Set
+    /// `transparent` to get PNGs with alpha channel.
+    #[serde(default)]
+    background: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -209,6 +237,10 @@ async fn insert_pending(
     size: Option<&str>,
     quality: Option<&str>,
     style: Option<&str>,
+    n: i64,
+    negative_prompt: Option<&str>,
+    seed: Option<i64>,
+    background: Option<&str>,
     source_path: Option<&str>,
     used_shared: bool,
 ) -> Result<i64, sqlx::Error> {
@@ -216,8 +248,8 @@ async fn insert_pending(
         kind,
         "INSERT INTO studio_generations
            (token, user_id, status, prompt, model, size, quality, style,
-            n, source_path, used_shared)
-         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, 1, ?, ?)",
+            n, negative_prompt, seed, background, source_path, used_shared)
+         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     match kind {
         db::DbKind::Sqlite | db::DbKind::Postgres => {
@@ -229,6 +261,10 @@ async fn insert_pending(
                 .bind(size)
                 .bind(quality)
                 .bind(style)
+                .bind(n)
+                .bind(negative_prompt)
+                .bind(seed)
+                .bind(background)
                 .bind(source_path)
                 .bind(if used_shared { 1_i64 } else { 0 })
                 .fetch_one(pool)
@@ -245,6 +281,10 @@ async fn insert_pending(
                 .bind(size)
                 .bind(quality)
                 .bind(style)
+                .bind(n)
+                .bind(negative_prompt)
+                .bind(seed)
+                .bind(background)
                 .bind(source_path)
                 .bind(if used_shared { 1_i64 } else { 0 })
                 .execute(&mut *tx)
@@ -380,6 +420,7 @@ async fn submit_generate(
     }
 
     let token = random_hex(16);
+    let n_req: i64 = body.n.map(|v| (v as i64).clamp(1, 10)).unwrap_or(1);
     if let Err(e) = insert_pending(
         &installed.pool,
         installed.kind,
@@ -390,6 +431,10 @@ async fn submit_generate(
         body.size.as_deref(),
         body.quality.as_deref(),
         body.style.as_deref(),
+        n_req,
+        body.negative_prompt.as_deref(),
+        body.seed,
+        body.background.as_deref(),
         source_path.as_deref(),
         used_shared,
     )
@@ -406,6 +451,10 @@ async fn submit_generate(
     let size_c = body.size.clone();
     let quality_c = body.quality.clone();
     let style_c = body.style.clone();
+    let n_req_c = n_req;
+    let neg_c = body.negative_prompt.clone();
+    let seed_c = body.seed;
+    let bg_c = body.background.clone();
     let source_bytes_c = source_bytes;
     tokio::spawn(async move {
         let Ok(installed) = state_c.require_installed().await else { return };
@@ -460,7 +509,7 @@ async fn submit_generate(
                 let mut form = reqwest::multipart::Form::new()
                     .text("model", model_c.clone())
                     .text("prompt", prompt_c.clone())
-                    .text("n", "1")
+                    .text("n", n_req_c.to_string())
                     .part("image", part);
                 if let Some(s) = size_c.as_deref() {
                     if !s.is_empty() && s != "auto" {
@@ -472,13 +521,26 @@ async fn submit_generate(
                         form = form.text("quality", q.to_string());
                     }
                 }
+                if let Some(neg) = neg_c.as_deref() {
+                    if !neg.is_empty() {
+                        form = form.text("negative_prompt", neg.to_string());
+                    }
+                }
+                if let Some(seed) = seed_c {
+                    form = form.text("seed", seed.to_string());
+                }
+                if let Some(bg) = bg_c.as_deref() {
+                    if !bg.is_empty() {
+                        form = form.text("background", bg.to_string());
+                    }
+                }
                 client.post(&url).bearer_auth(&key).multipart(form).send().await
             } else {
                 // /v1/images/generations → JSON
                 let mut body = json!({
                     "model": model_c,
                     "prompt": prompt_c,
-                    "n": 1,
+                    "n": n_req_c,
                 });
                 if let Some(s) = size_c.as_deref() {
                     if !s.is_empty() {
@@ -493,6 +555,19 @@ async fn submit_generate(
                 if let Some(st) = style_c.as_deref() {
                     if !st.is_empty() {
                         body["style"] = json!(st);
+                    }
+                }
+                if let Some(neg) = neg_c.as_deref() {
+                    if !neg.is_empty() {
+                        body["negative_prompt"] = json!(neg);
+                    }
+                }
+                if let Some(seed) = seed_c {
+                    body["seed"] = json!(seed);
+                }
+                if let Some(bg) = bg_c.as_deref() {
+                    if !bg.is_empty() {
+                        body["background"] = json!(bg);
                     }
                 }
                 // gpt-image-1 returns b64 by default; dall-e/classic models need

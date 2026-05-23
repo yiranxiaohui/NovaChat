@@ -85,6 +85,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (18, include_str!("../migrations/sqlite/0018_studio_generations.sql")),
     (19, include_str!("../migrations/sqlite/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/sqlite/0020_payment_trade_no_unique.sql")),
+    (21, include_str!("../migrations/sqlite/0021_studio_extra_params.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -107,6 +108,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (18, include_str!("../migrations/mysql/0018_studio_generations.sql")),
     (19, include_str!("../migrations/mysql/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/mysql/0020_payment_trade_no_unique.sql")),
+    (21, include_str!("../migrations/mysql/0021_studio_extra_params.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -129,6 +131,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (18, include_str!("../migrations/postgres/0018_studio_generations.sql")),
     (19, include_str!("../migrations/postgres/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/postgres/0020_payment_trade_no_unique.sql")),
+    (21, include_str!("../migrations/postgres/0021_studio_extra_params.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

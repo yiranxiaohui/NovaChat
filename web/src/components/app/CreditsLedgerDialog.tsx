@@ -136,11 +136,11 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-background p-4 shadow-lg sm:max-h-[80vh] sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">

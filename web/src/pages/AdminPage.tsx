@@ -365,7 +365,122 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border">
+      <div className="flex flex-col gap-2 md:hidden">
+        {loading && (
+          <p className="px-3 py-6 text-center text-sm text-muted-foreground">加载中…</p>
+        )}
+        {!loading && filtered.length === 0 && (
+          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+            没有匹配的用户
+          </p>
+        )}
+        {filtered.map((u) => {
+          const isSelf = u.id === currentUserId
+          return (
+            <div
+              key={u.id}
+              className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 shadow-sm"
+            >
+              <div className="flex items-start gap-2.5">
+                {u.avatar_url ? (
+                  <img
+                    src={u.avatar_url}
+                    alt=""
+                    className="size-9 shrink-0 rounded-full border border-border object-cover"
+                  />
+                ) : (
+                  <div className="grid size-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-sm font-semibold text-primary-foreground">
+                    {(u.display_name?.trim() || u.username).slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <p className="truncate text-sm font-medium">{u.username}</p>
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                      #{u.id}
+                    </span>
+                    {isSelf && (
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        （你）
+                      </span>
+                    )}
+                  </div>
+                  {u.display_name && (
+                    <p className="truncate text-xs text-muted-foreground">
+                      {u.display_name}
+                    </p>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                    {u.is_admin ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                        <Shield className="size-3" /> 管理员
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">普通用户</span>
+                    )}
+                    {u.email && (
+                      <span className="truncate text-muted-foreground" title={u.email}>
+                        {u.email}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-xs">
+                <div className="flex flex-col items-center">
+                  <span className="text-muted-foreground">会话</span>
+                  <span className="tabular-nums">{u.conversations}</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="text-muted-foreground">消息</span>
+                  <span className="tabular-nums">{u.messages}</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="text-muted-foreground">Skills</span>
+                  <span className="tabular-nums">{u.skills}</span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">
+                  {u.created_at.replace("T", " ").replace("Z", "")}
+                </span>
+                <div className="flex gap-1">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => setEditing(u)}
+                    title="编辑"
+                  >
+                    <UserCog /> 编辑
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => void toggleAdmin(u)}
+                    disabled={isSelf && u.is_admin}
+                    title={u.is_admin ? "撤销管理员" : "提升为管理员"}
+                  >
+                    <Shield />
+                    {u.is_admin ? "撤销" : "提升"}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => void removeUser(u)}
+                    disabled={isSelf}
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    title="删除用户"
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
         <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>
@@ -791,7 +906,45 @@ function CreditsPanel() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border">
+      <div className="flex flex-col gap-2 md:hidden">
+        {loading && (
+          <p className="px-3 py-6 text-center text-sm text-muted-foreground">加载中…</p>
+        )}
+        {!loading && filtered.length === 0 && (
+          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+            没有匹配的用户
+          </p>
+        )}
+        {filtered.map((r) => (
+          <div
+            key={r.user_id}
+            className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card p-3 shadow-sm"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <p className="truncate text-sm font-medium">{r.username}</p>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  #{r.user_id}
+                </span>
+              </div>
+              <div className="mt-0.5 flex gap-3 text-xs">
+                <span>
+                  <span className="text-muted-foreground">余额 </span>
+                  <span className="tabular-nums font-medium">{r.balance}</span>
+                </span>
+                <span className="text-muted-foreground">
+                  消耗 <span className="tabular-nums">{r.lifetime_used}</span>
+                </span>
+              </div>
+            </div>
+            <Button size="xs" variant="outline" onClick={() => setEditing(r)}>
+              <Coins /> 调整
+            </Button>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
         <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
             <tr>

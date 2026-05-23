@@ -263,13 +263,13 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg"
+        className="w-full max-w-md rounded-lg border border-border bg-background p-4 shadow-lg sm:p-6"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: "calc(100svh - 2rem)", overflow: "auto" }}
+        style={{ maxHeight: "calc(100svh - 1rem)", overflow: "auto" }}
       >
         <h2 className="text-lg font-semibold">模型设置</h2>
         <p className="mt-1 text-sm text-muted-foreground">

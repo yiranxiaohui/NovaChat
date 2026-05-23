@@ -161,7 +161,7 @@ function ModelPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex min-w-0 max-w-[11rem] items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10 md:max-w-none"
+        className="inline-flex min-w-0 max-w-[7.5rem] items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10 sm:max-w-[11rem] md:max-w-none"
         title="点击切换模型"
       >
         <span
@@ -548,7 +548,7 @@ function Bubble({
     const segments = splitUserContent(message.content)
     return (
       <div className="group flex flex-col items-end gap-1">
-        <div className="flex max-w-[82%] items-end gap-2">
+        <div className="flex max-w-[92%] items-end gap-2 sm:max-w-[82%]">
           <div className="rounded-2xl rounded-tr-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
             {segments.map((seg, i) =>
               seg.type === "text" ? (
@@ -596,7 +596,7 @@ function Bubble({
 
   return (
     <div className="group flex flex-col items-start gap-1">
-      <div className="flex max-w-[88%] items-start gap-2.5">
+      <div className="flex max-w-[94%] items-start gap-2.5 sm:max-w-[88%]">
         <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-primary-foreground shadow-sm">
           <Sparkles className="size-3.5" />
         </div>
@@ -1537,7 +1537,7 @@ export default function ChatPage() {
               size="icon"
               onClick={() => nav("/plaza")}
               title="图片广场"
-              className="size-8 md:size-9"
+              className="hidden size-8 sm:inline-flex md:size-9"
             >
               <Images />
             </Button>

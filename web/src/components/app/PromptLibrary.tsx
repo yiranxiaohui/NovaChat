@@ -195,13 +195,13 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
   return (
     <>
       <div
-        className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+        className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
         onClick={onClose}
       >
         <div
-          className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
+          className="flex w-full max-w-3xl flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:p-6"
           onClick={(e) => e.stopPropagation()}
-          style={{ maxHeight: "calc(100svh - 2rem)" }}
+          style={{ maxHeight: "calc(100svh - 1rem)" }}
         >
           <div className="flex items-start justify-between gap-2">
             <div>

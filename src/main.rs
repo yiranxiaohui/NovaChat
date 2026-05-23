@@ -12,6 +12,7 @@ mod net_guard;
 mod payments;
 mod profile;
 mod prompts;
+mod rate_limit;
 mod settings;
 mod setup;
 mod skills;
@@ -52,6 +53,9 @@ pub struct AppState {
     pub image_http: reqwest::Client,
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
+    /// Per-IP rate limiter for unauthenticated auth endpoints (login /
+    /// register / send-code). See [`rate_limit`] for details.
+    pub auth_limiter: std::sync::Arc<rate_limit::RateLimiter>,
 }
 
 #[derive(Clone)]
@@ -149,8 +153,12 @@ fn clear_cookie() -> Cookie<'static> {
 async fn register(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(creds): Json<Credentials>,
 ) -> Response {
+    if !state.auth_limiter.allow(rate_limit::client_ip(&headers)).await {
+        return (StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试").into_response();
+    }
     let installed = match state.require_installed().await {
         Ok(s) => s,
         Err(r) => return r,
@@ -344,8 +352,12 @@ async fn register(
 async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(creds): Json<Credentials>,
 ) -> Response {
+    if !state.auth_limiter.allow(rate_limit::client_ip(&headers)).await {
+        return (StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试").into_response();
+    }
     let installed = match state.require_installed().await {
         Ok(s) => s,
         Err(r) => return r,
@@ -1116,6 +1128,23 @@ async fn main() {
             .expect("image reqwest client"),
         config_path: config_path.clone(),
         data_dir: data_dir.clone(),
+        auth_limiter: {
+            // 20 attempts per 5 minutes per IP, shared across login / register /
+            // send-code. Plenty of headroom for legitimate users; brute force
+            // (e.g. attempts/sec) gets stopped fast.
+            let lim = Arc::new(rate_limit::RateLimiter::new(
+                20,
+                std::time::Duration::from_secs(300),
+            ));
+            let pruner = lim.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    pruner.prune().await;
+                }
+            });
+            lim
+        },
     };
 
     let effective_url = match env_url {

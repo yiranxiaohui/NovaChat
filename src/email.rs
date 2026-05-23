@@ -327,7 +327,14 @@ struct SendCodeReq {
     purpose: Option<String>,
 }
 
-async fn send_code(State(state): State<AppState>, Json(req): Json<SendCodeReq>) -> Response {
+async fn send_code(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<SendCodeReq>,
+) -> Response {
+    if !state.auth_limiter.allow(crate::rate_limit::client_ip(&headers)).await {
+        return (StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试").into_response();
+    }
     let installed = match state.require_installed().await {
         Ok(s) => s,
         Err(r) => return r,

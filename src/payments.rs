@@ -369,6 +369,27 @@ async fn process_notify(state: &AppState, params: BTreeMap<String, String>) -> S
         return "fail".into();
     }
 
+    // Reject if this trade_no already settled a DIFFERENT order — defends
+    // against trade_no replay across orders. The 0020 unique index makes
+    // this belt-and-suspenders at the DB layer too.
+    if let Some(tn) = trade_no.as_deref() {
+        let dup_sql = db::q(
+            kind,
+            "SELECT out_trade_no FROM payment_orders WHERE trade_no = ? AND out_trade_no != ?",
+        );
+        let dup: Option<(String,)> = sqlx::query_as(&dup_sql)
+            .bind(tn)
+            .bind(&out_trade_no)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+        if dup.is_some() {
+            eprintln!("[epay] duplicate trade_no {tn} (already settled another order); rejecting");
+            return "fail".into();
+        }
+    }
+
     // atomic pending -> paid transition
     let now = db::now_expr(kind);
     let upd = db::q(

@@ -115,9 +115,21 @@ fn validate_credentials(c: &Credentials) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Whether to set the `Secure` attribute on session cookies. Default ON —
+/// the browser then only sends the cookie over HTTPS, blocking session-token
+/// theft on plain-HTTP downgrades. Set `NOVACHAT_INSECURE_COOKIE=1` only for
+/// local dev when serving plain HTTP without a TLS-terminating proxy.
+fn cookies_secure() -> bool {
+    !matches!(
+        std::env::var("NOVACHAT_INSECURE_COOKIE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 fn session_cookie(token: String, max_age_days: i64) -> Cookie<'static> {
     let mut c = Cookie::new(auth::SESSION_COOKIE, token);
     c.set_http_only(true);
+    c.set_secure(cookies_secure());
     c.set_same_site(SameSite::Lax);
     c.set_path("/");
     c.set_max_age(time::Duration::days(max_age_days));
@@ -127,6 +139,7 @@ fn session_cookie(token: String, max_age_days: i64) -> Cookie<'static> {
 fn clear_cookie() -> Cookie<'static> {
     let mut c = Cookie::new(auth::SESSION_COOKIE, "");
     c.set_http_only(true);
+    c.set_secure(cookies_secure());
     c.set_same_site(SameSite::Lax);
     c.set_path("/");
     c.set_max_age(time::Duration::ZERO);
@@ -663,15 +676,22 @@ async fn proxy_forward(
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("[chat] channel {} connect failed: {e} — trying next", choice.channel.name);
-                        last_err = Some((StatusCode::BAD_GATEWAY, format!("upstream connect: {e}")));
+                        // Don't surface reqwest's error to the client — it can
+                        // include the admin-configured upstream URL.
+                        last_err = Some((StatusCode::BAD_GATEWAY, "上游服务暂时不可用".to_string()));
                         continue;
                     }
                 };
                 let status = resp.status();
                 if !status.is_success() {
-                    let text = resp.text().await.unwrap_or_default();
-                    eprintln!("[chat] channel {} status {status}: {text} — trying next", choice.channel.name);
-                    last_err = Some((StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}")));
+                    // Drain and discard the upstream body — for shared channels
+                    // it's generated against the admin's API key and many
+                    // providers echo request headers (including Authorization)
+                    // back in error responses. Logging or forwarding it would
+                    // leak that key.
+                    let _ = resp.bytes().await;
+                    eprintln!("[chat] channel {} status {status} — trying next", choice.channel.name);
+                    last_err = Some((StatusCode::BAD_GATEWAY, format!("上游服务返回 {status}")));
                     continue;
                 }
 
@@ -704,7 +724,7 @@ async fn proxy_forward(
                     installed.kind,
                     user.id,
                     cost,
-                    "refund_chain_exhausted",
+                    &format!("refund_chat_{model}_all_failed"),
                 )
                 .await;
             }
@@ -794,17 +814,17 @@ async fn send_chat_once(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream connect error: {e}"),
-            )
+            eprintln!("[chat byok] upstream connect failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "上游服务暂时不可用".to_string())
                 .into_response();
         }
     };
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
+        // Don't forward the upstream body — even on BYOK, providers can echo
+        // the caller's own Authorization header back into error responses.
+        let _ = resp.bytes().await;
+        return (StatusCode::BAD_GATEWAY, format!("上游服务返回 {status}"))
             .into_response();
     }
     let stream = resp.bytes_stream();
@@ -918,10 +938,8 @@ async fn proxy_get_forward(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream connect error: {e}"),
-            )
+            eprintln!("[models] upstream connect failed: {e}");
+            return (StatusCode::BAD_GATEWAY, "上游服务暂时不可用".to_string())
                 .into_response();
         }
     };
@@ -936,8 +954,9 @@ async fn proxy_get_forward(
     let bytes = resp.bytes().await.unwrap_or_default();
 
     if !status.is_success() {
-        let text = String::from_utf8_lossy(&bytes).to_string();
-        return (StatusCode::BAD_GATEWAY, format!("upstream {status}: {text}"))
+        // Don't forward the upstream body — for shared channels it was made
+        // with the admin's API key and providers often echo headers back.
+        return (StatusCode::BAD_GATEWAY, format!("上游服务返回 {status}"))
             .into_response();
     }
 

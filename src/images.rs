@@ -162,7 +162,12 @@ async fn refund_image_credits(state: &AppState, user_id: i64, model: &str, reaso
         .await
         .unwrap_or(0);
     if cost > 0 {
-        let _ = credits::grant(&installed.pool, installed.kind, user_id, cost, reason).await;
+        // Normalize the ledger reason to refund_image_<model>_<suffix>, mirroring
+        // the chat-side convention. Callers historically pass "refund_<suffix>"
+        // (e.g. refund_upstream_error); strip that prefix to avoid double "refund_".
+        let suffix = reason.strip_prefix("refund_").unwrap_or(reason);
+        let formatted = format!("refund_image_{model}_{suffix}");
+        let _ = credits::grant(&installed.pool, installed.kind, user_id, cost, &formatted).await;
     }
 }
 
@@ -379,15 +384,14 @@ async fn call_openai_json(
         .body(req.body)
         .send()
         .await
-        .map_err(|e| JobError(format!("upstream: {e}")))?;
+        .map_err(|e| { eprintln!("[image] upstream connect failed: {e}"); JobError("上游服务暂时不可用".into()) })?;
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(JobError(format!(
-            "upstream {status}: {}",
-            String::from_utf8_lossy(&raw)
-        )));
+        // Don't surface the upstream body — shared-channel calls use the
+        // admin's API key and providers often echo headers in error bodies.
+        return Err(JobError(format!("上游服务返回 {status}")));
     }
     decode_openai_body(state, &raw).await
 }
@@ -420,15 +424,14 @@ async fn call_openai_multipart(
         .body(req.body)
         .send()
         .await
-        .map_err(|e| JobError(format!("upstream: {e}")))?;
+        .map_err(|e| { eprintln!("[image] upstream connect failed: {e}"); JobError("上游服务暂时不可用".into()) })?;
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(JobError(format!(
-            "upstream {status}: {}",
-            String::from_utf8_lossy(&raw)
-        )));
+        // Don't surface the upstream body — shared-channel calls use the
+        // admin's API key and providers often echo headers in error bodies.
+        return Err(JobError(format!("上游服务返回 {status}")));
     }
     decode_openai_body(state, &raw).await
 }
@@ -460,15 +463,14 @@ async fn call_gemini_json(
         .body(req.body)
         .send()
         .await
-        .map_err(|e| JobError(format!("upstream: {e}")))?;
+        .map_err(|e| { eprintln!("[image] upstream connect failed: {e}"); JobError("上游服务暂时不可用".into()) })?;
 
     let status = resp.status();
     let raw = resp.bytes().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(JobError(format!(
-            "upstream {status}: {}",
-            String::from_utf8_lossy(&raw)
-        )));
+        // Don't surface the upstream body — shared-channel calls use the
+        // admin's API key and providers often echo headers in error bodies.
+        return Err(JobError(format!("上游服务返回 {status}")));
     }
     decode_gemini_body(state, &raw).await
 }
@@ -1159,7 +1161,7 @@ async fn start_openai_responses_job(
             mark_failed(
                 &state_c,
                 &token_c,
-                &format!("upstream {status}: {}", String::from_utf8_lossy(&raw)),
+                &format!("上游服务返回 {status}"),
             )
             .await;
             return;

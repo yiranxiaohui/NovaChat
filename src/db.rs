@@ -204,12 +204,25 @@ fn split_sql(src: &str) -> Vec<String> {
                 }
             }
             '\'' if !in_double => {
-                in_single = !in_single;
-                buf.push(c);
+                // SQL '' escape: two single quotes inside a string is a literal
+                // quote, not the end of the string.
+                if in_single && chars.peek() == Some(&'\'') {
+                    buf.push(c);
+                    buf.push(chars.next().unwrap());
+                } else {
+                    in_single = !in_single;
+                    buf.push(c);
+                }
             }
             '"' if !in_single => {
-                in_double = !in_double;
-                buf.push(c);
+                // Mirror "" escape for quoted identifiers (Postgres).
+                if in_double && chars.peek() == Some(&'"') {
+                    buf.push(c);
+                    buf.push(chars.next().unwrap());
+                } else {
+                    in_double = !in_double;
+                    buf.push(c);
+                }
             }
             ';' if !in_single && !in_double => {
                 out.push(std::mem::take(&mut buf));
@@ -250,14 +263,33 @@ pub fn returning_id(kind: DbKind) -> &'static str {
 pub fn q(kind: DbKind, sql: &str) -> String {
     match kind {
         DbKind::Postgres => {
+            // `?` → `$N` rewrite, skipping placeholders inside SQL string
+            // literals and quoted identifiers. Handles '' / "" escapes
+            // properly so a literal quote inside a string/identifier doesn't
+            // flip the quote-state and silently mis-rewrite later `?`s.
             let mut out = String::with_capacity(sql.len() + 8);
             let mut i = 0usize;
-            let mut in_single = false;
-            let mut in_double = false;
-            for c in sql.chars() {
+            let mut in_single = false; // inside '...' string literal
+            let mut in_double = false; // inside "..." quoted identifier
+            let mut chars = sql.chars().peekable();
+            while let Some(c) = chars.next() {
                 match c {
-                    '\'' if !in_double => in_single = !in_single,
-                    '"' if !in_single => in_double = !in_double,
+                    '\'' if !in_double => {
+                        if in_single && chars.peek() == Some(&'\'') {
+                            out.push(c);
+                            out.push(chars.next().unwrap());
+                            continue;
+                        }
+                        in_single = !in_single;
+                    }
+                    '"' if !in_single => {
+                        if in_double && chars.peek() == Some(&'"') {
+                            out.push(c);
+                            out.push(chars.next().unwrap());
+                            continue;
+                        }
+                        in_double = !in_double;
+                    }
                     '?' if !in_single && !in_double => {
                         i += 1;
                         out.push('$');

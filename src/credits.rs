@@ -137,6 +137,21 @@ pub async fn try_deduct(
 ) -> Result<i64, i64> {
     if cost <= 0 {
         let b = ensure_account(pool, kind, user_id).await.unwrap_or(0);
+        if cost == 0 {
+            // Write a zero-delta ledger row so a "free" call (cost_credits=0)
+            // is still recorded — keeps the audit trail complete and the
+            // ledger reconcilable against balance.
+            let led = db::q(
+                kind,
+                "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
+            );
+            let _ = sqlx::query(&led)
+                .bind(user_id)
+                .bind(0_i64)
+                .bind(reason)
+                .execute(pool)
+                .await;
+        }
         return Ok(b);
     }
     if let Err(_) = ensure_account(pool, kind, user_id).await {

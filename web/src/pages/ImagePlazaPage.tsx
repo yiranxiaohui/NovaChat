@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
+  ArrowLeft,
   Copy,
   Flame,
   Heart,
   ImageOff,
   Images,
-  Menu,
   MessageCircle,
   Search,
   Send,
@@ -20,9 +20,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
-import { Sidebar } from "@/components/app/Sidebar"
 import {
   plazaApi,
   type MyPlazaImage,
@@ -57,7 +55,6 @@ export default function ImagePlazaPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [likeBusy, setLikeBusy] = useState<number | null>(null)
   const [detail, setDetail] = useState<DetailTarget | null>(null)
-  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   useEffect(() => {
     if (tab !== "discover") return
@@ -241,38 +238,17 @@ export default function ImagePlazaPage() {
 
   return (
     <div className="flex h-svh bg-background text-foreground">
-      {mobileNavOpen && (
-        <button
-          type="button"
-          aria-label="关闭侧栏"
-          onClick={() => setMobileNavOpen(false)}
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
-        />
-      )}
-      <div
-        className={cn(
-          "fixed inset-y-0 left-0 z-40 transition-transform",
-          mobileNavOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full",
-          "md:static md:translate-x-0 md:shadow-none"
-        )}
-      >
-        <Sidebar
-          reloadKey={0}
-          onNavigate={() => setMobileNavOpen(false)}
-        />
-      </div>
-
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-2 border-b border-border bg-background/70 px-3 py-3 backdrop-blur md:px-6">
           <div className="flex min-w-0 items-center gap-2">
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden"
-              onClick={() => setMobileNavOpen(true)}
-              aria-label="打开侧栏"
+              onClick={() => nav("/")}
+              aria-label="返回"
+              title="返回聊天"
             >
-              <Menu />
+              <ArrowLeft />
             </Button>
             <Images className="size-4 shrink-0 text-muted-foreground" />
             <h1 className="truncate text-base font-semibold">图片广场</h1>

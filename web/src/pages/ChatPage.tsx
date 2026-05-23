@@ -45,6 +45,7 @@ import {
 } from "@/lib/settings"
 import { SettingsDialog } from "@/components/app/SettingsDialog"
 import { RechargeDialog } from "@/components/app/RechargeDialog"
+import { CreditsLedgerDialog } from "@/components/app/CreditsLedgerDialog"
 import { Sidebar } from "@/components/app/Sidebar"
 import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
@@ -746,6 +747,7 @@ export default function ChatPage() {
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rechargeOpen, setRechargeOpen] = useState(false)
+  const [ledgerOpen, setLedgerOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
@@ -1439,17 +1441,26 @@ export default function ChatPage() {
           </div>
           <div className="flex shrink-0 items-center">
             {creditsMe && (
-              <button
-                type="button"
-                onClick={() => setRechargeOpen(true)}
-                className="mr-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-1 text-xs tabular-nums transition-colors hover:border-primary/60 hover:bg-primary/10 md:px-2.5"
-                title={`剩余积分 ${creditsMe.balance}｜对话 ${creditsMe.cost_chat} 分/次，生图 ${creditsMe.cost_image} 分/次。点击充值。`}
-              >
-                <span className="hidden text-muted-foreground md:inline">积分</span>
-                <span className="font-medium">{creditsMe.balance}</span>
-                <span className="hidden text-muted-foreground md:inline">+</span>
-                <Plus className="size-3 text-muted-foreground md:hidden" />
-              </button>
+              <div className="mr-1 inline-flex items-center overflow-hidden rounded-full border border-border bg-muted/40 text-xs tabular-nums transition-colors hover:border-primary/60">
+                <button
+                  type="button"
+                  onClick={() => setLedgerOpen(true)}
+                  className="inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/10 md:px-2.5"
+                  title={`剩余积分 ${creditsMe.balance}｜点击查看积分明细`}
+                >
+                  <span className="hidden text-muted-foreground md:inline">积分</span>
+                  <span className="font-medium">{creditsMe.balance}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRechargeOpen(true)}
+                  className="inline-flex items-center border-l border-border px-2 py-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                  title="充值积分"
+                  aria-label="充值积分"
+                >
+                  <Plus className="size-3" />
+                </button>
+              </div>
             )}
             <Button
               variant="ghost"
@@ -1783,6 +1794,11 @@ export default function ChatPage() {
         open={rechargeOpen}
         onClose={() => setRechargeOpen(false)}
         onPaid={() => void refreshCredits()}
+      />
+
+      <CreditsLedgerDialog
+        open={ledgerOpen}
+        onClose={() => setLedgerOpen(false)}
       />
 
       <PromptLibrary

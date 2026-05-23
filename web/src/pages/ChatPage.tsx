@@ -1573,10 +1573,10 @@ export default function ChatPage() {
                     开始一段对话
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    回车发送，Shift + 回车换行
+                    回车发送，Shift + 回车换行。
                     {settings.protocol === "openai"
-                      ? "；点左下角按钮可切到图像模式。"
-                      : "。"}
+                      ? "直接用文字描述就能让 AI 生图（如「画一只柯基」）；想多轮编辑或调参数请到侧栏「图像工作室」。"
+                      : "想生图请切到 OpenAI 协议，或到侧栏「图像工作室」。"}
                   </p>
                 </div>
                 <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">

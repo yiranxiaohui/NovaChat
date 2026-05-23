@@ -21,6 +21,24 @@ function extractImages(md: string): ExtractedImages {
   return { text, images }
 }
 
+/** Assistant content sometimes embeds markdown image refs (notably the OpenAI
+ * Responses `image_generation` tool dumps `![alt](/api/images/…png)` into the
+ * assistant message after it generates an image). None of OpenAI / Claude /
+ * Gemini accept image content blocks under the assistant role on a follow-up
+ * turn — sending them back causes a 400 and effectively bricks the
+ * conversation. Strip the refs and replace with a short text marker so the
+ * model still knows "I generated an image here" without re-uploading the
+ * bitmap. */
+function sanitizeAssistantContent(content: string): string {
+  const { text, images } = extractImages(content)
+  if (images.length === 0) return content
+  const marker =
+    images.length === 1
+      ? "[已生成图像]"
+      : `[已生成 ${images.length} 张图像]`
+  return text ? `${text}\n\n${marker}` : marker
+}
+
 function mimeFromPath(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? ""
   if (ext === "jpg" || ext === "jpeg") return "image/jpeg"
@@ -105,9 +123,11 @@ async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
   const nonSystem = o.messages.filter((m) => m.role !== "system")
   const input = await Promise.all(
     nonSystem.map(async (m) => {
-      const { text, images } = extractImages(m.content)
+      const content =
+        m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
+      const { text, images } = extractImages(content)
       if (images.length === 0) {
-        return { role: m.role, content: m.content }
+        return { role: m.role, content }
       }
       const parts: unknown[] = []
       if (text) {
@@ -150,9 +170,11 @@ async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
   const nonSystem = o.messages.filter((m) => m.role !== "system")
   const rest = await Promise.all(
     nonSystem.map(async (m) => {
-      const { text, images } = extractImages(m.content)
+      const content =
+        m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
+      const { text, images } = extractImages(content)
       if (images.length === 0) {
-        return { role: m.role, content: m.content }
+        return { role: m.role, content }
       }
       const parts: unknown[] = []
       if (text) parts.push({ type: "text", text })
@@ -205,10 +227,12 @@ async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
   const nonSystem = o.messages.filter((m) => m.role !== "system")
   const contents = await Promise.all(
     nonSystem.map(async (m) => {
-      const { text, images } = extractImages(m.content)
+      const content =
+        m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
+      const { text, images } = extractImages(content)
       const parts: unknown[] = []
       if (text || images.length === 0) {
-        parts.push({ text: text || m.content })
+        parts.push({ text: text || content })
       }
       for (const ref of images) {
         const enc = await refToBase64(ref)

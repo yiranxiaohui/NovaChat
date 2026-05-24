@@ -1347,7 +1347,6 @@ async fn save_b64_image(
 
 async fn serve_image(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
     Path(name): Path<String>,
 ) -> Response {
     if name.contains("..") || name.contains('/') || name.contains('\\') {
@@ -1377,5 +1376,13 @@ pub fn routes() -> Router<AppState> {
         .route("/images/jobs/gemini", post(start_gemini_job))
         .route("/images/save", post(save_b64_image))
         .route("/images/jobs/{token}", get(get_job))
-        .route("/images/{name}", get(serve_image))
+}
+
+/// `/api/images/{name}` is split out into a public route — generated images
+/// are referenced by markdown in shared snapshots, and the random 16-byte hex
+/// filename is the only handle. Auth never gated per-user image access (any
+/// logged-in user could fetch any image by URL), so exposing it publicly does
+/// not relax an existing isolation guarantee.
+pub fn public_routes() -> Router<AppState> {
+    Router::new().route("/images/{name}", get(serve_image))
 }

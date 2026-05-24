@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCcw,
   Settings,
+  Share2,
   Sparkles,
   Square,
   Upload,
@@ -50,6 +51,7 @@ import { Sidebar } from "@/components/app/Sidebar"
 import { SystemPromptDialog } from "@/components/app/SystemPromptBar"
 import { PromptLibrary } from "@/components/app/PromptLibrary"
 import { SkillsDialog } from "@/components/app/SkillsDialog"
+import { ShareDialog } from "@/components/app/ShareDialog"
 import { ImagePreview } from "@/components/app/ImagePreview"
 import { conversationsApi } from "@/lib/conversations"
 import {
@@ -755,6 +757,9 @@ export default function ChatPage() {
   const [ledgerOpen, setLedgerOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [currentConversation, setCurrentConversation] =
+    useState<import("@/lib/conversations").Conversation | null>(null)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [publishedFilenames, setPublishedFilenames] = useState<Set<string>>(
     new Set()
@@ -855,6 +860,7 @@ export default function ChatPage() {
       setMessages([])
       setSystemPrompt("")
       setAttachedSkills([])
+      setCurrentConversation(null)
       return
     }
     // A conversation just created by send() that we're about to stream into:
@@ -876,6 +882,7 @@ export default function ChatPage() {
         if (cancelled) return
         const current = convs.find((c) => c.id === conversationId)
         setSystemPrompt(current?.system_prompt ?? "")
+        setCurrentConversation(current ?? null)
         setMessages(
           rows.map((m) => ({ id: m.id, role: m.role, content: m.content }))
         )
@@ -1544,6 +1551,16 @@ export default function ChatPage() {
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => setShareOpen(true)}
+              title="分享 / 导出"
+              disabled={!currentConversation || messages.length === 0}
+              className="size-8 md:size-9"
+            >
+              <Share2 />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setSettingsOpen(true)}
               title="设置"
               className="size-8 md:size-9"
@@ -1858,6 +1875,12 @@ export default function ChatPage() {
         value={systemPrompt}
         onClose={() => setSystemPromptOpen(false)}
         onSave={saveSystemPrompt}
+      />
+
+      <ShareDialog
+        open={shareOpen}
+        conversation={currentConversation}
+        onClose={() => setShareOpen(false)}
       />
 
       <SkillsDialog

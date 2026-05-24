@@ -16,6 +16,7 @@ mod rate_limit;
 mod search;
 mod settings;
 mod setup;
+mod sharing;
 mod skills;
 mod studio;
 
@@ -1090,6 +1091,7 @@ fn build_router(state: AppState) -> Router {
         .merge(studio::routes())
         .merge(invites::routes())
         .merge(search::routes())
+        .merge(sharing::user_routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()
@@ -1101,7 +1103,9 @@ fn build_router(state: AppState) -> Router {
         .route("/auth/me", get(me))
         .merge(email::public_routes())
         .merge(payments::public_routes())
-        .merge(setup::routes());
+        .merge(setup::routes())
+        .merge(images::public_routes())
+        .merge(sharing::public_routes());
 
     Router::new()
         .nest("/api", public.merge(protected))

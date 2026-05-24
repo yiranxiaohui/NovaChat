@@ -8,6 +8,7 @@ import AdminPage from "@/pages/AdminPage"
 import PaymentReturnPage from "@/pages/PaymentReturnPage"
 import ImageStudioPage from "@/pages/ImageStudioPage"
 import ImagePlazaPage from "@/pages/ImagePlazaPage"
+import SharedConversationPage from "@/pages/SharedConversationPage"
 
 function Loading() {
   return (
@@ -125,6 +126,7 @@ export default function App() {
               </Protected>
             }
           />
+          <Route path="/s/:token" element={<SharedConversationPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

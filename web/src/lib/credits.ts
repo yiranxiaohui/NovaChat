@@ -20,6 +20,50 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export type StatsPeriod = "7d" | "30d" | "90d" | "all"
+
+export type DailyPoint = {
+  date: string
+  spent: number
+  refunded: number
+}
+
+export type ModelBucket = {
+  model: string
+  kind: string
+  protocol: string | null
+  count: number
+  spent: number
+  refunded: number
+}
+
+export type KindBucket = {
+  kind: string
+  total: number
+}
+
+export type CreditsStats = {
+  period: StatsPeriod
+  start: string
+  spent: number
+  refunded: number
+  net_spent: number
+  granted: number
+  recharged: number
+  daily: DailyPoint[]
+  by_model: ModelBucket[]
+  by_kind: KindBucket[]
+}
+
+export type TopUserRow = {
+  user_id: number
+  username: string
+  spent: number
+  refunded: number
+}
+
+export type AdminCreditsStats = CreditsStats & { top_users: TopUserRow[] }
+
 export const creditsApi = {
   async me(): Promise<CreditsMe> {
     return jsonOrThrow(
@@ -29,6 +73,13 @@ export const creditsApi = {
   async ledger(page = 1): Promise<LedgerEntry[]> {
     return jsonOrThrow(
       await fetch(`/api/credits/ledger?page=${page}`, {
+        credentials: "same-origin",
+      })
+    )
+  },
+  async stats(period: StatsPeriod = "7d"): Promise<CreditsStats> {
+    return jsonOrThrow(
+      await fetch(`/api/credits/stats?period=${period}`, {
         credentials: "same-origin",
       })
     )
@@ -112,5 +163,12 @@ export const adminCreditsApi = {
         (await res.text().catch(() => res.statusText)) || `HTTP ${res.status}`
       )
     }
+  },
+  async stats(period: StatsPeriod = "7d"): Promise<AdminCreditsStats> {
+    return jsonOrThrow(
+      await fetch(`/api/admin/credits/stats?period=${period}`, {
+        credentials: "same-origin",
+      })
+    )
   },
 }

@@ -399,6 +399,7 @@ async fn submit_generate(
             user.id,
             &model,
             "image",
+            "openai",
             "studio_generate",
         )
         .await
@@ -474,7 +475,17 @@ async fn submit_generate(
                 finalize_failed(&pool, kind, &token_c, "HTTP client 构建失败").await;
                 if used_shared {
                     let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
+                    if cost > 0 {
+                        let _ = credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            "refund_studio_error",
+                            &credits::LedgerMeta::refund_image(&model_c),
+                        )
+                        .await;
+                    }
                 }
                 return;
             }
@@ -501,7 +512,17 @@ async fn submit_generate(
                         finalize_failed(&pool, kind, &token_c, &format!("multipart: {e}")).await;
                         if used_shared {
                             let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
+                    if cost > 0 {
+                        let _ = credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            "refund_studio_error",
+                            &credits::LedgerMeta::refund_image(&model_c),
+                        )
+                        .await;
+                    }
                         }
                         return;
                     }
@@ -609,7 +630,17 @@ async fn submit_generate(
                         finalize_failed(&pool, kind, &token_c, &msg).await;
                         if used_shared {
                             let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
+                    if cost > 0 {
+                        let _ = credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            "refund_studio_error",
+                            &credits::LedgerMeta::refund_image(&model_c),
+                        )
+                        .await;
+                    }
                         }
                         return;
                     }
@@ -635,7 +666,17 @@ async fn submit_generate(
             finalize_failed(&pool, kind, &token_c, &msg).await;
             if used_shared {
                 let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
+                    if cost > 0 {
+                        let _ = credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            "refund_studio_error",
+                            &credits::LedgerMeta::refund_image(&model_c),
+                        )
+                        .await;
+                    }
             }
             return;
         }
@@ -656,7 +697,17 @@ async fn submit_generate(
             finalize_failed(&pool, kind, &token_c, "上游未返回图像数据").await;
             if used_shared {
                 let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 { let _ = credits::grant(&pool, kind, user.id, cost, "refund_studio_error").await; }
+                    if cost > 0 {
+                        let _ = credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            "refund_studio_error",
+                            &credits::LedgerMeta::refund_image(&model_c),
+                        )
+                        .await;
+                    }
             }
             return;
         };

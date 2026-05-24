@@ -79,6 +79,48 @@ pub async fn set_setting(
 // credit balance + deduction
 // ---------------------------------------------------------------------------
 
+/// Structured metadata written alongside every ledger row so the cost-stats
+/// dashboard can `GROUP BY model` / protocol / kind without parsing the
+/// free-form `reason` string. Rows existing before this column was added carry
+/// NULL — those buckets become "unknown" in the dashboard.
+pub struct LedgerMeta<'a> {
+    /// One of "chat", "image", "grant", "recharge", "adjust".
+    pub kind: &'a str,
+    /// "openai" / "claude" / "gemini" when applicable.
+    pub protocol: Option<&'a str>,
+    pub model: Option<&'a str>,
+}
+
+impl<'a> LedgerMeta<'a> {
+    pub fn chat(protocol: &'a str, model: &'a str) -> Self {
+        Self { kind: "chat", protocol: Some(protocol), model: Some(model) }
+    }
+    pub fn image(protocol: &'a str, model: &'a str) -> Self {
+        Self { kind: "image", protocol: Some(protocol), model: Some(model) }
+    }
+    /// Refund of a chat deduction — kept under "chat" kind so net-spend math
+    /// (sum deltas where kind='chat') stays correct.
+    pub fn refund_chat(protocol: &'a str, model: &'a str) -> Self {
+        Self { kind: "chat", protocol: Some(protocol), model: Some(model) }
+    }
+    pub fn refund_image(model: &'a str) -> Self {
+        Self { kind: "image", protocol: None, model: Some(model) }
+    }
+    pub fn grant() -> Self {
+        Self { kind: "grant", protocol: None, model: None }
+    }
+    pub fn recharge() -> Self {
+        Self { kind: "recharge", protocol: None, model: None }
+    }
+    pub fn adjust() -> Self {
+        Self { kind: "adjust", protocol: None, model: None }
+    }
+}
+
+const LEDGER_INSERT_SQL: &str =
+    "INSERT INTO credit_ledger (user_id, delta, reason, kind, protocol, model)
+     VALUES (?, ?, ?, ?, ?, ?)";
+
 /// Ensures a user_credits row exists. Returns the user's current balance.
 pub async fn ensure_account(pool: &Pool, kind: DbKind, user_id: i64) -> Result<i64, sqlx::Error> {
     let sql = db::q(
@@ -106,14 +148,14 @@ pub async fn ensure_account(pool: &Pool, kind: DbKind, user_id: i64) -> Result<i
         .await;
 
     if initial > 0 {
-        let led = db::q(
-            kind,
-            "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
-        );
+        let led = db::q(kind, LEDGER_INSERT_SQL);
         let _ = sqlx::query(&led)
             .bind(user_id)
             .bind(initial)
             .bind("signup_grant")
+            .bind("grant")
+            .bind(None::<&str>)
+            .bind(None::<&str>)
             .execute(pool)
             .await;
     }
@@ -134,6 +176,7 @@ pub async fn try_deduct(
     user_id: i64,
     cost: i64,
     reason: &str,
+    meta: &LedgerMeta<'_>,
 ) -> Result<i64, i64> {
     if cost <= 0 {
         let b = ensure_account(pool, kind, user_id).await.unwrap_or(0);
@@ -141,14 +184,14 @@ pub async fn try_deduct(
             // Write a zero-delta ledger row so a "free" call (cost_credits=0)
             // is still recorded — keeps the audit trail complete and the
             // ledger reconcilable against balance.
-            let led = db::q(
-                kind,
-                "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
-            );
+            let led = db::q(kind, LEDGER_INSERT_SQL);
             let _ = sqlx::query(&led)
                 .bind(user_id)
                 .bind(0_i64)
                 .bind(reason)
+                .bind(meta.kind)
+                .bind(meta.protocol)
+                .bind(meta.model)
                 .execute(pool)
                 .await;
         }
@@ -188,14 +231,14 @@ pub async fn try_deduct(
         return Err(b.map(|(v,)| v).unwrap_or(0));
     }
 
-    let led = db::q(
-        kind,
-        "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
-    );
+    let led = db::q(kind, LEDGER_INSERT_SQL);
     let _ = sqlx::query(&led)
         .bind(user_id)
         .bind(-cost)
         .bind(reason)
+        .bind(meta.kind)
+        .bind(meta.protocol)
+        .bind(meta.model)
         .execute(pool)
         .await;
 
@@ -214,6 +257,7 @@ pub async fn grant(
     user_id: i64,
     delta: i64,
     reason: &str,
+    meta: &LedgerMeta<'_>,
 ) -> Result<i64, sqlx::Error> {
     ensure_account(pool, kind, user_id).await?;
     let now = db::now_expr(kind);
@@ -230,14 +274,14 @@ pub async fn grant(
         .bind(user_id)
         .execute(pool)
         .await?;
-    let led = db::q(
-        kind,
-        "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
-    );
+    let led = db::q(kind, LEDGER_INSERT_SQL);
     let _ = sqlx::query(&led)
         .bind(user_id)
         .bind(delta)
         .bind(reason)
+        .bind(meta.kind)
+        .bind(meta.protocol)
+        .bind(meta.model)
         .execute(pool)
         .await;
     let bal_sql = db::q(kind, "SELECT balance FROM user_credits WHERE user_id = ?");
@@ -255,6 +299,7 @@ pub async fn set_balance(
     user_id: i64,
     new_balance: i64,
     reason: &str,
+    meta: &LedgerMeta<'_>,
 ) -> Result<i64, sqlx::Error> {
     let before = ensure_account(pool, kind, user_id).await?;
     let delta = new_balance - before;
@@ -273,14 +318,14 @@ pub async fn set_balance(
         .execute(pool)
         .await?;
     if delta != 0 {
-        let led = db::q(
-            kind,
-            "INSERT INTO credit_ledger (user_id, delta, reason) VALUES (?, ?, ?)",
-        );
+        let led = db::q(kind, LEDGER_INSERT_SQL);
         let _ = sqlx::query(&led)
             .bind(user_id)
             .bind(delta)
             .bind(reason)
+            .bind(meta.kind)
+            .bind(meta.protocol)
+            .bind(meta.model)
             .execute(pool)
             .await;
     }
@@ -373,6 +418,280 @@ async fn get_my_ledger(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// stats dashboard — shared between user (`/credits/stats`) and admin
+// (`/admin/credits/stats`)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct StatsQuery {
+    /// One of "7d" (default), "30d", "90d", "all".
+    period: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DailyPoint {
+    date: String,
+    spent: i64,
+    refunded: i64,
+}
+
+#[derive(Serialize)]
+struct ModelBucket {
+    model: String,
+    kind: String,
+    protocol: Option<String>,
+    count: i64,
+    spent: i64,
+    refunded: i64,
+}
+
+#[derive(Serialize)]
+struct KindBucket {
+    kind: String,
+    total: i64,
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    period: String,
+    start: String,
+    spent: i64,
+    refunded: i64,
+    net_spent: i64,
+    granted: i64,
+    recharged: i64,
+    daily: Vec<DailyPoint>,
+    by_model: Vec<ModelBucket>,
+    by_kind: Vec<KindBucket>,
+}
+
+#[derive(Serialize)]
+struct TopUserRow {
+    user_id: i64,
+    username: String,
+    spent: i64,
+    refunded: i64,
+}
+
+#[derive(Serialize)]
+struct AdminStatsResponse {
+    #[serde(flatten)]
+    base: StatsResponse,
+    top_users: Vec<TopUserRow>,
+}
+
+/// Returns `(cutoff_iso, normalized_period_label)`. Cutoff is a UTC timestamp
+/// in `YYYY-MM-DD HH:MM:SS` form, which sorts correctly against all three
+/// dialects' stored datetime strings. "all" maps to a 100-year window.
+fn period_window(period: Option<&str>) -> (String, String) {
+    let raw = period.unwrap_or("7d");
+    let (days, label): (i64, &str) = match raw {
+        "30d" => (30, "30d"),
+        "90d" => (90, "90d"),
+        "all" => (36500, "all"),
+        _ => (7, "7d"),
+    };
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+    let iso = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+    (iso, label.to_string())
+}
+
+/// Fills in the same StatsResponse used by both /credits/stats and the admin
+/// equivalent — caller supplies the `user_id = ?` filter (or empty for global)
+/// and the binding tuple.
+async fn build_stats(
+    pool: &Pool,
+    kind: DbKind,
+    user_filter_sql: &str,
+    user_id_bind: Option<i64>,
+    start: &str,
+) -> Result<StatsResponse, sqlx::Error> {
+    // Totals — one row, four columns. CASE clauses partition the ledger into
+    // "spent on chat/image" / "refunded back to chat/image" / "granted" /
+    // "recharged" buckets so each shows up independently in the summary cards.
+    let totals_sql = db::q(
+        kind,
+        &format!(
+            "SELECT
+               COALESCE(SUM(CASE WHEN delta < 0 AND (kind = 'chat' OR kind = 'image') THEN -delta ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN delta > 0 AND (kind = 'chat' OR kind = 'image') THEN delta ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN delta > 0 AND kind = 'grant' THEN delta ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN delta > 0 AND kind = 'recharge' THEN delta ELSE 0 END), 0)
+             FROM credit_ledger
+             WHERE created_at >= ?{user_filter_sql}"
+        ),
+    );
+    let mut q1 = sqlx::query_as::<_, (i64, i64, i64, i64)>(&totals_sql).bind(start);
+    if let Some(uid) = user_id_bind {
+        q1 = q1.bind(uid);
+    }
+    let (spent, refunded, granted, recharged) = q1.fetch_one(pool).await?;
+
+    // Daily breakdown. day_bucket truncates the timestamp to YYYY-MM-DD per
+    // dialect; aliasing it as `day` lets GROUP/ORDER use the same name.
+    let day = db::day_bucket(kind, "created_at");
+    let daily_sql = db::q(
+        kind,
+        &format!(
+            "SELECT {day} AS day,
+                    COALESCE(SUM(CASE WHEN delta < 0 AND (kind = 'chat' OR kind = 'image') THEN -delta ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN delta > 0 AND (kind = 'chat' OR kind = 'image') THEN delta ELSE 0 END), 0)
+             FROM credit_ledger
+             WHERE created_at >= ?{user_filter_sql}
+             GROUP BY day
+             ORDER BY day ASC"
+        ),
+    );
+    let mut q2 = sqlx::query_as::<_, (String, i64, i64)>(&daily_sql).bind(start);
+    if let Some(uid) = user_id_bind {
+        q2 = q2.bind(uid);
+    }
+    let daily: Vec<DailyPoint> = q2
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(date, spent, refunded)| DailyPoint { date, spent, refunded })
+        .collect();
+
+    // By model — top 20 by spend. Order by column position (works across
+    // dialects without aliasing).
+    let model_sql = db::q(
+        kind,
+        &format!(
+            "SELECT model, kind, protocol,
+                    COUNT(CASE WHEN delta < 0 THEN 1 END),
+                    COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0)
+             FROM credit_ledger
+             WHERE created_at >= ? AND model IS NOT NULL AND (kind = 'chat' OR kind = 'image'){user_filter_sql}
+             GROUP BY model, kind, protocol
+             ORDER BY 5 DESC
+             LIMIT 20"
+        ),
+    );
+    let mut q3 = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64)>(&model_sql)
+        .bind(start);
+    if let Some(uid) = user_id_bind {
+        q3 = q3.bind(uid);
+    }
+    let by_model: Vec<ModelBucket> = q3
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(model, kind, protocol, count, spent, refunded)| ModelBucket {
+            model,
+            kind,
+            protocol,
+            count,
+            spent,
+            refunded,
+        })
+        .collect();
+
+    // By kind — total signed delta per kind (NULL kinds skipped).
+    let kind_sql = db::q(
+        kind,
+        &format!(
+            "SELECT kind, COALESCE(SUM(delta), 0)
+             FROM credit_ledger
+             WHERE created_at >= ? AND kind IS NOT NULL{user_filter_sql}
+             GROUP BY kind"
+        ),
+    );
+    let mut q4 = sqlx::query_as::<_, (String, i64)>(&kind_sql).bind(start);
+    if let Some(uid) = user_id_bind {
+        q4 = q4.bind(uid);
+    }
+    let by_kind: Vec<KindBucket> = q4
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(kind, total)| KindBucket { kind, total })
+        .collect();
+
+    Ok(StatsResponse {
+        period: String::new(), // filled by caller
+        start: start.to_string(),
+        spent,
+        refunded,
+        net_spent: spent - refunded,
+        granted,
+        recharged,
+        daily,
+        by_model,
+        by_kind,
+    })
+}
+
+async fn get_my_stats(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<StatsQuery>,
+) -> Response {
+    let (start, period) = period_window(q.period.as_deref());
+    match build_stats(
+        &installed.pool,
+        installed.kind,
+        " AND user_id = ?",
+        Some(user.id),
+        &start,
+    )
+    .await
+    {
+        Ok(mut s) => {
+            s.period = period;
+            Json(s).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn admin_get_stats(
+    Extension(installed): Extension<InstalledState>,
+    Query(q): Query<StatsQuery>,
+) -> Response {
+    let (start, period) = period_window(q.period.as_deref());
+    let base = match build_stats(&installed.pool, installed.kind, "", None, &start).await {
+        Ok(mut s) => {
+            s.period = period;
+            s
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Top users by net spend within the period.
+    let top_sql = db::q(
+        installed.kind,
+        "SELECT l.user_id, u.username,
+                COALESCE(SUM(CASE WHEN l.delta < 0 AND (l.kind = 'chat' OR l.kind = 'image') THEN -l.delta ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN l.delta > 0 AND (l.kind = 'chat' OR l.kind = 'image') THEN l.delta ELSE 0 END), 0)
+         FROM credit_ledger l
+         JOIN users u ON u.id = l.user_id
+         WHERE l.created_at >= ?
+         GROUP BY l.user_id, u.username
+         ORDER BY 3 DESC
+         LIMIT 20",
+    );
+    let top_rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(&top_sql)
+        .bind(&start)
+        .fetch_all(&installed.pool)
+        .await
+        .unwrap_or_default();
+    let top_users: Vec<TopUserRow> = top_rows
+        .into_iter()
+        .filter(|(_, _, s, _)| *s > 0)
+        .map(|(user_id, username, spent, refunded)| TopUserRow {
+            user_id,
+            username,
+            spent,
+            refunded,
+        })
+        .collect();
+
+    Json(AdminStatsResponse { base, top_users }).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -547,17 +866,18 @@ async fn admin_adjust_credits(
     Json(body): Json<AdjustCredits>,
 ) -> Response {
     let reason = body.reason.unwrap_or_else(|| "admin_adjust".into());
+    let meta = LedgerMeta::adjust();
     if let Some(b) = body.balance {
         if b < 0 {
             return (StatusCode::BAD_REQUEST, "balance must be >= 0").into_response();
         }
-        match set_balance(&installed.pool, installed.kind, user_id, b, &reason).await {
+        match set_balance(&installed.pool, installed.kind, user_id, b, &reason, &meta).await {
             Ok(new) => return Json(serde_json::json!({ "balance": new })).into_response(),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
     if let Some(d) = body.delta {
-        match grant(&installed.pool, installed.kind, user_id, d, &reason).await {
+        match grant(&installed.pool, installed.kind, user_id, d, &reason, &meta).await {
             Ok(new) => return Json(serde_json::json!({ "balance": new })).into_response(),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -573,12 +893,14 @@ pub fn user_routes() -> Router<AppState> {
     Router::new()
         .route("/credits/me", get(get_my_credits))
         .route("/credits/ledger", get(get_my_ledger))
+        .route("/credits/stats", get(get_my_stats))
 }
 
 pub fn admin_routes() -> Router<AppState> {
     Router::new()
         .route("/admin/app-settings", get(admin_get_settings).patch(admin_patch_settings))
         .route("/admin/credits", get(admin_list_user_credits))
+        .route("/admin/credits/stats", get(admin_get_stats))
         .route("/admin/credits/{id}", patch(admin_adjust_credits).post(admin_adjust_credits))
         .route(
             "/admin/email/test",

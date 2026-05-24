@@ -134,6 +134,7 @@ async fn deduct_image_credits(
         user_id,
         model,
         "image",
+        protocol,
         &format!("image_{protocol}"),
     )
     .await
@@ -167,7 +168,15 @@ async fn refund_image_credits(state: &AppState, user_id: i64, model: &str, reaso
         // (e.g. refund_upstream_error); strip that prefix to avoid double "refund_".
         let suffix = reason.strip_prefix("refund_").unwrap_or(reason);
         let formatted = format!("refund_image_{model}_{suffix}");
-        let _ = credits::grant(&installed.pool, installed.kind, user_id, cost, &formatted).await;
+        let _ = credits::grant(
+            &installed.pool,
+            installed.kind,
+            user_id,
+            cost,
+            &formatted,
+            &credits::LedgerMeta::refund_image(model),
+        )
+        .await;
     }
 }
 

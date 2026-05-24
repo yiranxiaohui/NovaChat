@@ -315,6 +315,7 @@ async fn register(
                     inviter_id,
                     inviter_grant,
                     &format!("invite_reward_inviter:{username}"),
+                    &credits::LedgerMeta::grant(),
                 )
                 .await;
             }
@@ -325,6 +326,7 @@ async fn register(
                     user_id,
                     invitee_grant,
                     "invite_reward_invitee",
+                    &credits::LedgerMeta::grant(),
                 )
                 .await;
             }
@@ -627,6 +629,7 @@ async fn proxy_forward(
                 user.id,
                 &model,
                 "chat",
+                protocol.name(),
                 &format!("chat_{}", protocol.name()),
             )
             .await
@@ -718,6 +721,7 @@ async fn proxy_forward(
                         kind: installed.kind,
                         user_id: user.id,
                         cost,
+                        protocol: protocol.name().to_string(),
                         model: model.to_string(),
                         streamed: false,
                     },
@@ -738,6 +742,7 @@ async fn proxy_forward(
                     user.id,
                     cost,
                     &format!("refund_chat_{model}_all_failed"),
+                    &credits::LedgerMeta::refund_chat(protocol.name(), &model),
                 )
                 .await;
             }
@@ -755,6 +760,7 @@ struct StreamRefundGuard {
     kind: db::DbKind,
     user_id: i64,
     cost: i64,
+    protocol: String,
     model: String,
     streamed: bool,
 }
@@ -768,9 +774,19 @@ impl Drop for StreamRefundGuard {
         let kind = self.kind;
         let user_id = self.user_id;
         let cost = self.cost;
-        let reason = format!("refund_chat_{}_stream_empty", self.model);
+        let protocol = self.protocol.clone();
+        let model = self.model.clone();
+        let reason = format!("refund_chat_{}_stream_empty", model);
         tokio::spawn(async move {
-            let _ = credits::grant(&pool, kind, user_id, cost, &reason).await;
+            let _ = credits::grant(
+                &pool,
+                kind,
+                user_id,
+                cost,
+                &reason,
+                &credits::LedgerMeta::refund_chat(&protocol, &model),
+            )
+            .await;
         });
     }
 }

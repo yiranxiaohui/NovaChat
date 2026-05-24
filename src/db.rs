@@ -86,6 +86,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (19, include_str!("../migrations/sqlite/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/sqlite/0020_payment_trade_no_unique.sql")),
     (21, include_str!("../migrations/sqlite/0021_studio_extra_params.sql")),
+    (22, include_str!("../migrations/sqlite/0022_credit_ledger_meta.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -109,6 +110,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (19, include_str!("../migrations/mysql/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/mysql/0020_payment_trade_no_unique.sql")),
     (21, include_str!("../migrations/mysql/0021_studio_extra_params.sql")),
+    (22, include_str!("../migrations/mysql/0022_credit_ledger_meta.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -132,6 +134,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (19, include_str!("../migrations/postgres/0019_channels_pricing.sql")),
     (20, include_str!("../migrations/postgres/0020_payment_trade_no_unique.sql")),
     (21, include_str!("../migrations/postgres/0021_studio_extra_params.sql")),
+    (22, include_str!("../migrations/postgres/0022_credit_ledger_meta.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {
@@ -351,5 +354,15 @@ pub fn bool_true(kind: DbKind) -> &'static str {
     match kind {
         DbKind::Postgres => "TRUE",
         _ => "1",
+    }
+}
+
+/// Returns a SQL expression that truncates a timestamp column to a day string
+/// like `2026-05-23`. Suitable for use in SELECT / GROUP BY across dialects.
+pub fn day_bucket(kind: DbKind, col: &str) -> String {
+    match kind {
+        DbKind::Sqlite => format!("substr({col}, 1, 10)"),
+        DbKind::Mysql => format!("DATE_FORMAT({col}, '%Y-%m-%d')"),
+        DbKind::Postgres => format!("to_char({col}, 'YYYY-MM-DD')"),
     }
 }

@@ -419,7 +419,16 @@ async fn process_notify(state: &AppState, params: BTreeMap<String, String>) -> S
     } else {
         reason
     };
-    if let Err(_) = credits::grant(pool, kind, user_id, credits_to_grant, &reason).await {
+    if let Err(_) = credits::grant(
+        pool,
+        kind,
+        user_id,
+        credits_to_grant,
+        &reason,
+        &credits::LedgerMeta::recharge(),
+    )
+    .await
+    {
         // leave order as 'paid' — admin can manually adjust; still tell epay "success"
         // because the money IS received and retrying won't help.
     }

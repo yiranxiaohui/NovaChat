@@ -994,6 +994,7 @@ pub async fn try_deduct_for_model(
     user_id: i64,
     model: &str,
     flavor: &str,
+    protocol: &str,
     reason: &str,
 ) -> Result<(i64, i64), DeductError> {
     let price = match get_price(pool, kind, model).await {
@@ -1004,7 +1005,12 @@ pub async fn try_deduct_for_model(
         return Err(DeductError::NotWhitelisted);
     }
     let cost = price.cost_credits.max(0);
-    match crate::credits::try_deduct(pool, kind, user_id, cost, reason).await {
+    let meta = if flavor == "image" {
+        crate::credits::LedgerMeta::image(protocol, model)
+    } else {
+        crate::credits::LedgerMeta::chat(protocol, model)
+    };
+    match crate::credits::try_deduct(pool, kind, user_id, cost, reason, &meta).await {
         Ok(bal) => Ok((bal, cost)),
         Err(bal) => Err(DeductError::Insufficient { balance: bal, cost }),
     }

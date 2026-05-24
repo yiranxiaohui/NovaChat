@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Receipt, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { creditsApi, type LedgerEntry } from "@/lib/credits"
+import { cn } from "@/lib/utils"
+import { StatsView } from "./StatsView"
 
 type Props = {
   open: boolean
@@ -99,12 +101,17 @@ function prettifyReason(raw: string): string {
   return raw
 }
 
+type Tab = "stats" | "ledger"
+
 export function CreditsLedgerDialog({ open, onClose }: Props) {
+  const [tab, setTab] = useState<Tab>("stats")
   const [entries, setEntries] = useState<LedgerEntry[]>([])
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
+
+  const statsLoader = useCallback(creditsApi.stats, [])
 
   useEffect(() => {
     if (!open) return
@@ -112,6 +119,7 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
     setError(null)
     setPage(1)
     setHasMore(true)
+    setTab("stats")
     void loadPage(1, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -143,84 +151,112 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
         className="flex max-h-[90vh] w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-background p-4 shadow-lg sm:max-h-[80vh] sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-2">
           <div>
             <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <Receipt className="size-5" /> 积分明细
+              <Receipt className="size-5" /> 积分中心
             </h2>
             <p className="text-xs text-muted-foreground">
-              每次扣费 / 退款 / 充值 / 邀请奖励都会在这里记录
+              {tab === "stats"
+                ? "看一眼这段时间花在哪里、剩下多少。"
+                : "每次扣费 / 退款 / 充值 / 邀请奖励都会在这里记录。"}
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void loadPage(1, true)}
-            disabled={loading}
-            title="刷新"
-          >
-            <RefreshCw className={"size-4 " + (loading ? "animate-spin" : "")} />
-          </Button>
+          {tab === "ledger" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void loadPage(1, true)}
+              disabled={loading}
+              title="刷新"
+            >
+              <RefreshCw className={"size-4 " + (loading ? "animate-spin" : "")} />
+            </Button>
+          )}
         </div>
 
-        {error && (
+        <div className="inline-flex shrink-0 self-start rounded-md border border-border p-0.5">
+          {(["stats", "ledger"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={cn(
+                "rounded px-3 py-1 text-xs transition-colors",
+                tab === t
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              )}
+            >
+              {t === "stats" ? "统计" : "明细"}
+            </button>
+          ))}
+        </div>
+
+        {error && tab === "ledger" && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </div>
         )}
 
-        <div className="nc-scroll min-h-[200px] flex-1 overflow-y-auto rounded-md border border-border">
-          {entries.length === 0 && !loading ? (
-            <p className="px-3 py-10 text-center text-sm text-muted-foreground">
-              {error ? "加载失败" : "还没有积分变动记录"}
-            </p>
+        <div className="nc-scroll min-h-[200px] flex-1 overflow-y-auto">
+          {tab === "stats" ? (
+            <StatsView loader={statsLoader} active={open && tab === "stats"} />
           ) : (
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">时间</th>
-                  <th className="px-3 py-2 text-right font-medium">变动</th>
-                  <th className="px-3 py-2 text-left font-medium">原因</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((e) => (
-                  <tr key={e.id} className="border-t border-border">
-                    <td className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-muted-foreground">
-                      {formatTime(e.created_at)}
-                    </td>
-                    <td
-                      className={
-                        "whitespace-nowrap px-3 py-1.5 text-right tabular-nums font-medium " +
-                        (e.delta > 0
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : e.delta < 0
-                            ? "text-rose-600 dark:text-rose-400"
-                            : "text-muted-foreground")
-                      }
-                    >
-                      {e.delta > 0 ? "+" : ""}
-                      {e.delta}
-                    </td>
-                    <td
-                      className="break-all px-3 py-1.5 text-xs"
-                      title={e.reason}
-                    >
-                      {prettifyReason(e.reason)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="rounded-md border border-border">
+              {entries.length === 0 && !loading ? (
+                <p className="px-3 py-10 text-center text-sm text-muted-foreground">
+                  {error ? "加载失败" : "还没有积分变动记录"}
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-muted/50 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">时间</th>
+                      <th className="px-3 py-2 text-right font-medium">变动</th>
+                      <th className="px-3 py-2 text-left font-medium">原因</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((e) => (
+                      <tr key={e.id} className="border-t border-border">
+                        <td className="whitespace-nowrap px-3 py-1.5 text-xs tabular-nums text-muted-foreground">
+                          {formatTime(e.created_at)}
+                        </td>
+                        <td
+                          className={
+                            "whitespace-nowrap px-3 py-1.5 text-right tabular-nums font-medium " +
+                            (e.delta > 0
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : e.delta < 0
+                                ? "text-rose-600 dark:text-rose-400"
+                                : "text-muted-foreground")
+                          }
+                        >
+                          {e.delta > 0 ? "+" : ""}
+                          {e.delta}
+                        </td>
+                        <td
+                          className="break-all px-3 py-1.5 text-xs"
+                          title={e.reason}
+                        >
+                          {prettifyReason(e.reason)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           )}
         </div>
 
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs text-muted-foreground">
-            已加载 {entries.length} 条
+            {tab === "ledger" ? `已加载 ${entries.length} 条` : ""}
           </span>
           <div className="flex gap-2">
-            {hasMore && (
+            {tab === "ledger" && hasMore && (
               <Button
                 variant="outline"
                 size="sm"

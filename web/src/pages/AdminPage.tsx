@@ -40,6 +40,7 @@ import {
 } from "@/lib/credits"
 import { ChannelsPanel } from "./admin/ChannelsPanel"
 import { PricingPanel } from "./admin/PricingPanel"
+import { StatsView } from "@/components/app/StatsView"
 import {
   adminPaymentsApi,
   type AdminOrder,
@@ -856,6 +857,7 @@ function InfoRow({
 }
 
 function CreditsPanel() {
+  const [tab, setTab] = useState<"stats" | "users">("stats")
   const [rows, setRows] = useState<AdminUserCredits[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -888,6 +890,30 @@ function CreditsPanel() {
         用户在未填自己 API Key 时会消耗站点共享额度；每次对话按「每次消耗」配置扣积分，图像按图像配置扣。上游报错会自动退款。
       </p>
 
+      <div className="inline-flex shrink-0 self-start rounded-md border border-border p-0.5">
+        {(["stats", "users"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={
+              "rounded px-3 py-1 text-xs transition-colors " +
+              (tab === t
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent")
+            }
+          >
+            {t === "stats" ? "全站统计" : "用户余额"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "stats" && (
+        <StatsView loader={adminCreditsApi.stats} showTopUsers active />
+      )}
+
+      {tab === "users" && (
+      <>
       <div className="flex items-center gap-2">
         <Input
           value={query}
@@ -994,6 +1020,8 @@ function CreditsPanel() {
           </tbody>
         </table>
       </div>
+      </>
+      )}
 
       {editing && (
         <AdjustCreditsDialog

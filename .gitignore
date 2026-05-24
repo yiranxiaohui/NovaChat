@@ -12,3 +12,7 @@
 /novachat.toml
 # Personal Claude Code overrides
 /.claude/settings.local.json
+
+# Python bytecode (sneaks in via .claude/skills/.../scripts/)
+__pycache__/
+*.pyc

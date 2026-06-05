@@ -830,16 +830,25 @@ async fn user_list_platform_models(
             Ok(c) => c,
             Err(_) => continue,
         };
-        let Some(first) = chain.into_iter().find(|c| c.channel.enabled) else {
-            continue;
-        };
-        out.push(PlatformModel {
-            model: p.model,
-            display_name: p.display_name,
-            kind: p.kind,
-            cost_credits: p.cost_credits,
-            protocol: first.channel.protocol,
-        });
+        // Emit one entry per distinct protocol the model is actually bound to,
+        // so the picker's protocol label always matches a real bound channel
+        // (and therefore the route the client will take). A model bound to
+        // channels of several protocols shows up once per protocol; an unbound
+        // model produces nothing. First-seen order follows priority ASC.
+        let mut seen: Vec<String> = Vec::new();
+        for c in chain {
+            if !c.channel.enabled || seen.contains(&c.channel.protocol) {
+                continue;
+            }
+            seen.push(c.channel.protocol.clone());
+            out.push(PlatformModel {
+                model: p.model.clone(),
+                display_name: p.display_name.clone(),
+                kind: p.kind.clone(),
+                cost_credits: p.cost_credits,
+                protocol: c.channel.protocol,
+            });
+        }
     }
     Json(out).into_response()
 }

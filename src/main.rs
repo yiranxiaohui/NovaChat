@@ -604,6 +604,7 @@ async fn proxy_forward(
         installed.kind,
         headers,
         "chat",
+        protocol.name(),
         &req_model,
     )
     .await

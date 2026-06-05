@@ -901,15 +901,60 @@ pub fn extract_chat_model(body: &[u8], headers: &HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Round-robin cursor keyed by `(protocol, model, priority-tier)`. Used to
+/// rotate the starting channel among equal-priority channels so load spreads
+/// evenly across them request-to-request. In-memory only (resets on restart) —
+/// exact fairness across a process restart isn't required.
+fn rr_next(key: &str) -> u64 {
+    static COUNTERS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    let m = COUNTERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    let c = g.entry(key.to_string()).or_insert(0);
+    let v = *c;
+    *c = c.wrapping_add(1);
+    v
+}
+
+/// Reorder a priority-sorted chain so that, within each priority tier of 2+
+/// channels, the starting channel rotates round-robin. Tiers stay in ascending
+/// priority order, so failover still walks lower-priority tiers afterwards.
+fn balance_chain(chain: Vec<ChannelChoice>, key_prefix: &str) -> Vec<ChannelChoice> {
+    let mut out: Vec<ChannelChoice> = Vec::with_capacity(chain.len());
+    let mut i = 0;
+    while i < chain.len() {
+        let prio = chain[i].channel.priority;
+        let mut j = i;
+        while j < chain.len() && chain[j].channel.priority == prio {
+            j += 1;
+        }
+        let group = &chain[i..j];
+        if group.len() > 1 {
+            let start = (rr_next(&format!("{key_prefix}:{prio}")) as usize) % group.len();
+            for k in 0..group.len() {
+                out.push(group[(start + k) % group.len()].clone());
+            }
+        } else {
+            out.push(group[0].clone());
+        }
+        i = j;
+    }
+    out
+}
+
 /// Resolve a request to either a BYOK route or a channel chain.
 ///
-/// `flavor` is "chat" or "image". `model` is the user-requested model name.
+/// `flavor` is "chat" or "image". `protocol` is the wire protocol the client is
+/// speaking ("openai"/"claude"/"gemini"); the channel chain is filtered to
+/// channels of that exact protocol so a request is never sent to a channel that
+/// speaks a different protocol. `model` is the user-requested model name.
 /// For BYOK requests `model` may be empty — it's only used to look up channels.
 pub async fn resolve_route(
     pool: &Pool,
     kind: DbKind,
     headers: &HeaderMap,
     flavor: &str,
+    protocol: &str,
     model: &str,
 ) -> Result<Route, Response> {
     // BYOK only when both URL and key are present. `X-Use-Shared` header is
@@ -938,13 +983,18 @@ pub async fn resolve_route(
         )
             .into_response()
     })?;
+    let chain: Vec<ChannelChoice> = chain
+        .into_iter()
+        .filter(|c| c.channel.protocol == protocol)
+        .collect();
     if chain.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("模型 {model} 未配置任何可用渠道"),
+            format!("模型 {model} 未配置任何可用的 {protocol} 渠道"),
         )
             .into_response());
     }
+    let chain = balance_chain(chain, &format!("{flavor}:{protocol}:{model}"));
     Ok(Route::Channels {
         model: model.to_string(),
         chain,

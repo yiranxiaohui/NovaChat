@@ -8,6 +8,7 @@ import {
   ClipboardCheck,
   Copy,
   Download,
+  FileText,
   Globe,
   Images,
   Menu,
@@ -469,22 +470,57 @@ function CodeBlock({ children, ...rest }: React.HTMLAttributes<HTMLPreElement>) 
   )
 }
 
+// Document attachments accepted alongside images. PDFs plus text/code files —
+// the types OpenAI / Claude / Gemini accept as native document blocks.
+const DOC_EXTS = [
+  "pdf", "txt", "md", "markdown", "csv", "json", "log", "xml", "yaml", "yml",
+  "html", "htm", "css", "ts", "tsx", "js", "jsx", "py", "rs", "go", "java",
+  "c", "h", "cpp", "hpp", "cc", "sh", "rb", "php", "sql", "toml", "ini",
+  "conf", "env", "text",
+]
+const DOC_ACCEPT =
+  "application/pdf," + DOC_EXTS.map((e) => `.${e}`).join(",")
+
+function isAcceptedDoc(file: File): boolean {
+  const m = file.type
+  if (
+    m === "application/pdf" ||
+    m.startsWith("text/") ||
+    m === "application/json" ||
+    m === "application/xml"
+  )
+    return true
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? ""
+  return DOC_EXTS.includes(ext)
+}
+
 type UserSegment =
   | { type: "text"; value: string }
   | { type: "image"; url: string; alt: string }
+  | { type: "file"; url: string; name: string }
 
 function splitUserContent(content: string): UserSegment[] {
-  // Match standard markdown image syntax: ![alt](url)
-  const re = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+  // Match markdown image syntax `![alt](url)` and our document-link syntax
+  // `[name](/api/files/…)`. The leading `!?` distinguishes the two.
+  const re = /(!?)\[([^\]]*)\]\(([^)\s]+)\)/g
   const segments: UserSegment[] = []
   let lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(content)) !== null) {
+    const bang = m[1] === "!"
+    const url = m[3] ?? ""
+    const isFile = !bang && url.startsWith("/api/files/")
+    // A plain markdown link that isn't one of our file refs: leave it in text.
+    if (!bang && !isFile) continue
     const text = content.slice(lastIndex, m.index).replace(/\n+$/, "")
     if (text.length > 0) segments.push({ type: "text", value: text })
-    segments.push({ type: "image", alt: m[1] ?? "", url: m[2] ?? "" })
+    if (isFile) {
+      segments.push({ type: "file", name: m[2] || "file", url })
+    } else {
+      segments.push({ type: "image", alt: m[2] ?? "", url })
+    }
     lastIndex = m.index + m[0].length
-    // Swallow a single trailing newline so consecutive images stack cleanly
+    // Swallow a single trailing newline so consecutive refs stack cleanly
     if (content[lastIndex] === "\n") lastIndex += 1
   }
   const tail = content.slice(lastIndex)
@@ -557,7 +593,7 @@ function Bubble({
                 <p key={i} className="whitespace-pre-wrap">
                   {seg.value}
                 </p>
-              ) : (
+              ) : seg.type === "image" ? (
                 <img
                   key={i}
                   src={seg.url}
@@ -566,6 +602,18 @@ function Bubble({
                   onClick={() => setPreview({ src: seg.url, alt: seg.alt })}
                   className="my-1 max-h-80 w-auto cursor-zoom-in rounded-xl border border-primary-foreground/20"
                 />
+              ) : (
+                <a
+                  key={i}
+                  href={seg.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="my-1 flex items-center gap-2 rounded-xl border border-primary-foreground/20 bg-primary-foreground/10 px-3 py-2 text-xs no-underline hover:bg-primary-foreground/20"
+                  title={seg.name}
+                >
+                  <FileText className="size-4 shrink-0" />
+                  <span className="truncate">{seg.name}</span>
+                </a>
               )
             )}
           </div>
@@ -779,7 +827,12 @@ export default function ChatPage() {
   const [sidebarReload, setSidebarReload] = useState(0)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<
-    Array<{ id: string; file: File; previewUrl: string }>
+    Array<{
+      id: string
+      file: File
+      kind: "image" | "file"
+      previewUrl: string | null
+    }>
   >([])
   const abortRef = useRef<AbortController | null>(null)
   // Set to a freshly-created conversation id so the conversation-load effect
@@ -796,7 +849,7 @@ export default function ChatPage() {
   // Release object URLs for removed / unmounted previews.
   useEffect(() => {
     return () => {
-      for (const a of attachments) URL.revokeObjectURL(a.previewUrl)
+      for (const a of attachments) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -1030,45 +1083,78 @@ export default function ChatPage() {
     configured
 
   function addAttachments(files: FileList | File[]) {
-    const picked = Array.from(files).filter((f) => f.type.startsWith("image/"))
-    if (picked.length === 0) return
-    const next = picked.map((file) => ({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }))
+    const next = Array.from(files)
+      .filter((f) => f.type.startsWith("image/") || isAcceptedDoc(f))
+      .map((file) => {
+        const kind: "image" | "file" = file.type.startsWith("image/")
+          ? "image"
+          : "file"
+        return {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file,
+          kind,
+          previewUrl: kind === "image" ? URL.createObjectURL(file) : null,
+        }
+      })
+    if (next.length === 0) return
     setAttachments((prev) => [...prev, ...next])
   }
 
   function removeAttachment(id: string) {
     setAttachments((prev) => {
       const hit = prev.find((a) => a.id === id)
-      if (hit) URL.revokeObjectURL(hit.previewUrl)
+      if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl)
       return prev.filter((a) => a.id !== id)
     })
   }
 
   function clearAttachments() {
     setAttachments((prev) => {
-      for (const a of prev) URL.revokeObjectURL(a.previewUrl)
+      for (const a of prev) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
       return []
     })
   }
 
-  async function uploadAttachment(file: File): Promise<string> {
-    const mime = file.type || "image/png"
-    const buf = await file.arrayBuffer()
-    const bytes = new Uint8Array(buf)
+  function bytesToB64(bytes: Uint8Array): string {
     let bin = ""
     const chunk = 0x8000
     for (let i = 0; i < bytes.length; i += chunk) {
       bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
     }
-    const b64 = btoa(bin)
-    const res = await fetch("/api/images/save", {
+    return btoa(bin)
+  }
+
+  // Returns the markdown ref for the uploaded attachment: images use
+  // `![](url)` (rebuilt as input_image downstream); documents use a link
+  // `[name](/api/files/…)` that the chat-stream layer turns into a native
+  // document block per protocol.
+  async function uploadAttachment(att: {
+    file: File
+    kind: "image" | "file"
+  }): Promise<string> {
+    const b64 = bytesToB64(new Uint8Array(await att.file.arrayBuffer()))
+    if (att.kind === "image") {
+      const res = await fetch("/api/images/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ b64, mime: att.file.type || "image/png" }),
+        credentials: "same-origin",
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText)
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      const j = (await res.json()) as { path: string }
+      return `![](${j.path})`
+    }
+    const res = await fetch("/api/files/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ b64, mime }),
+      body: JSON.stringify({
+        b64,
+        mime: att.file.type || "application/octet-stream",
+        filename: att.file.name,
+      }),
       credentials: "same-origin",
     })
     if (!res.ok) {
@@ -1076,7 +1162,8 @@ export default function ChatPage() {
       throw new Error(text || `HTTP ${res.status}`)
     }
     const j = (await res.json()) as { path: string }
-    return j.path
+    const safeName = att.file.name.replace(/[[\]()]/g, "_")
+    return `[${safeName}](${j.path})`
   }
 
   const banner = useMemo(() => {
@@ -1149,16 +1236,16 @@ export default function ChatPage() {
     if (!convId) return
 
     // Upload attachments first — fail early so the user message never gets
-    // added if image saving breaks.
+    // added if saving breaks.
     const pending = attachments
-    let uploadedPaths: string[] = []
+    let uploadedRefs: string[] = []
     if (pending.length > 0) {
       try {
-        uploadedPaths = await Promise.all(
-          pending.map((a) => uploadAttachment(a.file))
+        uploadedRefs = await Promise.all(
+          pending.map((a) => uploadAttachment(a))
         )
       } catch (e) {
-        setError(`图片上传失败：${e instanceof Error ? e.message : String(e)}`)
+        setError(`附件上传失败：${e instanceof Error ? e.message : String(e)}`)
         return
       }
     }
@@ -1172,15 +1259,15 @@ export default function ChatPage() {
     atBottomRef.current = true
     setShowJumpToBottom(false)
 
-    // Compose the user message. Text first, then each uploaded image
-    // referenced as standard markdown — the chat-stream layer later
-    // extracts these refs and re-encodes them as input_image parts.
-    const imagesMd = uploadedPaths.map((p) => `![](${p})`).join("\n")
+    // Compose the user message. Text first, then each uploaded attachment as
+    // a markdown ref — the chat-stream layer extracts these and re-encodes
+    // them as input_image / native document parts.
+    const attachMd = uploadedRefs.join("\n")
     const composed = text
-      ? imagesMd
-        ? `${text}\n\n${imagesMd}`
+      ? attachMd
+        ? `${text}\n\n${attachMd}`
         : text
-      : imagesMd
+      : attachMd
 
     const userMsg: UiMessage = { role: "user", content: composed }
     const baseHistory: UiMessage[] = [...messages, userMsg]
@@ -1685,34 +1772,55 @@ export default function ChatPage() {
           <div className="mx-auto max-w-3xl">
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2 rounded-xl border border-border bg-card p-2">
-                {attachments.map((a) => (
-                  <div
-                    key={a.id}
-                    className="group relative size-16 overflow-hidden rounded-lg border border-border bg-muted"
-                  >
-                    <img
-                      src={a.previewUrl}
-                      alt={a.file.name}
-                      className="size-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(a.id)}
-                      className="absolute right-0.5 top-0.5 grid size-5 place-items-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
-                      aria-label="移除图片"
-                      title="移除图片"
-                      disabled={streaming}
+                {attachments.map((a) =>
+                  a.kind === "image" && a.previewUrl ? (
+                    <div
+                      key={a.id}
+                      className="group relative size-16 overflow-hidden rounded-lg border border-border bg-muted"
                     >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                ))}
+                      <img
+                        src={a.previewUrl}
+                        alt={a.file.name}
+                        className="size-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(a.id)}
+                        className="absolute right-0.5 top-0.5 grid size-5 place-items-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
+                        aria-label="移除附件"
+                        title="移除附件"
+                        disabled={streaming}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      key={a.id}
+                      className="group relative flex h-16 max-w-44 items-center gap-2 overflow-hidden rounded-lg border border-border bg-muted px-3 pr-7"
+                      title={a.file.name}
+                    >
+                      <FileText className="size-5 shrink-0 text-muted-foreground" />
+                      <span className="truncate text-xs">{a.file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(a.id)}
+                        className="absolute right-0.5 top-0.5 grid size-5 place-items-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
+                        aria-label="移除附件"
+                        title="移除附件"
+                        disabled={streaming}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                  )
+                )}
               </div>
             )}
             <input
               ref={attachInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
+              accept={`image/png,image/jpeg,image/webp,image/gif,${DOC_ACCEPT}`}
               multiple
               className="hidden"
               onChange={(e) => {
@@ -1726,8 +1834,8 @@ export default function ChatPage() {
                 variant="ghost"
                 size="icon"
                 className="shrink-0"
-                aria-label="附加图片"
-                title="附加图片（支持多选）"
+                aria-label="附加图片或文件"
+                title="附加图片或文件（PDF / 文本，支持多选）"
                 disabled={streaming}
                 onClick={() => attachInputRef.current?.click()}
               >

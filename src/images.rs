@@ -1342,6 +1342,113 @@ async fn save_b64_image(
 }
 
 // ---------------------------------------------------------------------------
+// persist a base64 document (PDF / text / code) uploaded as a chat attachment.
+// Stored under data_dir/files and referenced by /api/files/<name>. The chat
+// layer fetches the bytes back and sends them as a native document block for
+// the active protocol (OpenAI input_file / Claude document / Gemini inline).
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SaveFileReq {
+    b64: String,
+    #[serde(default)]
+    mime: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SaveFileResp {
+    path: String,
+}
+
+fn ext_for_file(filename: Option<&str>, mime: Option<&str>) -> String {
+    // Prefer the uploaded filename's extension (sanitized), else map from mime.
+    if let Some(name) = filename {
+        if let Some(dot) = name.rfind('.') {
+            let raw = &name[dot + 1..];
+            let clean: String = raw
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(8)
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if !clean.is_empty() {
+                return clean;
+            }
+        }
+    }
+    match mime {
+        Some("application/pdf") => "pdf",
+        Some("text/markdown") => "md",
+        Some("text/csv") => "csv",
+        Some("application/json") => "json",
+        Some(m) if m.starts_with("text/") => "txt",
+        _ => "bin",
+    }
+    .to_string()
+}
+
+async fn save_b64_file(
+    State(state): State<AppState>,
+    Extension(_user): Extension<CurrentUser>,
+    Json(req): Json<SaveFileReq>,
+) -> Response {
+    let bytes = match STANDARD.decode(req.b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("b64 decode: {e}")),
+    };
+    let ext = ext_for_file(req.filename.as_deref(), req.mime.as_deref());
+    let files_dir = state.data_dir.join("files");
+    if let Err(e) = tokio::fs::create_dir_all(&files_dir).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
+    }
+    let name = format!("{}.{ext}", random_hex(16));
+    let path = files_dir.join(&name);
+    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
+    }
+    Json(SaveFileResp {
+        path: format!("/api/files/{name}"),
+    })
+    .into_response()
+}
+
+/// Content-Type for a stored attachment. PDFs and known text/code extensions
+/// are pinned explicitly because `mime_guess` mislabels several code suffixes
+/// (e.g. `.ts` → video/mp2t), which would otherwise make the chat layer treat
+/// a source file as binary and drop it.
+fn file_content_type(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "csv" => "text/csv; charset=utf-8",
+        "md" | "markdown" | "txt" | "log" | "text" | "xml" | "yaml" | "yml" | "html"
+        | "htm" | "css" | "ts" | "tsx" | "js" | "jsx" | "py" | "rs" | "go" | "java"
+        | "c" | "h" | "cpp" | "hpp" | "cc" | "sh" | "rb" | "php" | "sql" | "toml"
+        | "ini" | "conf" | "env" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn serve_file(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let path = state.data_dir.join("files").join(&name);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, file_content_type(&name))
+        .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------
 // serve stored image
 // ---------------------------------------------------------------------------
 
@@ -1375,6 +1482,7 @@ pub fn routes() -> Router<AppState> {
         .route("/images/jobs/openai/responses", post(start_openai_responses_job))
         .route("/images/jobs/gemini", post(start_gemini_job))
         .route("/images/save", post(save_b64_image))
+        .route("/files/save", post(save_b64_file))
         .route("/images/jobs/{token}", get(get_job))
 }
 
@@ -1384,5 +1492,7 @@ pub fn routes() -> Router<AppState> {
 /// logged-in user could fetch any image by URL), so exposing it publicly does
 /// not relax an existing isolation guarantee.
 pub fn public_routes() -> Router<AppState> {
-    Router::new().route("/images/{name}", get(serve_image))
+    Router::new()
+        .route("/images/{name}", get(serve_image))
+        .route("/files/{name}", get(serve_file))
 }

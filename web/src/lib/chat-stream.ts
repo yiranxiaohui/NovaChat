@@ -21,6 +21,51 @@ function extractImages(md: string): ExtractedImages {
   return { text, images }
 }
 
+// Document attachments are embedded in user messages as ordinary markdown
+// links whose URL points at our own `/api/files/` store, e.g.
+// `[report.pdf](/api/files/ab12.pdf)`. We strip them from the prompt text and
+// re-attach each as a native document block for the active protocol.
+type FileRef = { name: string; url: string }
+type ExtractedFiles = { text: string; files: FileRef[] }
+
+function extractFiles(md: string): ExtractedFiles {
+  const files: FileRef[] = []
+  const text = md
+    .replace(
+      /\[([^\]]*)\]\((\/api\/files\/[^)\s]+)\)/g,
+      (_m, name: string, url: string) => {
+        if (url) files.push({ name: name || "file", url })
+        return ""
+      }
+    )
+    .trim()
+  return { text, files }
+}
+
+function isPdf(mime: string): boolean {
+  return mime === "application/pdf" || mime.startsWith("application/pdf")
+}
+
+function isTextual(mime: string): boolean {
+  return (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml" ||
+    mime === "application/x-yaml" ||
+    mime === "application/javascript"
+  )
+}
+
+async function fileRefToText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { credentials: "same-origin" })
+    if (!res.ok) return null
+    return await res.text()
+  } catch {
+    return null
+  }
+}
+
 /** Assistant content sometimes embeds markdown image refs (notably the OpenAI
  * Responses `image_generation` tool dumps `![alt](/api/images/…png)` into the
  * assistant message after it generates an image). None of OpenAI / Claude /
@@ -125,8 +170,10 @@ async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
     nonSystem.map(async (m) => {
       const content =
         m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
-      const { text, images } = extractImages(content)
-      if (images.length === 0) {
+      const { text: t0, images } = extractImages(content)
+      const { text, files } =
+        m.role === "user" ? extractFiles(t0) : { text: t0, files: [] }
+      if (images.length === 0 && files.length === 0) {
         return { role: m.role, content }
       }
       const parts: unknown[] = []
@@ -139,6 +186,11 @@ async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
       for (const ref of images) {
         const durl = await refToDataUrl(ref)
         if (durl) parts.push({ type: "input_image", image_url: durl })
+      }
+      for (const f of files) {
+        const durl = await refToDataUrl(f.url)
+        if (durl)
+          parts.push({ type: "input_file", filename: f.name, file_data: durl })
       }
       return { role: m.role, content: parts }
     })
@@ -172,8 +224,10 @@ async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
     nonSystem.map(async (m) => {
       const content =
         m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
-      const { text, images } = extractImages(content)
-      if (images.length === 0) {
+      const { text: t0, images } = extractImages(content)
+      const { text, files } =
+        m.role === "user" ? extractFiles(t0) : { text: t0, files: [] }
+      if (images.length === 0 && files.length === 0) {
         return { role: m.role, content }
       }
       const parts: unknown[] = []
@@ -185,6 +239,26 @@ async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
             type: "image",
             source: { type: "base64", media_type: enc.mime, data: enc.b64 },
           })
+        }
+      }
+      for (const f of files) {
+        const enc = await refToBase64(f.url)
+        if (!enc) continue
+        if (isPdf(enc.mime)) {
+          parts.push({
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: enc.b64 },
+            title: f.name,
+          })
+        } else if (isTextual(enc.mime)) {
+          const raw = await fileRefToText(f.url)
+          if (raw != null) {
+            parts.push({
+              type: "document",
+              source: { type: "text", media_type: "text/plain", data: raw },
+              title: f.name,
+            })
+          }
         }
       }
       return { role: m.role, content: parts }
@@ -229,14 +303,22 @@ async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
     nonSystem.map(async (m) => {
       const content =
         m.role === "assistant" ? sanitizeAssistantContent(m.content) : m.content
-      const { text, images } = extractImages(content)
+      const { text: t0, images } = extractImages(content)
+      const { text, files } =
+        m.role === "user" ? extractFiles(t0) : { text: t0, files: [] }
       const parts: unknown[] = []
-      if (text || images.length === 0) {
+      if (text || (images.length === 0 && files.length === 0)) {
         parts.push({ text: text || content })
       }
       for (const ref of images) {
         const enc = await refToBase64(ref)
         if (enc) {
+          parts.push({ inline_data: { mime_type: enc.mime, data: enc.b64 } })
+        }
+      }
+      for (const f of files) {
+        const enc = await refToBase64(f.url)
+        if (enc && (isPdf(enc.mime) || isTextual(enc.mime))) {
           parts.push({ inline_data: { mime_type: enc.mime, data: enc.b64 } })
         }
       }

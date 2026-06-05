@@ -89,6 +89,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (22, include_str!("../migrations/sqlite/0022_credit_ledger_meta.sql")),
     (23, include_str!("../migrations/sqlite/0023_shared_conversations.sql")),
     (24, include_str!("../migrations/sqlite/0024_model_pricing_protocol.sql")),
+    (25, include_str!("../migrations/sqlite/0025_studio_source_paths.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -115,6 +116,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (22, include_str!("../migrations/mysql/0022_credit_ledger_meta.sql")),
     (23, include_str!("../migrations/mysql/0023_shared_conversations.sql")),
     (24, include_str!("../migrations/mysql/0024_model_pricing_protocol.sql")),
+    (25, include_str!("../migrations/mysql/0025_studio_source_paths.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -141,6 +143,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (22, include_str!("../migrations/postgres/0022_credit_ledger_meta.sql")),
     (23, include_str!("../migrations/postgres/0023_shared_conversations.sql")),
     (24, include_str!("../migrations/postgres/0024_model_pricing_protocol.sql")),
+    (25, include_str!("../migrations/postgres/0025_studio_source_paths.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

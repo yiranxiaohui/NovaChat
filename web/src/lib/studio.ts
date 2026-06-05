@@ -12,6 +12,7 @@ export type StudioGeneration = {
   n: number
   image_path: string | null
   source_path: string | null
+  source_paths: string[]
   used_shared: boolean
   created_at: string
   finished_at: string | null
@@ -27,6 +28,8 @@ export type GenerateParams = {
   quality?: string
   style?: string
   imageDataUrl?: string
+  /** Multiple base images (data URLs). Sent to /v1/images/edits as image[]. */
+  imageDataUrls?: string[]
   /** 1-10. Clamped server-side; storage currently keeps only the first image. */
   n?: number
   /** Forwarded to providers that accept it (Gemini Imagen, SD-compatible relays). */
@@ -91,6 +94,7 @@ export const studioApi = {
           quality: o.quality,
           style: o.style,
           image_data_url: o.imageDataUrl,
+          image_data_urls: o.imageDataUrls,
           n: o.n,
           negative_prompt: o.negativePrompt,
           seed: o.seed,

@@ -109,6 +109,13 @@ function failureHint(err: string | null | undefined): string | null {
 // Fetch a same-origin image URL and turn it into a File the <input type=file>
 // attach-flow can consume. Used by the 用作底图 button so users can round-trip
 // a generated image back in as an edit input without downloading.
+// A generation's base images: prefer the multi-image array, fall back to the
+// single legacy source_path so old history rows still round-trip.
+function sourcesOf(gen: StudioGeneration): string[] {
+  if (gen.source_paths?.length) return gen.source_paths
+  return gen.source_path ? [gen.source_path] : []
+}
+
 async function urlToImageFile(url: string, fallbackName = "image"): Promise<File> {
   const res = await fetch(url, { credentials: "same-origin" })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -166,8 +173,8 @@ export default function ImageStudioPage() {
   const [negativePrompt, setNegativePrompt] = useState<string>("")
   const [seed, setSeed] = useState<string>("")
   const [background, setBackground] = useState<string>("")
-  const [attached, setAttached] = useState<File | null>(null)
-  const [attachedUrl, setAttachedUrl] = useState<string | null>(null)
+  const [attached, setAttached] = useState<File[]>([])
+  const [attachedUrls, setAttachedUrls] = useState<string[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [models, setModels] = useState<string[]>([])
@@ -192,13 +199,9 @@ export default function ImageStudioPage() {
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
-    if (!attached) {
-      setAttachedUrl(null)
-      return
-    }
-    const u = URL.createObjectURL(attached)
-    setAttachedUrl(u)
-    return () => URL.revokeObjectURL(u)
+    const urls = attached.map((f) => URL.createObjectURL(f))
+    setAttachedUrls(urls)
+    return () => urls.forEach((u) => URL.revokeObjectURL(u))
   }, [attached])
 
   // Hydrate prompt/base from URL — used by the Image Plaza when the user
@@ -217,7 +220,7 @@ export default function ImageStudioPage() {
         void (async () => {
           try {
             const f = await urlToImageFile(`/api/images/${safeBase}`, safeBase)
-            setAttached(f)
+            setAttached([f])
           } catch (e) {
             setError(
               `载入底图失败：${e instanceof Error ? e.message : String(e)}`
@@ -246,7 +249,7 @@ export default function ImageStudioPage() {
           const f = it.getAsFile()
           if (f) {
             e.preventDefault()
-            setAttached(f)
+            setAttached((prev) => [...prev, f])
             setPastedFlash(true)
             window.setTimeout(() => setPastedFlash(false), 1500)
             return
@@ -325,7 +328,7 @@ export default function ImageStudioPage() {
     size?: string
     quality?: string
     style?: string
-    imageDataUrl?: string
+    imageDataUrls?: string[]
     n?: number
     negativePrompt?: string
     seed?: number
@@ -353,7 +356,7 @@ export default function ImageStudioPage() {
         size: params.size === "auto" ? undefined : params.size,
         quality: params.quality === "auto" ? undefined : params.quality,
         style: params.style || undefined,
-        imageDataUrl: params.imageDataUrl,
+        imageDataUrls: params.imageDataUrls,
         n: params.n,
         negativePrompt: params.negativePrompt,
         seed: params.seed,
@@ -389,10 +392,10 @@ export default function ImageStudioPage() {
       setError("请填写 prompt")
       return
     }
-    let imageDataUrl: string | undefined
-    if (attached) {
+    let imageDataUrls: string[] | undefined
+    if (attached.length > 0) {
       try {
-        imageDataUrl = await fileToDataUrl(attached)
+        imageDataUrls = await Promise.all(attached.map(fileToDataUrl))
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
         return
@@ -405,7 +408,7 @@ export default function ImageStudioPage() {
       size,
       quality,
       style,
-      imageDataUrl,
+      imageDataUrls,
       n,
       negativePrompt: negativePrompt.trim() || undefined,
       seed: Number.isFinite(parsedSeed) ? parsedSeed : undefined,
@@ -426,15 +429,18 @@ export default function ImageStudioPage() {
     setNegativePrompt(gen.negative_prompt || "")
     setSeed(gen.seed != null ? String(gen.seed) : "")
     setBackground(gen.background || "")
-    if (gen.source_path) {
+    const srcs = sourcesOf(gen)
+    if (srcs.length) {
       try {
-        const f = await urlToImageFile(gen.source_path, "source")
-        setAttached(f)
+        const files = await Promise.all(
+          srcs.map((s) => urlToImageFile(s, "source"))
+        )
+        setAttached(files)
       } catch {
-        // Non-fatal: user can re-pick the base image manually.
+        // Non-fatal: user can re-pick the base images manually.
       }
     } else {
-      setAttached(null)
+      setAttached([])
     }
   }
 
@@ -444,11 +450,14 @@ export default function ImageStudioPage() {
   async function retryGeneration(gen: StudioGeneration) {
     if (submitting) return
     if (!user) return
-    let imageDataUrl: string | undefined
-    if (gen.source_path) {
+    let imageDataUrls: string[] | undefined
+    const srcs = sourcesOf(gen)
+    if (srcs.length) {
       try {
-        const f = await urlToImageFile(gen.source_path, "source")
-        imageDataUrl = await fileToDataUrl(f)
+        const files = await Promise.all(
+          srcs.map((s) => urlToImageFile(s, "source"))
+        )
+        imageDataUrls = await Promise.all(files.map(fileToDataUrl))
       } catch (e) {
         setError(
           `读取原底图失败：${e instanceof Error ? e.message : String(e)}`
@@ -462,7 +471,7 @@ export default function ImageStudioPage() {
       size: gen.size || undefined,
       quality: gen.quality || undefined,
       style: gen.style || undefined,
-      imageDataUrl,
+      imageDataUrls,
       n: gen.n || undefined,
       negativePrompt: gen.negative_prompt || undefined,
       seed: gen.seed ?? undefined,
@@ -738,56 +747,73 @@ export default function ImageStudioPage() {
 
           <div className="mb-3 flex flex-col gap-1.5">
             <Label className="text-xs">
-              底图 <span className="text-muted-foreground">(可选，作为 edit 输入)</span>
+              底图 <span className="text-muted-foreground">(可选，可多张，作为 edit 输入)</span>
             </Label>
-            {attachedUrl ? (
+            {attachedUrls.length > 0 && (
               <div
                 className={
-                  "flex items-center gap-2 rounded-md border p-2 text-xs transition-colors " +
+                  "grid grid-cols-3 gap-2 rounded-md border p-2 transition-colors " +
                   (pastedFlash
                     ? "border-primary bg-primary/10"
                     : "border-border bg-card")
                 }
               >
-                <img
-                  src={attachedUrl}
-                  alt=""
-                  className="size-14 rounded object-cover"
-                />
-                <span className="flex-1 truncate text-muted-foreground">
-                  {pastedFlash ? "已粘贴" : "已上传"}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setAttached(null)}
-                  aria-label="移除"
-                >
-                  <X className="size-3.5" />
-                </Button>
+                {attachedUrls.map((u, i) => (
+                  <div key={i} className="group relative aspect-square">
+                    <img
+                      src={u}
+                      alt=""
+                      className="size-full rounded object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAttached((prev) => prev.filter((_, j) => j !== i))
+                      }
+                      aria-label="移除"
+                      className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-background/90 text-foreground shadow ring-1 ring-border hover:bg-destructive hover:text-destructive-foreground"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
-            ) : (
+            )}
+            <div className="flex items-center gap-2">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => fileRef.current?.click()}
-                className="w-full justify-start gap-2"
+                className="flex-1 justify-start gap-2"
               >
-                <ImagePlus className="size-4" /> 上传底图
+                <ImagePlus className="size-4" />
+                {attachedUrls.length > 0 ? "继续添加底图" : "上传底图"}
               </Button>
-            )}
+              {attachedUrls.length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setAttached([])}
+                >
+                  清空
+                </Button>
+              )}
+            </div>
             <p className="text-[11px] text-muted-foreground">
               也可直接 Ctrl+V 粘贴图片
+              {attachedUrls.length > 0 ? `（已添加 ${attachedUrls.length} 张）` : ""}
             </p>
             <input
               ref={fileRef}
               type="file"
               accept="image/*"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) setAttached(f)
+                const fs = Array.from(e.target.files ?? [])
+                if (fs.length) setAttached((prev) => [...prev, ...fs])
                 e.target.value = ""
               }}
             />
@@ -920,7 +946,7 @@ export default function ImageStudioPage() {
                     if (!effectivePreview.image_path) return
                     try {
                       const f = await urlToImageFile(effectivePreview.image_path)
-                      setAttached(f)
+                      setAttached((prev) => [...prev, f])
                       setPastedFlash(true)
                       window.setTimeout(() => setPastedFlash(false), 1500)
                     } catch (e) {

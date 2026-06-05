@@ -125,6 +125,9 @@ struct Generation {
     n: i64,
     image_path: Option<String>,
     source_path: Option<String>,
+    /// All attached base images (data URLs were persisted to disk). The first
+    /// element mirrors `source_path` for backward compatibility.
+    source_paths: Vec<String>,
     used_shared: bool,
     created_at: String,
     finished_at: Option<String>,
@@ -134,7 +137,7 @@ struct Generation {
 }
 
 // Named struct (rather than a tuple) — sqlx's tuple `FromRow` impls only go
-// up to ~16 elements, and we have 19 columns now.
+// up to ~16 elements, and we have 20 columns now.
 #[derive(sqlx::FromRow)]
 struct GenRow {
     id: i64,
@@ -150,6 +153,7 @@ struct GenRow {
     n: i64,
     image_path: Option<String>,
     source_path: Option<String>,
+    source_paths: Option<String>,
     used_shared: i64,
     created_at: String,
     finished_at: Option<String>,
@@ -160,7 +164,7 @@ struct GenRow {
 
 const GEN_COLS: &str =
     "id, token, status, error, prompt, revised_prompt, model, size, quality, style,
-     n, image_path, source_path, used_shared, created_at, finished_at,
+     n, image_path, source_path, source_paths, used_shared, created_at, finished_at,
      negative_prompt, seed, background";
 
 fn gen_from_row(r: GenRow) -> Generation {
@@ -177,6 +181,20 @@ fn gen_from_row(r: GenRow) -> Generation {
         style: r.style,
         n: r.n,
         image_path: r.image_path,
+        source_paths: {
+            // Prefer the JSON array column; fall back to the single legacy
+            // source_path for rows written before multi-base support.
+            let parsed = r
+                .source_paths
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
+            if parsed.is_empty() {
+                r.source_path.clone().into_iter().collect()
+            } else {
+                parsed
+            }
+        },
         source_path: r.source_path,
         used_shared: r.used_shared != 0,
         created_at: r.created_at,
@@ -203,8 +221,14 @@ struct GenerateReq {
     #[serde(default)]
     style: Option<String>,
     /// Optional attached source image (data: URL) — switches to /v1/images/edits.
+    /// Kept for backward compatibility; `image_data_urls` is preferred.
     #[serde(default)]
     image_data_url: Option<String>,
+    /// Multiple attached source images (data: URLs). All are forwarded to
+    /// /v1/images/edits as `image[]` parts. Takes precedence over the single
+    /// `image_data_url` field when non-empty.
+    #[serde(default)]
+    image_data_urls: Option<Vec<String>>,
     /// Number of images to ask the upstream for (1-10). Storage currently
     /// keeps only the first image; the DB still records the requested `n`.
     #[serde(default)]
@@ -242,14 +266,15 @@ async fn insert_pending(
     seed: Option<i64>,
     background: Option<&str>,
     source_path: Option<&str>,
+    source_paths: Option<&str>,
     used_shared: bool,
 ) -> Result<i64, sqlx::Error> {
     let ins = db::q(
         kind,
         "INSERT INTO studio_generations
            (token, user_id, status, prompt, model, size, quality, style,
-            n, negative_prompt, seed, background, source_path, used_shared)
-         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            n, negative_prompt, seed, background, source_path, source_paths, used_shared)
+         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     match kind {
         db::DbKind::Sqlite | db::DbKind::Postgres => {
@@ -266,6 +291,7 @@ async fn insert_pending(
                 .bind(seed)
                 .bind(background)
                 .bind(source_path)
+                .bind(source_paths)
                 .bind(if used_shared { 1_i64 } else { 0 })
                 .fetch_one(pool)
                 .await?;
@@ -286,6 +312,7 @@ async fn insert_pending(
                 .bind(seed)
                 .bind(background)
                 .bind(source_path)
+                .bind(source_paths)
                 .bind(if used_shared { 1_i64 } else { 0 })
                 .execute(&mut *tx)
                 .await?;
@@ -351,14 +378,19 @@ async fn submit_generate(
         return err(StatusCode::BAD_REQUEST, "prompt 不能为空");
     }
 
-    // Persist attached image as source (so it can be re-used in history view).
-    let mut source_path: Option<String> = None;
-    let mut source_bytes: Option<(Vec<u8>, &'static str)> = None;
-    if let Some(durl) = body.image_data_url.as_deref() {
+    // Persist attached images as sources (so they can be re-used in history
+    // view). Prefer the multi-image field; fall back to the legacy single one.
+    let input_urls: Vec<String> = match body.image_data_urls.as_ref() {
+        Some(v) if !v.is_empty() => v.clone(),
+        _ => body.image_data_url.clone().into_iter().collect(),
+    };
+    let mut source_paths: Vec<String> = Vec::new();
+    let mut source_bytes: Vec<(Vec<u8>, &'static str)> = Vec::new();
+    for durl in &input_urls {
         match parse_data_url(durl) {
             Some((bytes, ext, mime)) => {
                 match write_image_to_disk(&state.data_dir, &bytes, ext).await {
-                    Ok(p) => source_path = Some(p),
+                    Ok(p) => source_paths.push(p),
                     Err(e) => {
                         return err(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -366,13 +398,19 @@ async fn submit_generate(
                         );
                     }
                 }
-                source_bytes = Some((bytes, mime));
+                source_bytes.push((bytes, mime));
             }
             None => return err(StatusCode::BAD_REQUEST, "附加图片格式不支持"),
         }
     }
+    let source_path_first = source_paths.first().cloned();
+    let source_paths_json = if source_paths.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&source_paths).ok()
+    };
 
-    let edit = source_bytes.is_some();
+    let edit = !source_bytes.is_empty();
     // Compute model first (used by both channel selection and request body).
     let model = body
         .model
@@ -436,7 +474,8 @@ async fn submit_generate(
         body.negative_prompt.as_deref(),
         body.seed,
         body.background.as_deref(),
-        source_path.as_deref(),
+        source_path_first.as_deref(),
+        source_paths_json.as_deref(),
         used_shared,
     )
     .await
@@ -500,38 +539,47 @@ async fn submit_generate(
         let mut last_transient: Option<String> = None;
         let (status, raw) = loop {
             attempt += 1;
-            let resp_result = if let Some((bytes, mime)) = source_bytes_c.as_ref() {
+            let resp_result = if !source_bytes_c.is_empty() {
                 // /v1/images/edits → multipart form. Bytes are cloned per
-                // attempt so retries can rebuild the form.
-                let part = match reqwest::multipart::Part::bytes(bytes.clone())
-                    .file_name(format!("source.{}", mime_to_ext(mime)))
-                    .mime_str(mime)
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        finalize_failed(&pool, kind, &token_c, &format!("multipart: {e}")).await;
-                        if used_shared {
-                            let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
-                    if cost > 0 {
-                        let _ = credits::grant(
-                            &pool,
-                            kind,
-                            user.id,
-                            cost,
-                            "refund_studio_error",
-                            &credits::LedgerMeta::refund_image(&model_c),
-                        )
-                        .await;
-                    }
-                        }
-                        return;
-                    }
-                };
+                // attempt so retries can rebuild the form. Multiple base images
+                // are sent as `image[]` (gpt-image-1); a single one keeps the
+                // `image` field for dall-e-2 compatibility.
                 let mut form = reqwest::multipart::Form::new()
                     .text("model", model_c.clone())
                     .text("prompt", prompt_c.clone())
-                    .text("n", n_req_c.to_string())
-                    .part("image", part);
+                    .text("n", n_req_c.to_string());
+                let field = if source_bytes_c.len() > 1 { "image[]" } else { "image" };
+                let mut part_err: Option<String> = None;
+                for (idx, (bytes, mime)) in source_bytes_c.iter().enumerate() {
+                    match reqwest::multipart::Part::bytes(bytes.clone())
+                        .file_name(format!("source{idx}.{}", mime_to_ext(mime)))
+                        .mime_str(mime)
+                    {
+                        Ok(p) => form = form.part(field, p),
+                        Err(e) => {
+                            part_err = Some(format!("multipart: {e}"));
+                            break;
+                        }
+                    }
+                }
+                if let Some(msg) = part_err {
+                    finalize_failed(&pool, kind, &token_c, &msg).await;
+                    if used_shared {
+                        let cost = channels::cost_for_model(&pool, kind, &model_c, "image").await.unwrap_or(0);
+                        if cost > 0 {
+                            let _ = credits::grant(
+                                &pool,
+                                kind,
+                                user.id,
+                                cost,
+                                "refund_studio_error",
+                                &credits::LedgerMeta::refund_image(&model_c),
+                            )
+                            .await;
+                        }
+                    }
+                    return;
+                }
                 if let Some(s) = size_c.as_deref() {
                     if !s.is_empty() && s != "auto" {
                         form = form.text("size", s.to_string());

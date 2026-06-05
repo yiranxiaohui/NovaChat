@@ -164,6 +164,22 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
     }
   }
 
+  async function removeAll() {
+    if (
+      !window.confirm(
+        `确定要清空全部 ${items.length} 个会话吗？此操作不可撤销。`
+      )
+    )
+      return
+    try {
+      await conversationsApi.removeAll()
+      setItems([])
+      nav("/")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
       <div className="flex items-center justify-between px-4 pb-3 pt-4">
@@ -294,6 +310,16 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             )
           })}
         </ul>
+        {!loading && items.length > 0 && !trimmedQuery && (
+          <button
+            type="button"
+            onClick={() => void removeAll()}
+            className="mx-2 mt-2 flex w-[calc(100%-1rem)] items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            title="删除全部会话"
+          >
+            <Trash2 className="size-3.5" /> 清空全部会话
+          </button>
+        )}
           </>
         )}
       </div>

@@ -65,6 +65,14 @@ export const conversationsApi = {
       })
     )
   },
+  async removeAll(): Promise<{ deleted: number }> {
+    return jsonOrThrow(
+      await fetch("/api/conversations", {
+        method: "DELETE",
+        credentials: "same-origin",
+      })
+    )
+  },
   async messages(id: number): Promise<StoredMessage[]> {
     return jsonOrThrow(
       await fetch(`/api/conversations/${id}/messages`, {

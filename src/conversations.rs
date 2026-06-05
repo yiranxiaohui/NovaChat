@@ -243,6 +243,21 @@ async fn delete_conversation(
     }
 }
 
+async fn delete_all_conversations(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let sql = db::q(installed.kind, "DELETE FROM conversations WHERE user_id = ?");
+    let r = sqlx::query(&sql)
+        .bind(user.id)
+        .execute(&installed.pool)
+        .await;
+    match r {
+        Ok(out) => Json(serde_json::json!({ "deleted": out.rows_affected() })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 async fn list_messages(
     Extension(installed): Extension<InstalledState>,
     Extension(user): Extension<CurrentUser>,
@@ -385,7 +400,12 @@ async fn truncate_messages(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/conversations", get(list_conversations).post(create_conversation))
+        .route(
+            "/conversations",
+            get(list_conversations)
+                .post(create_conversation)
+                .delete(delete_all_conversations),
+        )
         .route(
             "/conversations/{id}",
             patch(update_conversation).delete(delete_conversation),

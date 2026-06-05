@@ -91,10 +91,11 @@ pub async fn list_channels(pool: &Pool, kind: DbKind) -> Result<Vec<Channel>, sq
 /// All enabled channels that can serve `model`, matching `kind` ('chat'|'image'),
 /// sorted by priority ascending.
 ///
-/// If `channel_models` has explicit bindings for the model, those bindings act
-/// as routing restrictions and optional upstream aliases. If no binding exists,
-/// fall back to all enabled channels of the same kind and use the client-facing
-/// model id as the upstream model id.
+/// Routing requires an explicit `channel_models` binding for the model: those
+/// bindings act as routing restrictions and optional upstream aliases. A model
+/// with no binding returns an empty vec (caller surfaces "no upstream
+/// available") rather than silently routing to an arbitrary channel of a
+/// possibly mismatched protocol.
 #[allow(dead_code)] // consumed by Task 2.1 select_channel_for_model
 pub async fn channels_for_model(
     pool: &Pool,
@@ -115,29 +116,12 @@ pub async fn channels_for_model(
              ORDER BY c.priority ASC, c.id ASC"
         ),
     );
-    let mut rows: Vec<(i64, String, String, String, String, String, i64, i64, Option<String>)> =
+    let rows: Vec<(i64, String, String, String, String, String, i64, i64, Option<String>)> =
         sqlx::query_as(&explicit_sql)
             .bind(model)
             .bind(flavor)
             .fetch_all(pool)
             .await?;
-
-    if rows.is_empty() {
-        let fallback_sql = db::q(
-            kind,
-            &format!(
-                "SELECT c.id, c.name, c.protocol, c.kind, c.base_url, c.api_key, \
-                 {enabled_c}, c.priority, NULL AS upstream_id \
-                 FROM upstream_channels c \
-                 WHERE c.kind = ? AND c.enabled = {bool_true} \
-                 ORDER BY c.priority ASC, c.id ASC"
-            ),
-        );
-        rows = sqlx::query_as(&fallback_sql)
-            .bind(flavor)
-            .fetch_all(pool)
-            .await?;
-    }
 
     Ok(rows
         .into_iter()

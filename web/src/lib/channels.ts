@@ -79,6 +79,7 @@ export type ModelPrice = {
   cost_credits: number
   display_name: string | null
   enabled: boolean
+  protocol: ChannelProtocol
 }
 
 export type PricingInput = {
@@ -87,6 +88,7 @@ export type PricingInput = {
   cost_credits: number
   display_name?: string | null
   enabled?: boolean
+  protocol: ChannelProtocol
 }
 
 export type AllChannelModel = {

@@ -7,11 +7,13 @@ import {
   channelsAdminApi,
   type AllChannelModel,
   type ChannelKind,
+  type ChannelProtocol,
   type ModelPrice,
   type PricingInput,
 } from "@/lib/channels"
 
 const KINDS: ChannelKind[] = ["chat", "image"]
+const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
 
 type DialogMode =
   | { kind: "create" }
@@ -68,6 +70,7 @@ export function PricingPanel() {
         cost_credits: r.cost_credits,
         display_name: r.display_name,
         enabled: !r.enabled,
+        protocol: r.protocol,
       })
       await load()
     } catch (e) {
@@ -112,6 +115,7 @@ export function PricingPanel() {
               <th className="px-3 py-2 text-left font-medium">模型</th>
               <th className="px-3 py-2 text-left font-medium">显示名</th>
               <th className="px-3 py-2 text-left font-medium">类型</th>
+              <th className="px-3 py-2 text-left font-medium">协议</th>
               <th className="px-3 py-2 text-right font-medium">积分/次</th>
               <th className="px-3 py-2 text-left font-medium">启用</th>
               <th className="px-3 py-2 text-right font-medium">操作</th>
@@ -120,14 +124,14 @@ export function PricingPanel() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
                   加载中…
                 </td>
               </tr>
             )}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
                   暂无计费规则。点击「新建模型」添加白名单条目。
                 </td>
               </tr>
@@ -141,6 +145,11 @@ export function PricingPanel() {
                 <td className="px-3 py-2">
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {r.kind}
+                  </span>
+                </td>
+                <td className="px-3 py-2">
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                    {r.protocol}
                   </span>
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">
@@ -214,6 +223,7 @@ function PricingDialog({
           cost_credits: mode.row.cost_credits,
           display_name: mode.row.display_name,
           enabled: mode.row.enabled,
+          protocol: mode.row.protocol,
         }
       : {
           model: "",
@@ -221,6 +231,7 @@ function PricingDialog({
           cost_credits: 1,
           display_name: null,
           enabled: true,
+          protocol: "openai",
         }
   const [form, setForm] = useState<PricingInput>(initial)
   const [saving, setSaving] = useState(false)
@@ -373,6 +384,25 @@ function PricingDialog({
                 </option>
               ))}
             </select>
+          </div>
+          <div>
+            <Label>协议</Label>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              value={form.protocol}
+              onChange={(e) =>
+                setForm({ ...form, protocol: e.target.value as ChannelProtocol })
+              }
+            >
+              {PROTOCOLS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              自动路由到该协议的启用渠道，无需手动绑定。
+            </p>
           </div>
           <div>
             <Label>积分/次</Label>

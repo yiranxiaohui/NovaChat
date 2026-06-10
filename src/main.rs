@@ -542,7 +542,11 @@ pub fn chat_endpoint(host: &str, protocol: Protocol, model: &str) -> String {
     match protocol {
         Protocol::OpenAi => format!("{base}/v1/responses"),
         Protocol::Claude => format!("{base}/v1/messages"),
-        Protocol::Gemini => format!("{base}/v1beta/models/{model}:streamGenerateContent"),
+        Protocol::Gemini => {
+            // `alt=sse` is required for an SSE stream — without it Gemini
+            // returns a chunked JSON array the SSE client can't parse.
+            format!("{base}/v1beta/models/{model}:streamGenerateContent?alt=sse")
+        }
     }
 }
 

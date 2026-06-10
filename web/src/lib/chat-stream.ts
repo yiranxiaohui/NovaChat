@@ -407,9 +407,14 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     }
-    // BYOK: forward upstream creds via headers. Platform mode: omit headers,
-    // server resolves admin channel and deducts credits.
-    if (!o.usePlatform) {
+    // BYOK: forward upstream creds via headers. Platform mode: omit creds —
+    // the server resolves an admin channel and deducts credits — but always
+    // declare the model. Gemini bodies have no `model` field (it lives in the
+    // URL, which platform mode doesn't send), so the header is the only way
+    // the server can route the request.
+    if (o.usePlatform) {
+      headers["X-Upstream-Model"] = o.model
+    } else {
       headers["X-Upstream-Url"] = prepared.url
       headers["X-Upstream-Key"] = o.apiKey
     }

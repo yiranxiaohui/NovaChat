@@ -399,7 +399,11 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   const payload = JSON.stringify(prepared.body)
 
   let res: Response
-  if (o.useProxy) {
+  // Platform mode MUST go through the backend proxy: the server resolves the
+  // admin-configured shared channel and deducts credits, and the browser can
+  // never reach that upstream directly. Force proxy whenever usePlatform is set
+  // so a stale `useProxy=false` BYOK setting can't leak us onto a direct fetch.
+  if (o.useProxy || o.usePlatform) {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     }

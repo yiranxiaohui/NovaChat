@@ -576,7 +576,20 @@ async fn compact(
         .iter()
         .map(|(_, role, content)| (role.clone(), content.clone()))
         .collect();
-    let mut summary_msgs = rebuild_messages(&compact_pairs);
+    // 若待压缩段以 assistant 结尾，可能含未配对的 tool_use，会被 API 拒（400）；
+    // 仅对发给 Claude 的摘要输入去掉末尾 assistant 轮，DB 重排不受影响。
+    let mut llm_pairs = compact_pairs.clone();
+    while llm_pairs
+        .last()
+        .map(|(r, _)| r == "assistant")
+        .unwrap_or(false)
+    {
+        llm_pairs.pop();
+    }
+    if llm_pairs.is_empty() {
+        fail!("历史太短，无需压缩");
+    }
+    let mut summary_msgs = rebuild_messages(&llm_pairs);
     summary_msgs.push(json!({
         "role": "user",
         "content": "请用中文简洁总结以上对话历史，保留关键事实、涉及的文件路径、命令及其结果、尚未完成的任务，供后续继续。只输出摘要正文，不要寒暄。"
@@ -637,6 +650,17 @@ async fn compact(
         .unwrap_or("")
         .to_string();
     if summary_text.is_empty() {
+        if cost > 0 {
+            let _ = crate::credits::grant(
+                &pool,
+                kind,
+                user.id,
+                cost,
+                &format!("refund_worker_compact_{}_empty", req.model),
+                &crate::credits::LedgerMeta::refund_chat("claude", &req.model),
+            )
+            .await;
+        }
         fail!("压缩失败：摘要为空");
     }
 
@@ -688,6 +712,7 @@ async fn compact(
 
     // 10. 估算压缩后 token
     let kept_chars: usize = keep.iter().map(|(_, _, c)| c.chars().count()).sum();
+    // 粗估：字符数/4≈token（CJK 偏高，仅供 UI 参考）
     let after_estimate = ((summary_text.chars().count() + kept_chars) / 4) as i64;
 
     Json(json!({ "ok": true, "after_estimate": after_estimate, "summary": summary_text }))

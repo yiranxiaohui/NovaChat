@@ -435,6 +435,10 @@ fn rebuild_messages(rows: &[(String, String)]) -> Vec<serde_json::Value> {
     for (role, content) in rows {
         match role.as_str() {
             "user" => msgs.push(json!({"role":"user","content": content})),
+            "summary" => msgs.push(json!({
+                "role": "user",
+                "content": format!("[历史摘要]\n{content}")
+            })),
             "assistant" => {
                 // 存的是 content block 数组的序列化 JSON
                 let blocks: serde_json::Value =

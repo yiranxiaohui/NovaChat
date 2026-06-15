@@ -1,10 +1,13 @@
+[workspace]
+members = [".", "worker"]
+
 [package]
 name = "novachat"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 rust-embed = "8"

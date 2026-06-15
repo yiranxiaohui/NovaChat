@@ -21,13 +21,22 @@
 - **分级审批**：`read_file` 自动执行；`shell` 与 `write_file` 默认需要你在网页上逐条「批准」，也可在会话里打开「自动批准」一键放手。
 - ⚠️ **工蜂能在它运行的身份下执行任意命令。只把它部署到你自己信任的机器，并强烈建议用非 root 的最小权限用户运行。** 删除工蜂即吊销其配对码并断开连接。
 
-## 构建
+## 获取二进制
 
-> 按项目规约：构建在本地 / CI 完成，**不在线上机器执行**。线上只分发并运行已构建好的二进制。
+**推荐：下载预构建版本。** 每个 `vX.Y.Z` 版本发布时，CI 会构建静态 musl 二进制并附在 [GitHub Releases](../../releases)，无运行时依赖，随处可跑：
+
+- `novachat-worker-x86_64-unknown-linux-musl.tar.gz` —— x86_64 服务器
+- `novachat-worker-aarch64-unknown-linux-musl.tar.gz` —— ARM64 服务器
+
+```bash
+curl -fsSL <release-asset-url> | tar xz
+```
+
+**或自行构建**（按项目规约：构建在本地 / CI 完成，**不在线上机器执行**）：
 
 ```bash
 cargo build -p novachat-worker --release
-# 产物：target/release/novachat-worker（单个静态可执行文件）
+# 产物：target/release/novachat-worker（单个可执行文件）
 ```
 
 ## 部署运行

@@ -16,6 +16,9 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY migrations ./migrations
+# Workspace member `worker` (the remote-executor binary) — its manifest must be
+# present or `cargo chef prepare` fails to load the workspace.
+COPY worker ./worker
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ---- Stage 2b: cook deps (cached unless recipe.json changes) -------------
@@ -31,9 +34,14 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY migrations ./migrations
+# Workspace member must exist so cargo can load the workspace. We only build the
+# `novachat` server binary here (`-p novachat`); the `novachat-worker` binary is
+# distributed separately (see CI release job + worker/README.md), not shipped in
+# the server image.
+COPY worker ./worker
 COPY --from=webbuilder /app/web/dist ./web/dist
 
-RUN cargo build --release --locked \
+RUN cargo build --release --locked -p novachat \
     && strip target/release/novachat
 
 # ---- Stage 3: minimal runtime image --------------------------------------

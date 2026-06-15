@@ -1,0 +1,34 @@
+name: Release worker binary
+
+# 工蜂（novachat-worker）是分发到用户自己服务器上的瘦执行器，不进服务端镜像。
+# 打 vX.Y.Z tag 时，构建静态 musl 二进制并作为 GitHub Release 附件，用户可直接下载。
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # 需要写权限才能上传到 Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # 构建 + strip + 打包 tar.gz + 上传到对应 tag 的 Release。
+      # 静态 musl，无运行时依赖，随处可跑。
+      - name: Build & upload worker binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: novachat-worker
+          target: ${{ matrix.target }}
+          archive: novachat-worker-$target
+          token: ${{ secrets.GITHUB_TOKEN }}

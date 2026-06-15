@@ -986,6 +986,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (workerSessionId == null) return
     setWorkerMode(true)
+    if (workerSessionId === activeWorkerSession) return // 自己 nav 进来的当前会话，别清空在跑的日志
     setActiveWorkerSession(workerSessionId)
     setWorkerLog([])
     workerApi
@@ -995,6 +996,7 @@ export default function ChatPage() {
         setWorkerLog(events.map((ev) => ({ ...ev, id: workerSeq.current++ })))
       })
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerSessionId])
 
   // 工蜂模式下加载在线工蜂
@@ -1531,7 +1533,8 @@ export default function ChatPage() {
     )
   }
 
-  async function copyText(content: string, key: string) {    try {
+  async function copyText(content: string, key: string) {
+    try {
       await navigator.clipboard.writeText(content)
       setCopiedKey(key)
       setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500)

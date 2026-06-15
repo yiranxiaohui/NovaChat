@@ -9,7 +9,6 @@ import PaymentReturnPage from "@/pages/PaymentReturnPage"
 import ImageStudioPage from "@/pages/ImageStudioPage"
 import ImagePlazaPage from "@/pages/ImagePlazaPage"
 import SharedConversationPage from "@/pages/SharedConversationPage"
-import WorkerPage from "@/pages/WorkerPage"
 
 function Loading() {
   return (
@@ -127,14 +126,7 @@ export default function App() {
               </Protected>
             }
           />
-          <Route
-            path="/worker"
-            element={
-              <Protected>
-                <WorkerPage />
-              </Protected>
-            }
-          />
+
           <Route
             path="/w/:id"
             element={

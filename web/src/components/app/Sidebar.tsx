@@ -231,16 +231,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             <ImageIcon className="size-4" /> 图像工作室
           </Link>
         </Button>
-        <Button
-          asChild
-          variant="outline"
-          size="sm"
-          className="w-full justify-start gap-2"
-        >
-          <Link to="/worker" onClick={() => onNavigate?.()} title="远程 agent：操控你自己服务器上的工蜂">
-            <Bot className="size-4" /> 工蜂
-          </Link>
-        </Button>
+
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input

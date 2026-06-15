@@ -2004,6 +2004,34 @@ export default function ChatPage() {
                 e.target.value = ""
               }}
             />
+            {workerMode && (() => {
+              const limit = contextLimit(workerModel)
+              const pct = Math.min(100, Math.round((contextTokens / limit) * 100))
+              const warn = pct >= 80
+              return (
+                <div className="mb-1.5 px-1">
+                  <div
+                    className={`flex items-center justify-between text-xs ${
+                      warn ? "text-orange-500" : "text-muted-foreground"
+                    }`}
+                  >
+                    <span>
+                      {warn
+                        ? `上下文已用 ${pct}%，输入 /compact 压缩历史`
+                        : `上下文 ${formatTokens(contextTokens)} / ${formatTokens(limit)} (${pct}%)`}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        warn ? "bg-orange-500" : "bg-primary/50"
+                      }`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })()}
             <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
               <Button
                 type="button"

@@ -35,9 +35,11 @@ async fn shell(args: &Value) -> (bool, String) {
         None => return (false, "shell: 缺少 command 参数".into()),
     };
     // Windows 默认无 `sh`，用 `cmd /C`；其余平台用 `sh -c`。
+    // Windows 上先 `chcp 65001` 切到 UTF-8 代码页，否则中文系统按 OEM(GBK)
+    // 输出字节，被下方 from_utf8_lossy 当 UTF-8 解会变乱码。
     let mut c = if cfg!(windows) {
         let mut c = Command::new("cmd");
-        c.arg("/C").arg(cmd);
+        c.arg("/C").arg(format!("chcp 65001>nul & {cmd}"));
         c
     } else {
         let mut c = Command::new("sh");

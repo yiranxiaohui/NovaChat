@@ -1251,6 +1251,10 @@ export default function ChatPage() {
     if (workerMode) {
       const text = input
       setInput("")
+      if (text.trim() === "/compact") {
+        await compactWorker()
+        return
+      }
       await sendWorker(text)
       return
     }
@@ -1547,6 +1551,36 @@ export default function ChatPage() {
         }
       }
     )
+  }
+
+  function formatTokens(n: number): string {
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
+  }
+
+  async function compactWorker() {
+    if (workerId == null || activeWorkerSession == null) {
+      pushWorker({ type: "error", data: "请先在会话中发起对话再压缩" })
+      return
+    }
+    if (workerSending) return
+    pushWorker({ type: "text", data: "🗜️ 正在压缩上下文…" })
+    try {
+      const r = await workerApi.compact(activeWorkerSession, {
+        model: workerModel,
+      })
+      if (!r.ok) {
+        pushWorker({ type: "error", data: r.message ?? "压缩失败" })
+        return
+      }
+      const after = Number(r.after_estimate ?? 0)
+      pushWorker({
+        type: "text",
+        data: `✅ 已压缩，上下文约 ${formatTokens(contextTokens)} → ${formatTokens(after)}`,
+      })
+      setContextTokens(after)
+    } catch (e) {
+      pushWorker({ type: "error", data: `压缩失败：${String(e)}` })
+    }
   }
 
   async function decideWorker(item: WorkerLogItem, decision: boolean) {

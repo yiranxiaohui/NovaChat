@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
   Bot,
@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { conversationsApi, type Conversation } from "@/lib/conversations"
 import { searchApi, type SearchHit } from "@/lib/search"
+import { workerApi, type WorkerSession } from "@/lib/worker"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
 import { BrandMark } from "./BrandMark"
@@ -33,6 +34,10 @@ type Props = {
    *  Parent uses this to close the mobile drawer. */
   onNavigate?: () => void
 }
+
+type SidebarItem =
+  | { kind: "chat"; id: number; title: string; updated_at: string }
+  | { kind: "worker"; id: number; title: string; updated_at: string }
 
 function relativeTime(iso: string): string {
   const d = new Date(iso.replace(" ", "T") + (iso.endsWith("Z") ? "" : "Z"))
@@ -50,14 +55,16 @@ function relativeTime(iso: string): string {
 export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Props) {
   const { id: paramId } = useParams()
   const activeId = paramId ? Number(paramId) : null
+  const location = useLocation()
+  const activeWorker = location.pathname.startsWith("/w/")
   const nav = useNavigate()
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
 
-  const [items, setItems] = useState<Conversation[]>([])
+  const [items, setItems] = useState<SidebarItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [menuFor, setMenuFor] = useState<number | null>(null)
+  const [menuFor, setMenuFor] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [profileOpen, setProfileOpen] = useState(false)
   const [avatarBroken, setAvatarBroken] = useState(false)
@@ -72,10 +79,27 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    conversationsApi
-      .list()
-      .then((r) => {
-        if (!cancelled) setItems(r)
+    Promise.all([
+      conversationsApi.list().catch(() => [] as Conversation[]),
+      workerApi.sessions().catch(() => [] as WorkerSession[]),
+    ])
+      .then(([convs, sessions]) => {
+        if (cancelled) return
+        const merged: SidebarItem[] = [
+          ...convs.map((c) => ({
+            kind: "chat" as const,
+            id: c.id,
+            title: c.title,
+            updated_at: c.updated_at,
+          })),
+          ...sessions.map((s) => ({
+            kind: "worker" as const,
+            id: s.id,
+            title: s.title,
+            updated_at: s.updated_at,
+          })),
+        ].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+        setItems(merged)
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -132,7 +156,10 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   async function createNew() {
     try {
       const c = await conversationsApi.create()
-      setItems((s) => [c, ...s])
+      setItems((s) => [
+        { kind: "chat" as const, id: c.id, title: c.title, updated_at: c.updated_at },
+        ...s,
+      ])
       onCreated?.(c)
       nav(`/c/${c.id}`)
       onNavigate?.()
@@ -141,40 +168,43 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
     }
   }
 
-  async function rename(c: Conversation) {
+  async function rename(c: SidebarItem) {
+    if (c.kind !== "chat") return
     const next = window.prompt("重命名会话", c.title)
     if (next == null) return
     const title = next.trim()
     if (!title || title === c.title) return
     try {
       await conversationsApi.update(c.id, { title })
-      setItems((s) => s.map((x) => (x.id === c.id ? { ...x, title } : x)))
+      setItems((s) => s.map((x) => (x.kind === "chat" && x.id === c.id ? { ...x, title } : x)))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
-  async function remove(c: Conversation) {
+  async function remove(c: SidebarItem) {
+    if (c.kind !== "chat") return
     if (!window.confirm(`删除会话 "${c.title}"？此操作不可撤销。`)) return
     try {
       await conversationsApi.remove(c.id)
-      setItems((s) => s.filter((x) => x.id !== c.id))
-      if (activeId === c.id) nav("/")
+      setItems((s) => s.filter((x) => !(x.kind === "chat" && x.id === c.id)))
+      if (!activeWorker && activeId === c.id) nav("/")
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
   async function removeAll() {
+    const chatCount = items.filter((x) => x.kind === "chat").length
     if (
       !window.confirm(
-        `确定要清空全部 ${items.length} 个会话吗？此操作不可撤销。`
+        `确定要清空全部 ${chatCount} 个会话吗？此操作不可撤销。`
       )
     )
       return
     try {
       await conversationsApi.removeAll()
-      setItems([])
+      setItems((s) => s.filter((x) => x.kind !== "chat"))
       nav("/")
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -201,16 +231,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             <ImageIcon className="size-4" /> 图像工作室
           </Link>
         </Button>
-        <Button
-          asChild
-          variant="outline"
-          size="sm"
-          className="w-full justify-start gap-2"
-        >
-          <Link to="/worker" onClick={() => onNavigate?.()} title="远程 agent：操控你自己服务器上的工蜂">
-            <Bot className="size-4" /> 工蜂
-          </Link>
-        </Button>
+
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -251,9 +272,12 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         )}
         <ul className="flex flex-col gap-0.5">
           {filtered.map((c) => {
-            const active = activeId === c.id
+            const active = activeWorker
+              ? c.kind === "worker" && activeId === c.id
+              : c.kind === "chat" && activeId === c.id
+            const itemKey = `${c.kind}-${c.id}`
             return (
-              <li key={c.id} className="relative">
+              <li key={itemKey} className="relative">
                 <div
                   className={cn(
                     "group relative flex items-center rounded-lg transition-colors",
@@ -266,7 +290,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
                     <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-sidebar-primary" />
                   )}
                   <Link
-                    to={`/c/${c.id}`}
+                    to={c.kind === "worker" ? `/w/${c.id}` : `/c/${c.id}`}
                     className="min-w-0 flex-1 px-3 py-2"
                     title={c.title}
                     onClick={() => {
@@ -274,25 +298,32 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
                       onNavigate?.()
                     }}
                   >
-                    <div className="truncate text-sm font-medium">{c.title}</div>
+                    <div className="flex items-center gap-1 truncate text-sm font-medium">
+                      {c.kind === "worker" && (
+                        <Bot className="size-3.5 shrink-0 text-primary" />
+                      )}
+                      <span className="truncate">{c.title}</span>
+                    </div>
                     <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
                       {relativeTime(c.updated_at)}
                     </div>
                   </Link>
-                  <button
-                    type="button"
-                    className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground group-hover:opacity-100 data-[open=true]:opacity-100"
-                    data-open={menuFor === c.id}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setMenuFor(menuFor === c.id ? null : c.id)
-                    }}
-                    aria-label="菜单"
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </button>
+                  {c.kind === "chat" && (
+                    <button
+                      type="button"
+                      className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground group-hover:opacity-100 data-[open=true]:opacity-100"
+                      data-open={menuFor === itemKey}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setMenuFor(menuFor === itemKey ? null : itemKey)
+                      }}
+                      aria-label="菜单"
+                    >
+                      <MoreHorizontal className="size-4" />
+                    </button>
+                  )}
                 </div>
-                {menuFor === c.id && (
+                {c.kind === "chat" && menuFor === itemKey && (
                   <div
                     className="absolute right-1 top-full z-10 mt-0.5 flex min-w-36 flex-col rounded-md border border-border bg-popover p-1 text-sm shadow-panel"
                     onMouseLeave={() => setMenuFor(null)}
@@ -321,7 +352,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             )
           })}
         </ul>
-        {!loading && items.length > 0 && !trimmedQuery && (
+        {!loading && items.some((x) => x.kind === "chat") && !trimmedQuery && (
           <button
             type="button"
             onClick={() => void removeAll()}

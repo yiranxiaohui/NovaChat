@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
   ArrowUp,
   ArrowDown,
   BookMarked,
+  Bot,
   Check,
   ClipboardCheck,
   Copy,
@@ -27,6 +28,7 @@ import {
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { CodeBlock } from "@/components/app/Markdown"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -62,6 +64,14 @@ import {
 } from "@/lib/skills"
 import { filenameFromPath, plazaApi } from "@/lib/image-plaza"
 import { creditsApi, type CreditsMe } from "@/lib/credits"
+import {
+  workerApi,
+  sendAgentMessage,
+  replayMessages,
+  type Worker,
+  type AgentEvent,
+} from "@/lib/worker"
+import { WorkerRow, type WorkerLogItem } from "@/components/app/WorkerEvents"
 
 type UiMessage = ChatMessage & { id?: number }
 
@@ -408,68 +418,6 @@ function CopyImageButton({
   )
 }
 
-function CodeBlock({ children, ...rest }: React.HTMLAttributes<HTMLPreElement>) {
-  const preRef = useRef<HTMLPreElement>(null)
-  const [done, setDone] = useState(false)
-  const timerRef = useRef<number | null>(null)
-  useEffect(
-    () => () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current)
-    },
-    []
-  )
-  async function onCopy(e: React.MouseEvent) {
-    e.stopPropagation()
-    e.preventDefault()
-    const text = preRef.current?.innerText ?? ""
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      // fallback for non-secure contexts
-      const ta = document.createElement("textarea")
-      ta.value = text
-      ta.style.position = "fixed"
-      ta.style.opacity = "0"
-      document.body.appendChild(ta)
-      ta.select()
-      try {
-        document.execCommand("copy")
-      } catch {
-        /* noop */
-      }
-      document.body.removeChild(ta)
-    }
-    setDone(true)
-    if (timerRef.current) window.clearTimeout(timerRef.current)
-    timerRef.current = window.setTimeout(() => setDone(false), 1500)
-  }
-  return (
-    <div className="group/code relative my-2">
-      <button
-        type="button"
-        onClick={onCopy}
-        title={done ? "已复制" : "复制代码"}
-        aria-label={done ? "已复制" : "复制代码"}
-        className={cn(
-          "absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur hover:bg-accent",
-          "opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100",
-          done && "opacity-100"
-        )}
-      >
-        {done ? (
-          <ClipboardCheck className="size-3 text-emerald-500" />
-        ) : (
-          <Copy className="size-3" />
-        )}
-        {done ? "已复制" : "复制"}
-      </button>
-      <pre ref={preRef} {...rest}>
-        {children}
-      </pre>
-    </div>
-  )
-}
-
 // Document attachments accepted alongside images. PDFs plus text/code files —
 // the types OpenAI / Claude / Gemini accept as native document blocks.
 const DOC_EXTS = [
@@ -773,7 +721,10 @@ export default function ChatPage() {
   const user = auth.state.status === "authed" ? auth.state.user : null
   const nav = useNavigate()
   const { id: paramId } = useParams()
-  const conversationId = paramId ? Number(paramId) : null
+  const location = useLocation()
+  const isWorkerRoute = location.pathname.startsWith("/w/")
+  const workerSessionId = isWorkerRoute && paramId ? Number(paramId) : null
+  const conversationId = !isWorkerRoute && paramId ? Number(paramId) : null
   const [searchParams] = useSearchParams()
   const msgAnchorParam = searchParams.get("msg")
   const targetMsgId = msgAnchorParam ? Number(msgAnchorParam) : null
@@ -845,6 +796,22 @@ export default function ChatPage() {
   const [showJumpToBottom, setShowJumpToBottom] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const attachInputRef = useRef<HTMLInputElement>(null)
+
+  // ── 工蜂模式（与普通对话完全隔离，仅在 /w/:id 或手动开关时启用） ──
+  const [workerMode, setWorkerMode] = useState(false)
+  const [workers, setWorkers] = useState<Worker[]>([])
+  const [workerId, setWorkerId] = useState<number | null>(null)
+  const [workerModel, setWorkerModel] = useState("claude-opus-4-8")
+  const [autoApprove, setAutoApprove] = useState(false)
+  const [workerLog, setWorkerLog] = useState<WorkerLogItem[]>([])
+  const [activeWorkerSession, setActiveWorkerSession] = useState<number | null>(
+    null
+  )
+  const [workerSending, setWorkerSending] = useState(false)
+  const workerSeq = useRef(0)
+  const workerAbort = useRef<(() => void) | null>(null)
+  const pushWorker = (e: AgentEvent) =>
+    setWorkerLog((l) => [...l, { ...e, id: workerSeq.current++ }])
 
   // Release object URLs for removed / unmounted previews.
   useEffect(() => {
@@ -1014,6 +981,54 @@ export default function ChatPage() {
     const t = window.setTimeout(() => setHighlightedMsgId(null), 2200)
     return () => window.clearTimeout(t)
   }, [highlightedMsgId])
+
+  // 进入工蜂会话：拉历史回看并进入工蜂模式
+  useEffect(() => {
+    if (workerSessionId == null) return
+    setWorkerMode(true)
+    if (workerSessionId === activeWorkerSession) return // 自己 nav 进来的当前会话，别清空在跑的日志
+    // 切到另一个工蜂会话：先中断上一个会话在跑的流，避免事件串台
+    workerAbort.current?.()
+    workerAbort.current = null
+    setWorkerSending(false)
+    setActiveWorkerSession(workerSessionId)
+    setWorkerLog([])
+    workerApi
+      .messages(workerSessionId)
+      .then((rows) => {
+        const events = replayMessages(rows)
+        setWorkerLog(events.map((ev) => ({ ...ev, id: workerSeq.current++ })))
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workerSessionId])
+
+  // 离开工蜂路由：退出工蜂模式并中断在跑的流
+  useEffect(() => {
+    if (isWorkerRoute) return
+    workerAbort.current?.()
+    workerAbort.current = null
+    setWorkerMode(false)
+    setWorkerSending(false)
+    setActiveWorkerSession(null)
+    setWorkerLog([])
+  }, [isWorkerRoute])
+
+  // 工蜂模式下加载在线工蜂
+  useEffect(() => {
+    if (!workerMode) return
+    workerApi.list().then(setWorkers).catch(() => {})
+  }, [workerMode])
+
+  // 卸载时中断进行中的工蜂会话
+  useEffect(() => () => workerAbort.current?.(), [])
+
+  // 工蜂日志增长时跟随到底部（与普通消息一致的 sticky-bottom）
+  useEffect(() => {
+    if (!workerMode) return
+    if (!atBottomRef.current) return
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [workerLog, workerMode])
 
   async function refreshAttachedSkills(convId: number) {
     try {
@@ -1229,6 +1244,12 @@ export default function ChatPage() {
   }
 
   async function send() {
+    if (workerMode) {
+      const text = input
+      setInput("")
+      await sendWorker(text)
+      return
+    }
     if (!canSend || !user) return
     const text = input.trim()
 
@@ -1484,6 +1505,50 @@ export default function ChatPage() {
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
+  async function sendWorker(text: string) {
+    if (workerId == null || !text.trim() || workerSending) return
+    let s = activeWorkerSession
+    try {
+      if (s == null) {
+        s = (await workerApi.createSession(workerId)).id
+        setActiveWorkerSession(s)
+        nav(`/w/${s}`, { replace: true })
+        setSidebarReload((x) => x + 1)
+      }
+    } catch (e) {
+      pushWorker({ type: "error", data: `创建会话失败：${String(e)}` })
+      return
+    }
+    pushWorker({ type: "text", data: `🧑 ${text.trim()}` })
+    setWorkerSending(true)
+    workerAbort.current = sendAgentMessage(
+      s,
+      {
+        worker_id: workerId,
+        model: workerModel,
+        text: text.trim(),
+        auto_approve: autoApprove,
+      },
+      (ev) => {
+        pushWorker(ev)
+        if (ev.type === "done" || ev.type === "error") {
+          setWorkerSending(false)
+          workerAbort.current = null
+        }
+      }
+    )
+  }
+
+  async function decideWorker(item: WorkerLogItem, decision: boolean) {
+    if (activeWorkerSession == null) return
+    await workerApi
+      .approve(activeWorkerSession, String(item.data?.call_id ?? ""), decision)
+      .catch(() => {})
+    setWorkerLog((l) =>
+      l.map((x) => (x.id === item.id ? { ...x, resolved: true } : x))
+    )
+  }
+
   async function copyText(content: string, key: string) {
     try {
       await navigator.clipboard.writeText(content)
@@ -1667,7 +1732,20 @@ export default function ChatPage() {
             {loadingMessages && (
               <p className="text-center text-sm text-muted-foreground">加载中…</p>
             )}
-            {!loadingMessages && messages.length === 0 && configured && (
+            {workerMode ? (
+              <div className="space-y-2">
+                {workerLog.length === 0 && (
+                  <div className="text-muted-foreground">
+                    发条消息让工蜂开始工作。
+                  </div>
+                )}
+                {workerLog.map((item) => (
+                  <WorkerRow key={item.id} item={item} onDecide={decideWorker} />
+                ))}
+              </div>
+            ) : (
+              <>
+                {!loadingMessages && messages.length === 0 && configured && (
               <div className="mt-16 flex flex-col items-center gap-6 text-center">
                 <div className="grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-chart-5 text-primary-foreground shadow-panel">
                   <Sparkles className="size-6" />
@@ -1749,6 +1827,8 @@ export default function ChatPage() {
                 </div>
               )
             })}
+              </>
+            )}
             {error && (
               <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
                 {error}
@@ -1770,6 +1850,58 @@ export default function ChatPage() {
 
         <div className="bg-background px-3 pb-3 pt-2 md:px-5 md:pb-4">
           <div className="mx-auto max-w-3xl">
+            <div className="mb-2 flex flex-wrap items-center gap-3 px-1 text-sm">
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-primary"
+                  checked={workerMode}
+                  onChange={(e) => setWorkerMode(e.target.checked)}
+                  disabled={workerSessionId != null}
+                />
+                <Bot className="size-4" /> <span>工蜂模式</span>
+              </label>
+              {workerMode && (
+                <>
+                  <select
+                    className="h-8 rounded-md border bg-background px-2 text-sm"
+                    value={workerId ?? ""}
+                    onChange={(e) =>
+                      setWorkerId(e.target.value ? Number(e.target.value) : null)
+                    }
+                  >
+                    <option value="">选择工蜂…</option>
+                    {workers
+                      .filter((w) => w.online)
+                      .map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                  </select>
+                  <Input
+                    className="h-8 w-44"
+                    value={workerModel}
+                    onChange={(e) => setWorkerModel(e.target.value)}
+                    placeholder="模型"
+                  />
+                  <label className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={autoApprove}
+                      onChange={(e) => setAutoApprove(e.target.checked)}
+                    />
+                    <span>自动批准</span>
+                  </label>
+                  {workers.filter((w) => w.online).length === 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      没有在线工蜂，去设置里配对
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2 rounded-xl border border-border bg-card p-2">
                 {attachments.map((a) =>
@@ -1920,7 +2052,11 @@ export default function ChatPage() {
               ) : (
                 <Button
                   onClick={() => void send()}
-                  disabled={!canSend}
+                  disabled={
+                    workerMode
+                      ? workerSending || workerId == null || !input.trim()
+                      : !canSend
+                  }
                   size="icon"
                   className="shrink-0"
                   aria-label="发送"

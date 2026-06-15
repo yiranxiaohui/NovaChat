@@ -178,7 +178,7 @@ pub fn routes() -> Router<AppState> {
         .route("/worker/pair", post(pair))
         .route("/worker/list", get(list))
         .route("/worker/{id}", patch(rename).delete(remove))
-        .route("/worker/sessions", post(create_session))
+        .route("/worker/sessions", post(create_session).get(list_sessions))
         .route("/worker/sessions/{sid}/messages", get(list_messages))
         .route("/worker/sessions/{sid}/message", post(session_message))
         .route("/worker/sessions/{sid}/approve", post(approve))
@@ -362,6 +362,29 @@ async fn create_session(
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {e}")).into_response(),
     }
+}
+
+/// 列出当前用户的所有工蜂会话。
+async fn list_sessions(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT s.id, s.worker_id, s.title, s.updated_at \
+         FROM worker_sessions s WHERE s.user_id = ? ORDER BY s.updated_at DESC",
+    ))
+    .bind(user.id)
+    .fetch_all(&installed.pool)
+    .await
+    .unwrap_or_default();
+    let out: Vec<_> = rows
+        .into_iter()
+        .map(|(id, worker_id, title, updated_at)| {
+            json!({"id": id, "worker_id": worker_id, "title": title, "updated_at": updated_at})
+        })
+        .collect();
+    Json(out).into_response()
 }
 
 /// 列出会话历史消息（校验会话归属）。

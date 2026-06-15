@@ -976,11 +976,13 @@ async fn session_message(
 
             let blocks = content.as_array().cloned().unwrap_or_default();
 
-            // d. 发出文本块
+            // d. 发出文本块（跳过空白块：工具回合常返回空 text，避免前端渲染占位符）
             for b in &blocks {
                 if b.get("type").and_then(|t| t.as_str()) == Some("text") {
                     if let Some(txt) = b.get("text").and_then(|t| t.as_str()) {
-                        emit!("text", txt.to_string());
+                        if !txt.trim().is_empty() {
+                            emit!("text", txt.to_string());
+                        }
                     }
                 }
             }

@@ -212,7 +212,7 @@ export function replayMessages(rows: WorkerMessage[]): AgentEvent[] {
       if (Array.isArray(blocks)) {
         for (const b of blocks as Array<Record<string, unknown>>) {
           if (b?.type === "text" && typeof b.text === "string") {
-            out.push({ type: "text", data: b.text })
+            if (b.text.trim()) out.push({ type: "text", data: b.text })
           } else if (b?.type === "tool_use") {
             out.push({
               type: "tool_call",

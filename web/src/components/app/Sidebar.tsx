@@ -169,6 +169,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   async function rename(c: SidebarItem) {
+    if (c.kind !== "chat") return
     const next = window.prompt("重命名会话", c.title)
     if (next == null) return
     const title = next.trim()
@@ -182,6 +183,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   async function remove(c: SidebarItem) {
+    if (c.kind !== "chat") return
     if (!window.confirm(`删除会话 "${c.title}"？此操作不可撤销。`)) return
     try {
       await conversationsApi.remove(c.id)
@@ -359,7 +361,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             )
           })}
         </ul>
-        {!loading && items.length > 0 && !trimmedQuery && (
+        {!loading && items.some((x) => x.kind === "chat") && !trimmedQuery && (
           <button
             type="button"
             onClick={() => void removeAll()}

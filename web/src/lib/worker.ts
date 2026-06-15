@@ -13,6 +13,13 @@ export interface Worker {
   online: boolean
 }
 
+export interface WorkerSession {
+  id: number
+  worker_id: number
+  title: string
+  updated_at: string
+}
+
 export interface WorkerMessage {
   id: number
   role: string
@@ -61,6 +68,11 @@ export const workerApi = {
         body: JSON.stringify({ worker_id }),
         credentials: "same-origin",
       })
+    )
+  },
+  async sessions(): Promise<WorkerSession[]> {
+    return jsonOrThrow(
+      await fetch("/api/worker/sessions", { credentials: "same-origin" })
     )
   },
   async messages(sid: number): Promise<WorkerMessage[]> {
@@ -133,4 +145,72 @@ export function sendAgentMessage(
     }
   })
   return () => ctrl.abort()
+}
+
+/**
+ * 把历史 WorkerMessage[] 重建为 AgentEvent[]，供历史回看渲染。
+ *
+ * 存储约定（来自 src/worker.rs）：
+ *   role "user"      → content 是纯文本
+ *   role "assistant" → content 是 Anthropic content-block 数组的序列化 JSON
+ *                      block: {type:"text", text} | {type:"tool_use", id, name, input}
+ *   role "tool"      → content 是 {tool_use_id, ok, output} 的序列化 JSON
+ */
+export function replayMessages(rows: WorkerMessage[]): AgentEvent[] {
+  const out: AgentEvent[] = []
+  for (const m of rows) {
+    if (m.role === "user") {
+      out.push({ type: "text", data: `🧑 ${m.content}` })
+      continue
+    }
+    if (m.role === "assistant") {
+      let blocks: unknown
+      try {
+        blocks = JSON.parse(m.content)
+      } catch {
+        out.push({ type: "text", data: m.content })
+        continue
+      }
+      if (Array.isArray(blocks)) {
+        for (const b of blocks as Array<Record<string, unknown>>) {
+          if (b?.type === "text" && typeof b.text === "string") {
+            out.push({ type: "text", data: b.text })
+          } else if (b?.type === "tool_use") {
+            out.push({
+              type: "tool_call",
+              data: { tool: b.name, input: b.input, call_id: b.id },
+            })
+          }
+        }
+      } else {
+        out.push({ type: "text", data: m.content })
+      }
+      continue
+    }
+    if (m.role === "tool") {
+      // 存储格式: {tool_use_id, ok, output}
+      let output = m.content
+      try {
+        const v = JSON.parse(m.content) as Record<string, unknown>
+        if (typeof v.output === "string") {
+          output = v.output
+        } else if (typeof v.content === "string") {
+          // 兜底：Anthropic 风格 content 字符串
+          output = v.content
+        } else if (Array.isArray(v.content)) {
+          // 兜底：Anthropic 风格 content block 数组，拼接 text 字段
+          output = (v.content as Array<Record<string, unknown>>)
+            .map((blk) => (typeof blk.text === "string" ? blk.text : ""))
+            .join("")
+        }
+      } catch {
+        /* 保留原始文本 */
+      }
+      out.push({ type: "tool_result", data: { output } })
+      continue
+    }
+    // 未知 role，作为文本降级
+    out.push({ type: "text", data: m.content })
+  }
+  return out
 }

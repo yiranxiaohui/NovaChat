@@ -1,12 +1,15 @@
 //! 后端工蜂模块：WS 接入、在线注册表、REST、agent 循环。
-use crate::AppState;
+use crate::{AppState, CurrentUser, InstalledState};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::response::Response;
-use axum::routing::get;
-use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, patch, post};
+use axum::{Extension, Json, Router};
 use futures_util::{SinkExt, StreamExt};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,8 +70,109 @@ impl WorkerRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// REST 管理端点
+// ---------------------------------------------------------------------------
+
+fn gen_token() -> String {
+    let mut b = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut b);
+    hex::encode(b)
+}
+
+/// 生成配对码：建一条 worker 行，返回明文 token（仅此一次）。
+async fn pair(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let token = gen_token();
+    let th = hash_token(&token);
+    let res = sqlx::query(&crate::db::q(
+        installed.kind,
+        "INSERT INTO workers (user_id, name, token_hash) VALUES (?, ?, ?)",
+    ))
+    .bind(user.id)
+    .bind("worker")
+    .bind(&th)
+    .execute(&installed.pool)
+    .await;
+    match res {
+        Ok(_) => Json(json!({ "token": token })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {e}")).into_response(),
+    }
+}
+
+async fn list(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id, name, last_seen_at FROM workers WHERE user_id = ? ORDER BY id DESC",
+    ))
+    .bind(user.id)
+    .fetch_all(&installed.pool)
+    .await
+    .unwrap_or_default();
+    let mut out = Vec::new();
+    for (id, name, last_seen) in rows {
+        out.push(json!({
+            "id": id,
+            "name": name,
+            "last_seen_at": last_seen,
+            "online": state.workers.is_online(id).await,
+        }));
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    name: String,
+}
+
+async fn rename(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameReq>,
+) -> Response {
+    let _ = sqlx::query(&crate::db::q(
+        installed.kind,
+        "UPDATE workers SET name = ? WHERE id = ? AND user_id = ?",
+    ))
+    .bind(&req.name)
+    .bind(id)
+    .bind(user.id)
+    .execute(&installed.pool)
+    .await;
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Response {
+    let _ = sqlx::query(&crate::db::q(
+        installed.kind,
+        "DELETE FROM workers WHERE id = ? AND user_id = ?",
+    ))
+    .bind(id)
+    .bind(user.id)
+    .execute(&installed.pool)
+    .await;
+    state.workers.remove(id).await;
+    Json(json!({"ok": true})).into_response()
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new() // REST 路由在后续任务里加
+    Router::new()
+        .route("/worker/pair", post(pair))
+        .route("/worker/list", get(list))
+        .route("/worker/{id}", patch(rename).delete(remove))
 }
 
 /// WS 接入端点 —— 公开（鉴权靠配对 token），单独挂载，不经 require_auth。

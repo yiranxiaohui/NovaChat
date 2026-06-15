@@ -1103,6 +1103,8 @@ fn build_router(state: AppState) -> Router {
         .merge(invites::routes())
         .merge(search::routes())
         .merge(sharing::user_routes())
+        .merge(search::routes())
+        .merge(worker::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()

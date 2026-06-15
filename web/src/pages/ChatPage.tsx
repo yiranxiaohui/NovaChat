@@ -68,6 +68,7 @@ import {
   workerApi,
   sendAgentMessage,
   replayMessages,
+  contextLimit,
   type Worker,
   type AgentEvent,
 } from "@/lib/worker"
@@ -808,6 +809,7 @@ export default function ChatPage() {
     null
   )
   const [workerSending, setWorkerSending] = useState(false)
+  const [contextTokens, setContextTokens] = useState(0)
   const workerSeq = useRef(0)
   const workerAbort = useRef<(() => void) | null>(null)
   const pushWorker = (e: AgentEvent) =>
@@ -993,6 +995,7 @@ export default function ChatPage() {
     setWorkerSending(false)
     setActiveWorkerSession(workerSessionId)
     setWorkerLog([])
+    setContextTokens(0)
     workerApi
       .messages(workerSessionId)
       .then((rows) => {
@@ -1012,6 +1015,7 @@ export default function ChatPage() {
     setWorkerSending(false)
     setActiveWorkerSession(null)
     setWorkerLog([])
+    setContextTokens(0)
   }, [isWorkerRoute])
 
   // 工蜂模式下加载在线工蜂
@@ -1247,6 +1251,10 @@ export default function ChatPage() {
     if (workerMode) {
       const text = input
       setInput("")
+      if (text.trim() === "/compact") {
+        await compactWorker()
+        return
+      }
       await sendWorker(text)
       return
     }
@@ -1530,6 +1538,12 @@ export default function ChatPage() {
         auto_approve: autoApprove,
       },
       (ev) => {
+        if (ev.type === "usage") {
+          const it = Number(ev.data?.input_tokens ?? 0)
+          const ot = Number(ev.data?.output_tokens ?? 0)
+          setContextTokens(it + ot)
+          return // usage 不入日志
+        }
         pushWorker(ev)
         if (ev.type === "done" || ev.type === "error") {
           setWorkerSending(false)
@@ -1537,6 +1551,36 @@ export default function ChatPage() {
         }
       }
     )
+  }
+
+  function formatTokens(n: number): string {
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
+  }
+
+  async function compactWorker() {
+    if (workerId == null || activeWorkerSession == null) {
+      pushWorker({ type: "error", data: "请先在会话中发起对话再压缩" })
+      return
+    }
+    if (workerSending) return
+    pushWorker({ type: "text", data: "🗜️ 正在压缩上下文…" })
+    try {
+      const r = await workerApi.compact(activeWorkerSession, {
+        model: workerModel,
+      })
+      if (!r.ok) {
+        pushWorker({ type: "error", data: r.message ?? "压缩失败" })
+        return
+      }
+      const after = Number(r.after_estimate ?? 0)
+      pushWorker({
+        type: "text",
+        data: `✅ 已压缩，上下文约 ${formatTokens(contextTokens)} → ${formatTokens(after)}`,
+      })
+      setContextTokens(after)
+    } catch (e) {
+      pushWorker({ type: "error", data: `压缩失败：${String(e)}` })
+    }
   }
 
   async function decideWorker(item: WorkerLogItem, decision: boolean) {
@@ -1951,6 +1995,34 @@ export default function ChatPage() {
                 e.target.value = ""
               }}
             />
+            {workerMode && (() => {
+              const limit = contextLimit(workerModel)
+              const pct = Math.min(100, Math.round((contextTokens / limit) * 100))
+              const warn = pct >= 80
+              return (
+                <div className="mb-1.5 px-1">
+                  <div
+                    className={`flex items-center justify-between text-xs ${
+                      warn ? "text-orange-500" : "text-muted-foreground"
+                    }`}
+                  >
+                    <span>
+                      {warn
+                        ? `上下文已用 ${pct}%，输入 /compact 压缩历史`
+                        : `上下文 ${formatTokens(contextTokens)} / ${formatTokens(limit)} (${pct}%)`}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        warn ? "bg-orange-500" : "bg-primary/50"
+                      }`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })()}
             <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
               <Button
                 type="button"

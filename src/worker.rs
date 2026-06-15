@@ -265,6 +265,7 @@ pub fn routes() -> Router<AppState> {
         .route("/worker/sessions/{sid}/messages", get(list_messages))
         .route("/worker/sessions/{sid}/message", post(session_message))
         .route("/worker/sessions/{sid}/approve", post(approve))
+        .route("/worker/sessions/{sid}/compact", post(compact))
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +290,11 @@ struct MessageReq {
 struct ApproveReq {
     call_id: String,
     decision: bool,
+}
+
+#[derive(Deserialize)]
+struct CompactReq {
+    model: String,
 }
 
 /// 传给 Claude 的 3 个工具定义。
@@ -317,18 +323,22 @@ fn tool_defs() -> serde_json::Value {
 }
 
 /// 用解析出的渠道链发一次非流式 Claude Messages 请求，返回完整 JSON。
+/// `with_tools`: 传 true 用于 agent 轮次；传 false 用于摘要等不应触发 tool_use 的调用。
 async fn call_claude(
     state: &AppState,
     chain: &[channels::ChannelChoice],
     model: &str,
     messages: &serde_json::Value,
+    with_tools: bool,
 ) -> Result<serde_json::Value, String> {
-    let base_body = json!({
+    let mut base_body = json!({
         "model": model,
         "max_tokens": 4096,
-        "tools": tool_defs(),
         "messages": messages,
     });
+    if with_tools {
+        base_body["tools"] = tool_defs();
+    }
     for choice in chain {
         let upstream_model = if choice.upstream_model.is_empty() {
             model
@@ -515,6 +525,10 @@ fn rebuild_messages(rows: &[(String, String)]) -> Vec<serde_json::Value> {
     for (role, content) in rows {
         match role.as_str() {
             "user" => msgs.push(json!({"role":"user","content": content})),
+            "summary" => msgs.push(json!({
+                "role": "user",
+                "content": format!("[历史摘要]\n{content}")
+            })),
             "assistant" => {
                 // 存的是 content block 数组的序列化 JSON
                 let blocks: serde_json::Value =
@@ -571,6 +585,220 @@ async fn approve(
         let _ = slot.send(req.decision);
     }
     Json(json!({"ok": true})).into_response()
+}
+
+/// 压缩历史端点：LLM 摘要旧历史，事务重排 worker_messages。
+async fn compact(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<CompactReq>,
+) -> Json<serde_json::Value> {
+    macro_rules! fail {
+        ($msg:expr) => {{
+            return Json(json!({"ok": false, "message": $msg}));
+        }};
+    }
+
+    let pool = installed.pool.clone();
+    let kind = installed.kind;
+
+    // 1. 校验会话归属
+    let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        kind,
+        "SELECT user_id FROM worker_sessions WHERE id = ?",
+    ))
+    .bind(sid)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+    match owner {
+        Some((uid,)) if uid == user.id => {}
+        _ => fail!("会话不存在或无权限"),
+    }
+
+    // 2. 解析渠道链
+    let route = channels::resolve_route(&pool, kind, &headers, "chat", "claude", &req.model).await;
+    let chain = match route {
+        Ok(channels::Route::Channels { chain, .. }) => chain,
+        Ok(channels::Route::Byok(_)) => fail!("请使用服务端渠道（暂不支持 BYOK）"),
+        Err(_) => fail!("无可用 Claude 渠道"),
+    };
+
+    // 3. 读取全部消息（含 id）
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(&crate::db::q(
+        kind,
+        "SELECT id, role, content FROM worker_messages WHERE session_id = ? ORDER BY id",
+    ))
+    .bind(sid)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    // 4. 切分 to_compact / keep，保留最近 2 个 user 轮
+    let user_idxs: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, role, _))| role == "user")
+        .map(|(i, _)| i)
+        .collect();
+    if user_idxs.len() < 3 {
+        fail!("历史太短，无需压缩");
+    }
+    let keep_start = user_idxs[user_idxs.len() - 2];
+    let (to_compact, keep) = rows.split_at(keep_start);
+    if to_compact.is_empty() {
+        fail!("历史太短，无需压缩");
+    }
+
+    // 5. 构造摘要请求
+    let compact_pairs: Vec<(String, String)> = to_compact
+        .iter()
+        .map(|(_, role, content)| (role.clone(), content.clone()))
+        .collect();
+    // 若待压缩段以 assistant 结尾，可能含未配对的 tool_use，会被 API 拒（400）；
+    // 仅对发给 Claude 的摘要输入去掉末尾 assistant 轮，DB 重排不受影响。
+    let mut llm_pairs = compact_pairs.clone();
+    while llm_pairs
+        .last()
+        .map(|(r, _)| r == "assistant")
+        .unwrap_or(false)
+    {
+        llm_pairs.pop();
+    }
+    if llm_pairs.is_empty() {
+        fail!("历史太短，无需压缩");
+    }
+    let mut summary_msgs = rebuild_messages(&llm_pairs);
+    summary_msgs.push(json!({
+        "role": "user",
+        "content": "请用中文简洁总结以上对话历史，保留关键事实、涉及的文件路径、命令及其结果、尚未完成的任务，供后续继续。只输出摘要正文，不要寒暄。"
+    }));
+
+    // 6. 扣费
+    let cost = match channels::try_deduct_for_model(
+        &pool,
+        kind,
+        user.id,
+        &req.model,
+        "chat",
+        "claude",
+        "worker_compact",
+    )
+    .await
+    {
+        Ok((_bal, deducted)) => deducted,
+        Err(_) => fail!("积分不足或模型未启用"),
+    };
+
+    // 7. 调 Claude（不带 tools）
+    let resp = match call_claude(
+        &state,
+        &chain,
+        &req.model,
+        &serde_json::Value::Array(summary_msgs),
+        false,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            if cost > 0 {
+                let _ = crate::credits::grant(
+                    &pool,
+                    kind,
+                    user.id,
+                    cost,
+                    &format!("refund_worker_compact_{}_failed", req.model),
+                    &crate::credits::LedgerMeta::refund_chat("claude", &req.model),
+                )
+                .await;
+            }
+            fail!(e);
+        }
+    };
+
+    // 8. 提取摘要文本
+    let summary_text = resp
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .and_then(|b| b.get("text").and_then(|t| t.as_str()))
+        })
+        .unwrap_or("")
+        .to_string();
+    if summary_text.is_empty() {
+        if cost > 0 {
+            let _ = crate::credits::grant(
+                &pool,
+                kind,
+                user.id,
+                cost,
+                &format!("refund_worker_compact_{}_empty", req.model),
+                &crate::credits::LedgerMeta::refund_chat("claude", &req.model),
+            )
+            .await;
+        }
+        fail!("压缩失败：摘要为空");
+    }
+
+    // 9. 事务重排：删除全部消息，把摘要折叠进首个保留的 user 轮
+    let mut tx = match pool.begin().await {
+        Ok(t) => t,
+        Err(_) => fail!("数据库事务开启失败"),
+    };
+    if sqlx::query(&crate::db::q(
+        kind,
+        "DELETE FROM worker_messages WHERE session_id = ?",
+    ))
+    .bind(sid)
+    .execute(&mut *tx)
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        fail!("数据库删除失败");
+    }
+    let insert_sql = crate::db::q(
+        kind,
+        "INSERT INTO worker_messages (session_id, role, content) VALUES (?, ?, ?)",
+    );
+    for (i, (_, role, content)) in keep.iter().enumerate() {
+        let (ins_role, ins_content) = if i == 0 {
+            (
+                "user".to_string(),
+                format!("[历史摘要]\n{summary_text}\n\n[最近对话]\n{content}"),
+            )
+        } else {
+            (role.clone(), content.clone())
+        };
+        if sqlx::query(&insert_sql)
+            .bind(sid)
+            .bind(&ins_role)
+            .bind(&ins_content)
+            .execute(&mut *tx)
+            .await
+            .is_err()
+        {
+            let _ = tx.rollback().await;
+            fail!("写入失败");
+        }
+    }
+    if tx.commit().await.is_err() {
+        fail!("事务提交失败");
+    }
+
+    // 10. 估算压缩后 token
+    let kept_chars: usize = keep.iter().map(|(_, _, c)| c.chars().count()).sum();
+    // 粗估：字符数/4≈token（CJK 偏高，仅供 UI 参考）
+    let after_estimate = ((summary_text.chars().count() + kept_chars) / 4) as i64;
+
+    Json(json!({ "ok": true, "after_estimate": after_estimate, "summary": summary_text }))
 }
 
 /// agent 循环 SSE 端点。
@@ -691,7 +919,7 @@ async fn session_message(
 
             // b. 调 Claude
             let messages_val = serde_json::Value::Array(messages.clone());
-            let resp = match call_claude(&state, &chain, &req.model, &messages_val).await {
+            let resp = match call_claude(&state, &chain, &req.model, &messages_val, true).await {
                 Ok(v) => v,
                 Err(e) => {
                     if cost > 0 {
@@ -708,6 +936,21 @@ async fn session_message(
                     emit_err!(e);
                 }
             };
+
+            // 发出本轮真实 token 用量(input+output ≈ 下一轮 context 起点)
+            {
+                let usage = resp.get("usage").cloned().unwrap_or_else(|| json!({}));
+                let input_tokens = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                let output_tokens = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                emit!(
+                    "usage",
+                    serde_json::to_string(&json!({
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string())
+                );
+            }
 
             // c. 解析 content / stop_reason
             let content = resp

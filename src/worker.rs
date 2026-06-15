@@ -1,0 +1,936 @@
+//! 后端工蜂模块：WS 接入、在线注册表、REST、agent 循环。
+use crate::channels;
+use crate::{AppState, CurrentUser, InstalledState};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, patch, post};
+use axum::{Extension, Json, Router};
+use futures_util::stream::Stream;
+use futures_util::{SinkExt, StreamExt};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, RwLock};
+
+// --- WS 协议（与 worker/src/proto.rs 保持一致）---
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToServer {
+    Hello { token: String, name: String },
+    Heartbeat,
+    ToolResult { call_id: String, ok: bool, output: String, #[serde(default)] truncated: bool },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToWorker {
+    HelloOk { worker_id: i64 },
+    Error { message: String },
+    Exec { call_id: String, tool: String, args: serde_json::Value },
+}
+
+/// 一台在线工蜂的句柄：向其 WS 发送 Exec 的通道 + 等待结果的回执表。
+pub struct WorkerHandle {
+    pub user_id: i64,
+    pub tx: mpsc::Sender<ToWorker>,
+    /// call_id -> 结果回执 oneshot
+    pub pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolOutcome>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolOutcome {
+    pub ok: bool,
+    pub output: String,
+}
+
+/// 全局在线工蜂表：worker_id -> handle。
+#[derive(Clone, Default)]
+pub struct WorkerRegistry {
+    inner: Arc<RwLock<HashMap<i64, Arc<WorkerHandle>>>>,
+}
+
+impl WorkerRegistry {
+    pub fn new() -> Self { Self::default() }
+
+    pub async fn insert(&self, worker_id: i64, handle: Arc<WorkerHandle>) {
+        self.inner.write().await.insert(worker_id, handle);
+    }
+    pub async fn remove(&self, worker_id: i64) {
+        self.inner.write().await.remove(&worker_id);
+    }
+    pub async fn get(&self, worker_id: i64) -> Option<Arc<WorkerHandle>> {
+        self.inner.read().await.get(&worker_id).cloned()
+    }
+    pub async fn is_online(&self, worker_id: i64) -> bool {
+        self.inner.read().await.contains_key(&worker_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REST 管理端点
+// ---------------------------------------------------------------------------
+
+fn gen_token() -> String {
+    let mut b = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut b);
+    hex::encode(b)
+}
+
+/// 生成配对码：建一条 worker 行，返回明文 token（仅此一次）。
+async fn pair(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let token = gen_token();
+    let th = hash_token(&token);
+    let res = sqlx::query(&crate::db::q(
+        installed.kind,
+        "INSERT INTO workers (user_id, name, token_hash) VALUES (?, ?, ?)",
+    ))
+    .bind(user.id)
+    .bind("worker")
+    .bind(&th)
+    .execute(&installed.pool)
+    .await;
+    match res {
+        Ok(_) => Json(json!({ "token": token })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {e}")).into_response(),
+    }
+}
+
+async fn list(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Response {
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id, name, last_seen_at FROM workers WHERE user_id = ? ORDER BY id DESC",
+    ))
+    .bind(user.id)
+    .fetch_all(&installed.pool)
+    .await
+    .unwrap_or_default();
+    let mut out = Vec::new();
+    for (id, name, last_seen) in rows {
+        out.push(json!({
+            "id": id,
+            "name": name,
+            "last_seen_at": last_seen,
+            "online": state.workers.is_online(id).await,
+        }));
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    name: String,
+}
+
+async fn rename(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameReq>,
+) -> Response {
+    let _ = sqlx::query(&crate::db::q(
+        installed.kind,
+        "UPDATE workers SET name = ? WHERE id = ? AND user_id = ?",
+    ))
+    .bind(&req.name)
+    .bind(id)
+    .bind(user.id)
+    .execute(&installed.pool)
+    .await;
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<i64>,
+) -> Response {
+    let _ = sqlx::query(&crate::db::q(
+        installed.kind,
+        "DELETE FROM workers WHERE id = ? AND user_id = ?",
+    ))
+    .bind(id)
+    .bind(user.id)
+    .execute(&installed.pool)
+    .await;
+    state.workers.remove(id).await;
+    Json(json!({"ok": true})).into_response()
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/worker/pair", post(pair))
+        .route("/worker/list", get(list))
+        .route("/worker/{id}", patch(rename).delete(remove))
+        .route("/worker/sessions", post(create_session))
+        .route("/worker/sessions/{sid}/messages", get(list_messages))
+        .route("/worker/sessions/{sid}/message", post(session_message))
+        .route("/worker/sessions/{sid}/approve", post(approve))
+}
+
+// ---------------------------------------------------------------------------
+// Agent 循环 + 会话 SSE + 分级审批
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct CreateSessionReq {
+    worker_id: i64,
+}
+
+#[derive(Deserialize)]
+struct MessageReq {
+    worker_id: i64,
+    model: String,
+    text: String,
+    #[serde(default)]
+    auto_approve: bool,
+}
+
+#[derive(Deserialize)]
+struct ApproveReq {
+    call_id: String,
+    decision: bool,
+}
+
+/// 传给 Claude 的 3 个工具定义。
+fn tool_defs() -> serde_json::Value {
+    json!([
+        {
+            "name": "shell",
+            "description": "在远程服务器执行 shell 命令，返回 stdout/stderr 与退出码。",
+            "input_schema": {"type":"object","properties":{
+                "command":{"type":"string"},"cwd":{"type":"string"}
+            },"required":["command"]}
+        },
+        {
+            "name": "read_file",
+            "description": "读取远程服务器上指定路径的文本文件内容。",
+            "input_schema": {"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+        },
+        {
+            "name": "write_file",
+            "description": "写入/覆盖远程服务器上指定路径的文件。",
+            "input_schema": {"type":"object","properties":{
+                "path":{"type":"string"},"content":{"type":"string"}
+            },"required":["path","content"]}
+        }
+    ])
+}
+
+/// 用解析出的渠道链发一次非流式 Claude Messages 请求，返回完整 JSON。
+async fn call_claude(
+    state: &AppState,
+    chain: &[channels::ChannelChoice],
+    model: &str,
+    messages: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let base_body = json!({
+        "model": model,
+        "max_tokens": 4096,
+        "tools": tool_defs(),
+        "messages": messages,
+    });
+    for choice in chain {
+        let upstream_model = if choice.upstream_model.is_empty() {
+            model
+        } else {
+            choice.upstream_model.as_str()
+        };
+        let endpoint = format!("{}/v1/messages", choice.channel.base_url.trim_end_matches('/'));
+        let client = match crate::net_guard::client_for_upstream(&state.http, &endpoint, true).await
+        {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut sendbody = base_body.clone();
+        sendbody["model"] = json!(upstream_model);
+        let resp = client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("x-api-key", choice.channel.api_key.as_str())
+            .header("anthropic-version", "2023-06-01")
+            .json(&sendbody)
+            .send()
+            .await;
+        let resp = match resp {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !resp.status().is_success() {
+            let _ = resp.bytes().await;
+            continue;
+        }
+        match resp.json::<serde_json::Value>().await {
+            Ok(v) => return Ok(v),
+            Err(_) => continue,
+        }
+    }
+    Err("所有 Claude 渠道均不可用".into())
+}
+
+/// 落库一条 worker_message（无需返回 id）。
+async fn insert_message(
+    pool: &crate::db::Pool,
+    kind: crate::db::DbKind,
+    session_id: i64,
+    role: &str,
+    content: &str,
+) {
+    let _ = sqlx::query(&crate::db::q(
+        kind,
+        "INSERT INTO worker_messages (session_id, role, content) VALUES (?, ?, ?)",
+    ))
+    .bind(session_id)
+    .bind(role)
+    .bind(content)
+    .execute(pool)
+    .await;
+}
+
+/// 创建会话，返回新会话 id。
+async fn create_session(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(req): Json<CreateSessionReq>,
+) -> Response {
+    // 校验工蜂归属当前用户
+    let owns: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id FROM workers WHERE id = ? AND user_id = ?",
+    ))
+    .bind(req.worker_id)
+    .bind(user.id)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    if owns.is_none() {
+        return (StatusCode::NOT_FOUND, "工蜂不存在或无权访问").into_response();
+    }
+    let base_insert = crate::db::q(
+        installed.kind,
+        "INSERT INTO worker_sessions (user_id, worker_id, title) VALUES (?, ?, ?)",
+    );
+    let id_res: Result<i64, String> = match installed.kind {
+        crate::db::DbKind::Sqlite | crate::db::DbKind::Postgres => {
+            sqlx::query_as::<_, (i64,)>(&format!("{base_insert} RETURNING id"))
+                .bind(user.id)
+                .bind(req.worker_id)
+                .bind("新会话")
+                .fetch_one(&installed.pool)
+                .await
+                .map(|r| r.0)
+                .map_err(|e| e.to_string())
+        }
+        crate::db::DbKind::Mysql => {
+            async {
+                let mut tx = installed.pool.begin().await.map_err(|e| e.to_string())?;
+                sqlx::query(&base_insert)
+                    .bind(user.id)
+                    .bind(req.worker_id)
+                    .bind("新会话")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let (id,): (i64,) = sqlx::query_as("SELECT LAST_INSERT_ID()")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tx.commit().await.map_err(|e| e.to_string())?;
+                Ok(id)
+            }
+            .await
+        }
+    };
+    match id_res {
+        Ok(id) => Json(json!({ "id": id })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {e}")).into_response(),
+    }
+}
+
+/// 列出会话历史消息（校验会话归属）。
+async fn list_messages(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+) -> Response {
+    let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT user_id FROM worker_sessions WHERE id = ?",
+    ))
+    .bind(sid)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    match owner {
+        Some((uid,)) if uid == user.id => {}
+        _ => return (StatusCode::NOT_FOUND, "会话不存在").into_response(),
+    }
+    let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id, role, content, created_at FROM worker_messages WHERE session_id = ? ORDER BY id",
+    ))
+    .bind(sid)
+    .fetch_all(&installed.pool)
+    .await
+    .unwrap_or_default();
+    let out: Vec<_> = rows
+        .into_iter()
+        .map(|(id, role, content, created_at)| {
+            json!({"id": id, "role": role, "content": content, "created_at": created_at})
+        })
+        .collect();
+    Json(out).into_response()
+}
+
+/// 把历史 worker_messages 重建为 Anthropic messages 数组。
+/// - role "user"   -> {"role":"user","content": <text>}
+/// - role "assistant" -> {"role":"assistant","content": <反序列化的 content 数组>}
+/// - role "tool"   -> {"role":"user","content":[{tool_result ...}]}
+fn rebuild_messages(rows: &[(String, String)]) -> Vec<serde_json::Value> {
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    for (role, content) in rows {
+        match role.as_str() {
+            "user" => msgs.push(json!({"role":"user","content": content})),
+            "assistant" => {
+                // 存的是 content block 数组的序列化 JSON
+                let blocks: serde_json::Value =
+                    serde_json::from_str(content).unwrap_or_else(|_| json!(content));
+                msgs.push(json!({"role":"assistant","content": blocks}));
+            }
+            "tool" => {
+                // 存的是 {tool_use_id, ok, output}
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+                    let tool_use_id = v.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
+                    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+                    let output = v.get("output").and_then(|x| x.as_str()).unwrap_or("");
+                    msgs.push(json!({"role":"user","content":[{
+                        "type":"tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": output,
+                        "is_error": !ok,
+                    }]}));
+                }
+            }
+            _ => {}
+        }
+    }
+    msgs
+}
+
+/// 审批端点。
+async fn approve(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+    Json(req): Json<ApproveReq>,
+) -> Response {
+    // 校验会话归属当前用户
+    let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT user_id FROM worker_sessions WHERE id = ?",
+    ))
+    .bind(sid)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    match owner {
+        Some((uid,)) if uid == user.id => {}
+        _ => return (StatusCode::FORBIDDEN, "无权操作此会话").into_response(),
+    }
+    // 校验 call_id 属于该会话（key 形如 "{sid}-{n}"）
+    if !req.call_id.starts_with(&format!("{sid}-")) {
+        return (StatusCode::BAD_REQUEST, "无效的审批标识").into_response();
+    }
+    if let Some(slot) = state.approvals.write().await.remove(&req.call_id) {
+        let _ = slot.send(req.decision);
+    }
+    Json(json!({"ok": true})).into_response()
+}
+
+/// agent 循环 SSE 端点。
+async fn session_message(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<MessageReq>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel::<Event>(64);
+
+    // 把路由解析放到 spawn 之前，便于把 headers 留在外面。
+    let route = channels::resolve_route(
+        &installed.pool,
+        installed.kind,
+        &headers,
+        "chat",
+        "claude",
+        &req.model,
+    )
+    .await;
+
+    tokio::spawn(async move {
+        macro_rules! emit {
+            ($ev:expr, $data:expr) => {{
+                let _ = tx
+                    .send(Event::default().event($ev).data($data))
+                    .await;
+            }};
+        }
+        macro_rules! emit_err {
+            ($msg:expr) => {{
+                let payload = serde_json::to_string(&json!({"message": $msg}))
+                    .unwrap_or_else(|_| "{\"message\":\"error\"}".to_string());
+                let _ = tx.send(Event::default().event("error").data(payload)).await;
+                return;
+            }};
+        }
+
+        let pool = installed.pool.clone();
+        let kind = installed.kind;
+
+        // 1. 校验会话归属
+        let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+            kind,
+            "SELECT user_id FROM worker_sessions WHERE id = ?",
+        ))
+        .bind(sid)
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten();
+        match owner {
+            Some((uid,)) if uid == user.id => {}
+            _ => emit_err!("会话不存在或无权限"),
+        }
+
+        // 2. 取在线工蜂句柄
+        let handle = match state.workers.get(req.worker_id).await {
+            Some(h) if h.user_id == user.id => h,
+            _ => emit_err!("工蜂离线或无权限"),
+        };
+
+        // 3. 解析渠道链
+        let chain = match route {
+            Ok(channels::Route::Channels { chain, .. }) => chain,
+            Ok(channels::Route::Byok(_)) => emit_err!("请使用服务端渠道（暂不支持 BYOK）"),
+            Err(_) => emit_err!("无可用 Claude 渠道"),
+        };
+
+        // 4. 持久化用户消息
+        insert_message(&pool, kind, sid, "user", &req.text).await;
+
+        // 5. 重建历史 messages（含本轮用户消息——已落库，统一从库读）
+        let hist: Vec<(String, String)> = sqlx::query_as(&crate::db::q(
+            kind,
+            "SELECT role, content FROM worker_messages WHERE session_id = ? ORDER BY id",
+        ))
+        .bind(sid)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+        let mut messages: Vec<serde_json::Value> = rebuild_messages(&hist);
+        if messages.is_empty() {
+            messages.push(json!({"role":"user","content": req.text}));
+        }
+
+        // 6. agent 循环
+        let mut approve_counter: u64 = 0;
+        let mut iterations: u32 = 0;
+        loop {
+            iterations += 1;
+            if iterations > 25 {
+                emit!(
+                    "error",
+                    serde_json::to_string(&json!({"message":"达到最大轮次上限（25），已停止"}))
+                        .unwrap_or_else(|_| "{\"message\":\"error\"}".to_string())
+                );
+                return;
+            }
+            // a. 扣费
+            let cost = match channels::try_deduct_for_model(
+                &pool,
+                kind,
+                user.id,
+                &req.model,
+                "chat",
+                "claude",
+                "worker_agent",
+            )
+            .await
+            {
+                Ok((_bal, deducted)) => deducted,
+                Err(_) => emit_err!("积分不足或模型未启用"),
+            };
+
+            // b. 调 Claude
+            let messages_val = serde_json::Value::Array(messages.clone());
+            let resp = match call_claude(&state, &chain, &req.model, &messages_val).await {
+                Ok(v) => v,
+                Err(e) => {
+                    if cost > 0 {
+                        let _ = crate::credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            &format!("refund_worker_agent_{}_failed", req.model),
+                            &crate::credits::LedgerMeta::refund_chat("claude", &req.model),
+                        )
+                        .await;
+                    }
+                    emit_err!(e);
+                }
+            };
+
+            // c. 解析 content / stop_reason
+            let content = resp
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let stop_reason = resp
+                .get("stop_reason")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            // 追加 assistant 轮
+            messages.push(json!({"role":"assistant","content": content.clone()}));
+            // 落库 assistant content（block 数组的序列化 JSON）
+            insert_message(
+                &pool,
+                kind,
+                sid,
+                "assistant",
+                &serde_json::to_string(&content).unwrap_or_else(|_| "[]".into()),
+            )
+            .await;
+
+            let blocks = content.as_array().cloned().unwrap_or_default();
+
+            // d. 发出文本块
+            for b in &blocks {
+                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(txt) = b.get("text").and_then(|t| t.as_str()) {
+                        emit!("text", txt.to_string());
+                    }
+                }
+            }
+
+            // e. 非工具调用 -> 结束
+            if stop_reason != "tool_use" {
+                emit!("done", "{}".to_string());
+                return;
+            }
+
+            // f. 逐个处理 tool_use
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            for b in &blocks {
+                if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                    continue;
+                }
+                let tool_use_id = b.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let tool = b.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let input = b.get("input").cloned().unwrap_or_else(|| json!({}));
+
+                emit!(
+                    "tool_call",
+                    serde_json::to_string(&json!({"tool": tool, "input": input}))
+                        .unwrap_or_default()
+                );
+
+                let needs_approval =
+                    (tool == "shell" || tool == "write_file") && !req.auto_approve;
+
+                if needs_approval {
+                    approve_counter += 1;
+                    let approve_key = format!("{sid}-{approve_counter}");
+                    let (atx, arx) = oneshot::channel::<bool>();
+                    state
+                        .approvals
+                        .write()
+                        .await
+                        .insert(approve_key.clone(), atx);
+                    emit!(
+                        "approval_required",
+                        serde_json::to_string(&json!({
+                            "call_id": approve_key,
+                            "tool": tool,
+                            "input": input,
+                        }))
+                        .unwrap_or_default()
+                    );
+                    let decision = match tokio::time::timeout(
+                        Duration::from_secs(300),
+                        arx,
+                    )
+                    .await
+                    {
+                        Ok(Ok(d)) => d,
+                        _ => {
+                            state.approvals.write().await.remove(&approve_key);
+                            false
+                        }
+                    };
+                    if !decision {
+                        // 清理（若审批端点未消费）
+                        state.approvals.write().await.remove(&approve_key);
+                        let out = "用户拒绝了此操作".to_string();
+                        emit!(
+                            "tool_result",
+                            serde_json::to_string(&json!({"ok": false, "output": out}))
+                                .unwrap_or_default()
+                        );
+                        insert_message(
+                            &pool,
+                            kind,
+                            sid,
+                            "tool",
+                            &serde_json::to_string(&json!({
+                                "tool_use_id": tool_use_id,
+                                "ok": false,
+                                "output": out,
+                            }))
+                            .unwrap_or_default(),
+                        )
+                        .await;
+                        results.push(json!({
+                            "type":"tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": out,
+                            "is_error": true,
+                        }));
+                        continue;
+                    }
+                }
+
+                // 派发给工蜂
+                let call_id = format!("exec-{sid}-{tool_use_id}");
+                let (rtx, rrx) = oneshot::channel::<ToolOutcome>();
+                handle.pending.write().await.insert(call_id.clone(), rtx);
+                let send_res = handle
+                    .tx
+                    .send(ToWorker::Exec {
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        args: input.clone(),
+                    })
+                    .await;
+                let outcome = if send_res.is_err() {
+                    handle.pending.write().await.remove(&call_id);
+                    ToolOutcome {
+                        ok: false,
+                        output: "执行超时或工蜂断开".into(),
+                    }
+                } else {
+                    match tokio::time::timeout(Duration::from_secs(120), rrx).await {
+                        Ok(Ok(o)) => o,
+                        _ => {
+                            handle.pending.write().await.remove(&call_id);
+                            ToolOutcome {
+                                ok: false,
+                                output: "执行超时或工蜂断开".into(),
+                            }
+                        }
+                    }
+                };
+
+                emit!(
+                    "tool_result",
+                    serde_json::to_string(&json!({"ok": outcome.ok, "output": outcome.output}))
+                        .unwrap_or_default()
+                );
+                insert_message(
+                    &pool,
+                    kind,
+                    sid,
+                    "tool",
+                    &serde_json::to_string(&json!({
+                        "tool_use_id": tool_use_id,
+                        "ok": outcome.ok,
+                        "output": outcome.output,
+                    }))
+                    .unwrap_or_default(),
+                )
+                .await;
+                results.push(json!({
+                    "type":"tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": outcome.output,
+                    "is_error": !outcome.ok,
+                }));
+            }
+
+            // g. 把工具结果作为 user 轮回灌，继续循环
+            messages.push(json!({"role":"user","content": results}));
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, Infallible>);
+    Sse::new(stream)
+}
+
+/// WS 接入端点 —— 公开（鉴权靠配对 token），单独挂载，不经 require_auth。
+pub fn public_routes() -> Router<AppState> {
+    Router::new().route("/worker/connect", get(ws_connect))
+}
+
+fn hash_token(token: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex::encode(h.finalize())
+}
+
+async fn ws_connect(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(state, socket))
+}
+
+async fn handle_socket(state: AppState, socket: WebSocket) {
+    let (mut sink, mut stream) = socket.split();
+
+    // 第一帧必须是 hello
+    let first = match stream.next().await {
+        Some(Ok(Message::Text(t))) => t.to_string(),
+        _ => return,
+    };
+    let hello: ToServer = match serde_json::from_str(&first) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let (token, name) = match hello {
+        ToServer::Hello { token, name } => (token, name),
+        _ => return,
+    };
+
+    let installed = {
+        let g = state.installed.read().await;
+        match g.clone() {
+            Some(i) => i,
+            None => return,
+        }
+    };
+    let th = hash_token(&token);
+    let row: Option<(i64, i64)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id, user_id FROM workers WHERE token_hash = ?",
+    ))
+    .bind(&th)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    let (worker_id, user_id) = match row {
+        Some(v) => v,
+        None => {
+            let err =
+                serde_json::to_string(&ToWorker::Error { message: "配对码无效".into() }).unwrap();
+            let _ = sink.send(Message::Text(err.into())).await;
+            return;
+        }
+    };
+
+    // 更新名字 + last_seen
+    let _ = sqlx::query(&crate::db::q(
+        installed.kind,
+        &format!(
+            "UPDATE workers SET name = ?, last_seen_at = {} WHERE id = ?",
+            crate::db::now_expr(installed.kind)
+        ),
+    ))
+    .bind(&name)
+    .bind(worker_id)
+    .execute(&installed.pool)
+    .await;
+
+    // 注册
+    let (tx, mut rx) = mpsc::channel::<ToWorker>(64);
+    let pending: Arc<RwLock<HashMap<String, oneshot::Sender<ToolOutcome>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let handle = Arc::new(WorkerHandle {
+        user_id,
+        tx: tx.clone(),
+        pending: pending.clone(),
+    });
+    state.workers.insert(worker_id, handle).await;
+
+    // 确认
+    let ok = serde_json::to_string(&ToWorker::HelloOk { worker_id }).unwrap();
+    if sink.send(Message::Text(ok.into())).await.is_err() {
+        state.workers.remove(worker_id).await;
+        return;
+    }
+
+    // 出站任务：把 Exec 推给工蜂
+    let mut send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            let txt = serde_json::to_string(&msg).unwrap();
+            if sink.send(Message::Text(txt.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // 入站循环：心跳 / tool_result
+    let pool = installed.pool.clone();
+    let kind = installed.kind;
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(frame)) = stream.next().await {
+            match frame {
+                Message::Text(t) => {
+                    if let Ok(msg) = serde_json::from_str::<ToServer>(&t) {
+                        match msg {
+                            ToServer::Heartbeat => {
+                                let _ = sqlx::query(&crate::db::q(
+                                    kind,
+                                    &format!(
+                                        "UPDATE workers SET last_seen_at = {} WHERE id = ?",
+                                        crate::db::now_expr(kind)
+                                    ),
+                                ))
+                                .bind(worker_id)
+                                .execute(&pool)
+                                .await;
+                            }
+                            ToServer::ToolResult { call_id, ok, output, .. } => {
+                                if let Some(slot) = pending.write().await.remove(&call_id) {
+                                    let _ = slot.send(ToolOutcome { ok, output });
+                                }
+                            }
+                            ToServer::Hello { .. } => {}
+                        }
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    // 任一任务结束即下线
+    tokio::select! {
+        _ = &mut send_task => {}
+        _ = &mut recv_task => {}
+    }
+    send_task.abort();
+    recv_task.abort();
+    state.workers.remove(worker_id).await;
+}

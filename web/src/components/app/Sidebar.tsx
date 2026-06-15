@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
+  Bot,
   ImageIcon,
   Images,
   LogOut,
@@ -198,6 +199,16 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         >
           <Link to="/studio" onClick={() => onNavigate?.()} title="多轮对话式生图（Responses API）">
             <ImageIcon className="size-4" /> 图像工作室
+          </Link>
+        </Button>
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          className="w-full justify-start gap-2"
+        >
+          <Link to="/worker" onClick={() => onNavigate?.()} title="远程 agent：操控你自己服务器上的工蜂">
+            <Bot className="size-4" /> 工蜂
           </Link>
         </Button>
         <div className="relative">

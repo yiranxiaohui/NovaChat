@@ -19,6 +19,7 @@ mod setup;
 mod sharing;
 mod skills;
 mod studio;
+mod worker;
 
 use axum::{
     Json, Router,
@@ -58,6 +59,11 @@ pub struct AppState {
     /// Per-IP rate limiter for unauthenticated auth endpoints (login /
     /// register / send-code). See [`rate_limit`] for details.
     pub auth_limiter: std::sync::Arc<rate_limit::RateLimiter>,
+    /// Online worker registry: worker_id -> handle with WS send channel.
+    pub workers: crate::worker::WorkerRegistry,
+    /// Human-in-the-loop approval map: call_id -> oneshot used by the agent
+    /// loop to pause on shell/write_file until the user approves via REST.
+    pub approvals: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
 }
 
 #[derive(Clone)]
@@ -1097,6 +1103,7 @@ fn build_router(state: AppState) -> Router {
         .merge(invites::routes())
         .merge(search::routes())
         .merge(sharing::user_routes())
+        .merge(worker::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()
@@ -1110,7 +1117,8 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::public_routes())
         .merge(setup::routes())
         .merge(images::public_routes())
-        .merge(sharing::public_routes());
+        .merge(sharing::public_routes())
+        .merge(worker::public_routes());
 
     Router::new()
         .nest("/api", public.merge(protected))
@@ -1172,6 +1180,8 @@ async fn main() {
             });
             lim
         },
+        workers: crate::worker::WorkerRegistry::new(),
+        approvals: Default::default(),
     };
 
     let effective_url = match env_url {

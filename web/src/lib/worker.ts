@@ -28,7 +28,17 @@ export interface WorkerMessage {
 }
 
 export type AgentEventType =
-  | "text" | "tool_call" | "approval_required" | "tool_result" | "done" | "error"
+  | "text" | "tool_call" | "approval_required" | "tool_result" | "done" | "error" | "usage"
+
+const CONTEXT_LIMITS: Record<string, number> = {
+  "claude-opus-4-8": 200_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+}
+export const DEFAULT_CONTEXT_LIMIT = 200_000
+export function contextLimit(model: string): number {
+  return CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT
+}
 
 export interface AgentEvent {
   type: AgentEventType
@@ -86,6 +96,19 @@ export const workerApi = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ call_id, decision }),
+        credentials: "same-origin",
+      })
+    )
+  },
+  async compact(
+    sid: number,
+    body: { model: string }
+  ): Promise<{ ok: boolean; message?: string; after_estimate?: number; summary?: string }> {
+    return jsonOrThrow(
+      await fetch(`/api/worker/sessions/${sid}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
         credentials: "same-origin",
       })
     )
@@ -185,6 +208,10 @@ export function replayMessages(rows: WorkerMessage[]): AgentEvent[] {
       } else {
         out.push({ type: "text", data: m.content })
       }
+      continue
+    }
+    if (m.role === "summary") {
+      out.push({ type: "text", data: `🗜️ [历史摘要] ${m.content}` })
       continue
     }
     if (m.role === "tool") {

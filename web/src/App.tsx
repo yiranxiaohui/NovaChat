@@ -135,6 +135,14 @@ export default function App() {
               </Protected>
             }
           />
+          <Route
+            path="/w/:id"
+            element={
+              <Protected>
+                <ChatPage />
+              </Protected>
+            }
+          />
           <Route path="/s/:token" element={<SharedConversationPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

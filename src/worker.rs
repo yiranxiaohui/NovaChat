@@ -239,13 +239,16 @@ async fn call_claude(
     chain: &[channels::ChannelChoice],
     model: &str,
     messages: &serde_json::Value,
+    with_tools: bool,
 ) -> Result<serde_json::Value, String> {
-    let base_body = json!({
+    let mut base_body = json!({
         "model": model,
         "max_tokens": 4096,
-        "tools": tool_defs(),
         "messages": messages,
     });
+    if with_tools {
+        base_body["tools"] = tool_defs();
+    }
     for choice in chain {
         let upstream_model = if choice.upstream_model.is_empty() {
             model
@@ -608,7 +611,7 @@ async fn session_message(
 
             // b. 调 Claude
             let messages_val = serde_json::Value::Array(messages.clone());
-            let resp = match call_claude(&state, &chain, &req.model, &messages_val).await {
+            let resp = match call_claude(&state, &chain, &req.model, &messages_val, true).await {
                 Ok(v) => v,
                 Err(e) => {
                     if cost > 0 {

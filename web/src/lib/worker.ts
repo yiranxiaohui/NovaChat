@@ -33,7 +33,7 @@ export type AgentEventType =
 const CONTEXT_LIMITS: Record<string, number> = {
   "claude-opus-4-8": 200_000,
   "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5-20251001": 200_000,
+  "claude-haiku-4-5": 200_000,
 }
 export const DEFAULT_CONTEXT_LIMIT = 200_000
 export function contextLimit(model: string): number {

@@ -233,7 +233,7 @@ fn tool_defs() -> serde_json::Value {
     ])
 }
 
-/// 用解析出的渠道链发一次非流式 Claude Messages 请求，返回完整 JSON。
+/// `with_tools`: 传 true 用于 agent 轮次；传 false 用于摘要等不应触发 tool_use 的调用。
 async fn call_claude(
     state: &AppState,
     chain: &[channels::ChannelChoice],
@@ -636,13 +636,13 @@ async fn session_message(
             // 发出本轮真实 token 用量(input+output ≈ 下一轮 context 起点)
             {
                 let usage = resp.get("usage").cloned().unwrap_or_else(|| json!({}));
-                let it = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
-                let ot = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                let input_tokens = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                let output_tokens = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
                 emit!(
                     "usage",
                     serde_json::to_string(&json!({
-                        "input_tokens": it,
-                        "output_tokens": ot,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                     }))
                     .unwrap_or_else(|_| "{}".to_string())
                 );

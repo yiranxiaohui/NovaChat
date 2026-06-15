@@ -71,7 +71,7 @@ import {
   type Worker,
   type AgentEvent,
 } from "@/lib/worker"
-import { WorkerRow, type WorkerLogItem } from "@/components/app/WorkerEvents"
+import { WorkerLog, type WorkerLogItem } from "@/components/app/WorkerEvents"
 
 type UiMessage = ChatMessage & { id?: number }
 
@@ -1733,16 +1733,7 @@ export default function ChatPage() {
               <p className="text-center text-sm text-muted-foreground">加载中…</p>
             )}
             {workerMode ? (
-              <div className="space-y-2">
-                {workerLog.length === 0 && (
-                  <div className="text-muted-foreground">
-                    发条消息让工蜂开始工作。
-                  </div>
-                )}
-                {workerLog.map((item) => (
-                  <WorkerRow key={item.id} item={item} onDecide={decideWorker} />
-                ))}
-              </div>
+              <WorkerLog items={workerLog} onDecide={decideWorker} />
             ) : (
               <>
                 {!loadingMessages && messages.length === 0 && configured && (

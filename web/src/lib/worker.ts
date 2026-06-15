@@ -190,8 +190,10 @@ export function replayMessages(rows: WorkerMessage[]): AgentEvent[] {
     if (m.role === "tool") {
       // 存储格式: {tool_use_id, ok, output}
       let output = m.content
+      let ok: boolean | undefined
       try {
         const v = JSON.parse(m.content) as Record<string, unknown>
+        if (typeof v.ok === "boolean") ok = v.ok
         if (typeof v.output === "string") {
           output = v.output
         } else if (typeof v.content === "string") {
@@ -206,7 +208,7 @@ export function replayMessages(rows: WorkerMessage[]): AgentEvent[] {
       } catch {
         /* 保留原始文本 */
       }
-      out.push({ type: "tool_result", data: { output } })
+      out.push({ type: "tool_result", data: { ok, output } })
       continue
     }
     // 未知 role，作为文本降级

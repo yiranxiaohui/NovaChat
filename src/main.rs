@@ -1116,7 +1116,8 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::public_routes())
         .merge(setup::routes())
         .merge(images::public_routes())
-        .merge(sharing::public_routes());
+        .merge(sharing::public_routes())
+        .merge(worker::public_routes());
 
     Router::new()
         .nest("/api", public.merge(protected))

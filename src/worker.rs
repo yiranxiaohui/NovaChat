@@ -309,6 +309,20 @@ async fn create_session(
     Extension(user): Extension<CurrentUser>,
     Json(req): Json<CreateSessionReq>,
 ) -> Response {
+    // 校验工蜂归属当前用户
+    let owns: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT id FROM workers WHERE id = ? AND user_id = ?",
+    ))
+    .bind(req.worker_id)
+    .bind(user.id)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    if owns.is_none() {
+        return (StatusCode::NOT_FOUND, "工蜂不存在或无权访问").into_response();
+    }
     let base_insert = crate::db::q(
         installed.kind,
         "INSERT INTO worker_sessions (user_id, worker_id, title) VALUES (?, ?, ?)",
@@ -424,10 +438,29 @@ fn rebuild_messages(rows: &[(String, String)]) -> Vec<serde_json::Value> {
 /// 审批端点。
 async fn approve(
     State(state): State<AppState>,
-    Extension(_user): Extension<CurrentUser>,
-    Path(_sid): Path<i64>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
     Json(req): Json<ApproveReq>,
 ) -> Response {
+    // 校验会话归属当前用户
+    let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT user_id FROM worker_sessions WHERE id = ?",
+    ))
+    .bind(sid)
+    .fetch_optional(&installed.pool)
+    .await
+    .ok()
+    .flatten();
+    match owner {
+        Some((uid,)) if uid == user.id => {}
+        _ => return (StatusCode::FORBIDDEN, "无权操作此会话").into_response(),
+    }
+    // 校验 call_id 属于该会话（key 形如 "{sid}-{n}"）
+    if !req.call_id.starts_with(&format!("{sid}-")) {
+        return (StatusCode::BAD_REQUEST, "无效的审批标识").into_response();
+    }
     if let Some(slot) = state.approvals.write().await.remove(&req.call_id) {
         let _ = slot.send(req.decision);
     }
@@ -523,9 +556,19 @@ async fn session_message(
 
         // 6. agent 循环
         let mut approve_counter: u64 = 0;
+        let mut iterations: u32 = 0;
         loop {
+            iterations += 1;
+            if iterations > 25 {
+                emit!(
+                    "error",
+                    serde_json::to_string(&json!({"message":"达到最大轮次上限（25），已停止"}))
+                        .unwrap_or_else(|_| "{\"message\":\"error\"}".to_string())
+                );
+                return;
+            }
             // a. 扣费
-            if channels::try_deduct_for_model(
+            let cost = match channels::try_deduct_for_model(
                 &pool,
                 kind,
                 user.id,
@@ -535,16 +578,29 @@ async fn session_message(
                 "worker_agent",
             )
             .await
-            .is_err()
             {
-                emit_err!("积分不足或模型未启用");
-            }
+                Ok((_bal, deducted)) => deducted,
+                Err(_) => emit_err!("积分不足或模型未启用"),
+            };
 
             // b. 调 Claude
             let messages_val = serde_json::Value::Array(messages.clone());
             let resp = match call_claude(&state, &chain, &req.model, &messages_val).await {
                 Ok(v) => v,
-                Err(e) => emit_err!(e),
+                Err(e) => {
+                    if cost > 0 {
+                        let _ = crate::credits::grant(
+                            &pool,
+                            kind,
+                            user.id,
+                            cost,
+                            &format!("refund_worker_agent_{}_failed", req.model),
+                            &crate::credits::LedgerMeta::refund_chat("claude", &req.model),
+                        )
+                        .await;
+                    }
+                    emit_err!(e);
+                }
             };
 
             // c. 解析 content / stop_reason
@@ -623,7 +679,18 @@ async fn session_message(
                         }))
                         .unwrap_or_default()
                     );
-                    let decision = arx.await.unwrap_or(false);
+                    let decision = match tokio::time::timeout(
+                        Duration::from_secs(300),
+                        arx,
+                    )
+                    .await
+                    {
+                        Ok(Ok(d)) => d,
+                        _ => {
+                            state.approvals.write().await.remove(&approve_key);
+                            false
+                        }
+                    };
                     if !decision {
                         // 清理（若审批端点未消费）
                         state.approvals.write().await.remove(&approve_key);

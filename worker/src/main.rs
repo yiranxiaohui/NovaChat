@@ -8,6 +8,10 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::main]
 async fn main() {
+    // 安装 rustls 加密后端（ring）。连 wss:// 前必须装好进程级 CryptoProvider，
+    // 否则 rustls 0.23 无法自动确定后端会直接 panic。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let url = std::env::var("NOVACHAT_WORKER_URL")
         .expect("需要环境变量 NOVACHAT_WORKER_URL（如 wss://host/api/worker/connect）");
     let token = std::env::var("NOVACHAT_WORKER_TOKEN")

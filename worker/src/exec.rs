@@ -34,8 +34,16 @@ async fn shell(args: &Value) -> (bool, String) {
         Some(c) => c,
         None => return (false, "shell: 缺少 command 参数".into()),
     };
-    let mut c = Command::new("sh");
-    c.arg("-c").arg(cmd);
+    // Windows 默认无 `sh`，用 `cmd /C`；其余平台用 `sh -c`。
+    let mut c = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(cmd);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
     if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
         c.current_dir(cwd);
     }

@@ -35,14 +35,18 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
-    runs-on: ubuntu-latest
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # 构建 + strip + 打包 tar.gz + 上传到对应 tag 的 Release。
-      # 静态 musl，无运行时依赖，随处可跑。
+      # 构建 + strip + 打包（Linux→tar.gz，Windows→zip，含 .exe）+ 上传到对应 tag 的 Release。
+      # Linux 为静态 musl，无运行时依赖；Windows 为 MSVC 原生 .exe。
       - name: Build & upload worker binary
         uses: taiki-e/upload-rust-binary-action@v1
         with:

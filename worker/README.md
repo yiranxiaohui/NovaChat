@@ -23,14 +23,18 @@
 
 ## 获取二进制
 
-**推荐：下载预构建版本。** 每个 `vX.Y.Z` 版本发布时，CI 会构建静态 musl 二进制并附在 [GitHub Releases](../../releases)，无运行时依赖，随处可跑：
+**推荐：下载预构建版本。** 每个 `vX.Y.Z` 版本发布时，CI 会构建二进制并附在 [GitHub Releases](../../releases)，Linux 版为静态 musl、无运行时依赖：
 
 - `novachat-worker-x86_64-unknown-linux-musl.tar.gz` —— x86_64 服务器
 - `novachat-worker-aarch64-unknown-linux-musl.tar.gz` —— ARM64 服务器
+- `novachat-worker-x86_64-pc-windows-msvc.zip` —— Windows（x64，含 `novachat-worker.exe`）
 
 ```bash
+# Linux
 curl -fsSL <release-asset-url> | tar xz
 ```
+
+Windows：下载 `.zip` 解压得到 `novachat-worker.exe`。其 `shell` 工具在 Windows 上经 `cmd /C` 执行命令（Linux 经 `sh -c`）。
 
 **或自行构建**（按项目规约：构建在本地 / CI 完成，**不在线上机器执行**）：
 

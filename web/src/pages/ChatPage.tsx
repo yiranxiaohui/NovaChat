@@ -68,6 +68,7 @@ import {
   workerApi,
   sendAgentMessage,
   replayMessages,
+  contextLimit,
   type Worker,
   type AgentEvent,
 } from "@/lib/worker"
@@ -808,6 +809,7 @@ export default function ChatPage() {
     null
   )
   const [workerSending, setWorkerSending] = useState(false)
+  const [contextTokens, setContextTokens] = useState(0)
   const workerSeq = useRef(0)
   const workerAbort = useRef<(() => void) | null>(null)
   const pushWorker = (e: AgentEvent) =>
@@ -993,6 +995,7 @@ export default function ChatPage() {
     setWorkerSending(false)
     setActiveWorkerSession(workerSessionId)
     setWorkerLog([])
+    setContextTokens(0)
     workerApi
       .messages(workerSessionId)
       .then((rows) => {
@@ -1012,6 +1015,7 @@ export default function ChatPage() {
     setWorkerSending(false)
     setActiveWorkerSession(null)
     setWorkerLog([])
+    setContextTokens(0)
   }, [isWorkerRoute])
 
   // 工蜂模式下加载在线工蜂
@@ -1530,6 +1534,12 @@ export default function ChatPage() {
         auto_approve: autoApprove,
       },
       (ev) => {
+        if (ev.type === "usage") {
+          const it = Number(ev.data?.input_tokens ?? 0)
+          const ot = Number(ev.data?.output_tokens ?? 0)
+          setContextTokens(it + ot)
+          return // usage 不入日志
+        }
         pushWorker(ev)
         if (ev.type === "done" || ev.type === "error") {
           setWorkerSending(false)

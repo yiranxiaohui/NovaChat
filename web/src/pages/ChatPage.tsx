@@ -987,6 +987,10 @@ export default function ChatPage() {
     if (workerSessionId == null) return
     setWorkerMode(true)
     if (workerSessionId === activeWorkerSession) return // 自己 nav 进来的当前会话，别清空在跑的日志
+    // 切到另一个工蜂会话：先中断上一个会话在跑的流，避免事件串台
+    workerAbort.current?.()
+    workerAbort.current = null
+    setWorkerSending(false)
     setActiveWorkerSession(workerSessionId)
     setWorkerLog([])
     workerApi
@@ -998,6 +1002,17 @@ export default function ChatPage() {
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerSessionId])
+
+  // 离开工蜂路由：退出工蜂模式并中断在跑的流
+  useEffect(() => {
+    if (isWorkerRoute) return
+    workerAbort.current?.()
+    workerAbort.current = null
+    setWorkerMode(false)
+    setWorkerSending(false)
+    setActiveWorkerSession(null)
+    setWorkerLog([])
+  }, [isWorkerRoute])
 
   // 工蜂模式下加载在线工蜂
   useEffect(() => {
@@ -1498,6 +1513,7 @@ export default function ChatPage() {
         s = (await workerApi.createSession(workerId)).id
         setActiveWorkerSession(s)
         nav(`/w/${s}`, { replace: true })
+        setSidebarReload((x) => x + 1)
       }
     } catch (e) {
       pushWorker({ type: "error", data: `创建会话失败：${String(e)}` })

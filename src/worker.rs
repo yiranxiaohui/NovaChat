@@ -629,6 +629,21 @@ async fn session_message(
                 }
             };
 
+            // 发出本轮真实 token 用量(input+output ≈ 下一轮 context 起点)
+            {
+                let usage = resp.get("usage").cloned().unwrap_or_else(|| json!({}));
+                let it = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                let ot = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                emit!(
+                    "usage",
+                    serde_json::to_string(&json!({
+                        "input_tokens": it,
+                        "output_tokens": ot,
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string())
+                );
+            }
+
             // c. 解析 content / stop_reason
             let content = resp
                 .get("content")

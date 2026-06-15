@@ -245,6 +245,26 @@ export function groupWorkerLog(items: WorkerLogItem[]): WorkerNode[] {
           result: item,
         })
       }
+    } else if (item.type === "text") {
+      // 跳过空白文本；相邻文本合并成同一节点，让一段回答渲染为单个 Markdown 文档。
+      // 用户消息（🧑 前缀）是单条事件、从不碎片，不参与合并。
+      const txt = typeof item.data === "string" ? item.data : JSON.stringify(item.data)
+      if (!txt.trim()) continue
+      const isUser = txt.startsWith("🧑")
+      const last = nodes[nodes.length - 1]
+      const lastIsMergeableText =
+        !isUser &&
+        last &&
+        last.kind === "raw" &&
+        last.item.type === "text" &&
+        typeof last.item.data === "string" &&
+        !last.item.data.startsWith("🧑")
+      if (lastIsMergeableText) {
+        const prev = last.item.data as string
+        last.item = { ...last.item, data: `${prev}\n\n${txt}` }
+      } else {
+        nodes.push({ kind: "raw", id: item.id, item })
+      }
     } else {
       nodes.push({ kind: "raw", id: item.id, item })
     }

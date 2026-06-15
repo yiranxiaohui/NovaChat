@@ -65,15 +65,14 @@ export function WorkerRow({
       )
     case "tool_result":
       return <ToolResult output={item.data?.output ?? ""} />
-    case "error":
+    case "error": {
+      const msg = typeof item.data === "string" ? item.data : JSON.stringify(item.data)
       return (
         <div className="text-red-600 dark:text-red-400">
-          <span className="mr-1">⚠</span>
-          <Markdown className="inline">
-            {typeof item.data === "string" ? item.data : JSON.stringify(item.data)}
-          </Markdown>
+          <Markdown>{`⚠ ${msg}`}</Markdown>
         </div>
       )
+    }
     case "done":
       return <div className="py-1 text-center text-xs text-muted-foreground">— 完成 —</div>
     case "approval_required":

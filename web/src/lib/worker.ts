@@ -75,6 +75,21 @@ export const workerApi = {
       await fetch("/api/worker/sessions", { credentials: "same-origin" })
     )
   },
+  async renameSession(sid: number, name: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`/api/worker/sessions/${sid}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+        credentials: "same-origin",
+      })
+    )
+  },
+  async removeSession(sid: number): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`/api/worker/sessions/${sid}`, { method: "DELETE", credentials: "same-origin" })
+    )
+  },
   async messages(sid: number): Promise<WorkerMessage[]> {
     return jsonOrThrow(
       await fetch(`/api/worker/sessions/${sid}/messages`, { credentials: "same-origin" })

@@ -169,26 +169,36 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   async function rename(c: SidebarItem) {
-    if (c.kind !== "chat") return
     const next = window.prompt("重命名会话", c.title)
     if (next == null) return
     const title = next.trim()
     if (!title || title === c.title) return
     try {
-      await conversationsApi.update(c.id, { title })
-      setItems((s) => s.map((x) => (x.kind === "chat" && x.id === c.id ? { ...x, title } : x)))
+      if (c.kind === "worker") {
+        await workerApi.renameSession(c.id, title)
+      } else {
+        await conversationsApi.update(c.id, { title })
+      }
+      setItems((s) =>
+        s.map((x) => (x.kind === c.kind && x.id === c.id ? { ...x, title } : x))
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
   async function remove(c: SidebarItem) {
-    if (c.kind !== "chat") return
     if (!window.confirm(`删除会话 "${c.title}"？此操作不可撤销。`)) return
     try {
-      await conversationsApi.remove(c.id)
-      setItems((s) => s.filter((x) => !(x.kind === "chat" && x.id === c.id)))
-      if (!activeWorker && activeId === c.id) nav("/")
+      if (c.kind === "worker") {
+        await workerApi.removeSession(c.id)
+      } else {
+        await conversationsApi.remove(c.id)
+      }
+      setItems((s) => s.filter((x) => !(x.kind === c.kind && x.id === c.id)))
+      const isActive =
+        c.kind === "worker" ? activeWorker && activeId === c.id : !activeWorker && activeId === c.id
+      if (isActive) nav("/")
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -308,22 +318,20 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
                       {relativeTime(c.updated_at)}
                     </div>
                   </Link>
-                  {c.kind === "chat" && (
-                    <button
-                      type="button"
-                      className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground group-hover:opacity-100 data-[open=true]:opacity-100"
-                      data-open={menuFor === itemKey}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setMenuFor(menuFor === itemKey ? null : itemKey)
-                      }}
-                      aria-label="菜单"
-                    >
-                      <MoreHorizontal className="size-4" />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground group-hover:opacity-100 data-[open=true]:opacity-100"
+                    data-open={menuFor === itemKey}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setMenuFor(menuFor === itemKey ? null : itemKey)
+                    }}
+                    aria-label="菜单"
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </button>
                 </div>
-                {c.kind === "chat" && menuFor === itemKey && (
+                {menuFor === itemKey && (
                   <div
                     className="absolute right-1 top-full z-10 mt-0.5 flex min-w-36 flex-col rounded-md border border-border bg-popover p-1 text-sm shadow-panel"
                     onMouseLeave={() => setMenuFor(null)}

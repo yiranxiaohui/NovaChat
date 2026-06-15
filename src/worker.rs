@@ -173,12 +173,95 @@ async fn remove(
     Json(json!({"ok": true})).into_response()
 }
 
+/// 重命名工蜂会话（worker_sessions），带归属校验。
+async fn rename_session(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+    Json(req): Json<RenameReq>,
+) -> Response {
+    let res = sqlx::query(&crate::db::q(
+        installed.kind,
+        &format!(
+            "UPDATE worker_sessions SET title = ?, updated_at = {} WHERE id = ? AND user_id = ?",
+            crate::db::now_expr(installed.kind)
+        ),
+    ))
+    .bind(&req.name)
+    .bind(sid)
+    .bind(user.id)
+    .execute(&installed.pool)
+    .await;
+    match res {
+        Ok(out) if out.rows_affected() > 0 => Json(json!({"ok": true})).into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, "会话不存在").into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "重命名失败").into_response(),
+    }
+}
+
+/// 删除工蜂会话及其消息，事务处理，带归属校验。
+async fn remove_session(
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(sid): Path<i64>,
+) -> Response {
+    let mut tx = match installed.pool.begin().await {
+        Ok(tx) => tx,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "删除失败").into_response(),
+    };
+    // 先确认会话归属当前用户
+    let owner: Option<(i64,)> = sqlx::query_as(&crate::db::q(
+        installed.kind,
+        "SELECT user_id FROM worker_sessions WHERE id = ?",
+    ))
+    .bind(sid)
+    .fetch_optional(&mut *tx)
+    .await
+    .ok()
+    .flatten();
+    match owner {
+        Some((uid,)) if uid == user.id => {}
+        _ => return (StatusCode::NOT_FOUND, "会话不存在").into_response(),
+    }
+    if sqlx::query(&crate::db::q(
+        installed.kind,
+        "DELETE FROM worker_messages WHERE session_id = ?",
+    ))
+    .bind(sid)
+    .execute(&mut *tx)
+    .await
+    .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "删除失败").into_response();
+    }
+    if sqlx::query(&crate::db::q(
+        installed.kind,
+        "DELETE FROM worker_sessions WHERE id = ? AND user_id = ?",
+    ))
+    .bind(sid)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await
+    .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "删除失败").into_response();
+    }
+    match tx.commit().await {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "删除失败").into_response(),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/worker/pair", post(pair))
         .route("/worker/list", get(list))
         .route("/worker/{id}", patch(rename).delete(remove))
         .route("/worker/sessions", post(create_session).get(list_sessions))
+        .route(
+            "/worker/sessions/{sid}",
+            patch(rename_session).delete(remove_session),
+        )
         .route("/worker/sessions/{sid}/messages", get(list_messages))
         .route("/worker/sessions/{sid}/message", post(session_message))
         .route("/worker/sessions/{sid}/approve", post(approve))

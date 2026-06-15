@@ -233,6 +233,7 @@ fn tool_defs() -> serde_json::Value {
     ])
 }
 
+/// 用解析出的渠道链发一次非流式 Claude Messages 请求，返回完整 JSON。
 /// `with_tools`: 传 true 用于 agent 轮次；传 false 用于摘要等不应触发 tool_use 的调用。
 async fn call_claude(
     state: &AppState,

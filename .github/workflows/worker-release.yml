@@ -29,6 +29,9 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: novachat-worker
+          # 指到工蜂 crate；否则 action 在 workspace 根构建，默认包 novachat
+          # 里没有 novachat-worker bin（error: no bin target named ...）。
+          manifest-path: worker/Cargo.toml
           target: ${{ matrix.target }}
           archive: novachat-worker-$target
           token: ${{ secrets.GITHUB_TOKEN }}

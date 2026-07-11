@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
 import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
 import { studioApi, type StudioGeneration } from "@/lib/studio"
+import { listPlatformModels } from "@/lib/platform-models"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
 import { ImagePreview } from "@/components/app/ImagePreview"
@@ -181,6 +182,14 @@ export default function ImageStudioPage() {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [showAllModels, setShowAllModels] = useState(false)
+  // Platform mode lists come from the admin whitelist (already image-only),
+  // so the IMAGE_MODEL_RE heuristic must not filter them.
+  const [modelsFromPlatform, setModelsFromPlatform] = useState(false)
+  const visibleModels = useMemo(() => {
+    if (modelsFromPlatform || showAllModels) return models
+    const imageLike = models.filter((m) => IMAGE_MODEL_RE.test(m))
+    return imageLike.length > 0 ? imageLike : models
+  }, [models, modelsFromPlatform, showAllModels])
 
   const [submitting, setSubmitting] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -269,18 +278,20 @@ export default function ImageStudioPage() {
       const effective = await loadEffectiveSettings(user.id)
       const imgMeta = IMAGE_PROTOCOL_META.openai
       const isPlatform = effective.imageMode === "platform"
-      const list = await studioApi.listModels(
-        isPlatform
-          ? {}
-          : {
-              upstreamUrl: `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
-              upstreamKey: effective.imageApiKey,
-            }
-      )
+      // Platform mode: the admin whitelist (model_pricing) is the source of
+      // truth — it lists exactly the image models users are allowed to call.
+      // BYOK mode: ask the user's own upstream for its /v1/models.
+      const list = isPlatform
+        ? (await listPlatformModels("image")).map((m) => m.model)
+        : await studioApi.listModels({
+            upstreamUrl: `${(effective.imageBaseUrl || imgMeta.defaultBaseUrl).replace(/\/+$/, "")}`,
+            upstreamKey: effective.imageApiKey,
+          })
       setModels(list)
+      setModelsFromPlatform(isPlatform)
       // Snap to first available image-like model if current selection isn't in list.
       if (list.length > 0) {
-        const imageLike = list.filter((m) => IMAGE_MODEL_RE.test(m))
+        const imageLike = isPlatform ? list : list.filter((m) => IMAGE_MODEL_RE.test(m))
         const visible = showAllModels ? list : imageLike.length > 0 ? imageLike : list
         if (!visible.includes(model)) {
           setModel(visible[0] ?? list[0]!)
@@ -598,15 +609,10 @@ export default function ImageStudioPage() {
                 onChange={(e) => setModel(e.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm"
               >
-                {!(showAllModels ? models : models.filter((m) => IMAGE_MODEL_RE.test(m))).includes(
-                  model
-                ) && model && <option value={model}>{model}（手动输入）</option>}
-                {(showAllModels
-                  ? models
-                  : models.filter((m) => IMAGE_MODEL_RE.test(m)).length > 0
-                    ? models.filter((m) => IMAGE_MODEL_RE.test(m))
-                    : models
-                ).map((m) => (
+                {!visibleModels.includes(model) && model && (
+                  <option value={model}>{model}（手动输入）</option>
+                )}
+                {visibleModels.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
@@ -627,7 +633,7 @@ export default function ImageStudioPage() {
                       : "点击刷新拉取上游模型"}
                 </span>
               )}
-              {models.length > 0 && (
+              {models.length > 0 && !modelsFromPlatform && (
                 <label className="flex cursor-pointer items-center gap-1">
                   <input
                     type="checkbox"

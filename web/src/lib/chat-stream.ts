@@ -152,6 +152,9 @@ export type ChatStreamOptions = {
   // by the hosted image_generation flow to show a ticking "生成图像中…"
   // placeholder without persisting it into the saved message content.
   patchAssistant?: (update: (prev: string) => string) => void
+  // 上游回传的真实 token 用量（prompt/completion）。流中可能被多次调用，
+  // 最后一次为最终值；部分中转站不回传 usage，则一次也不会调用。
+  onUsage?: (promptTokens: number, completionTokens: number) => void
 }
 
 type PreparedRequest = {
@@ -455,6 +458,12 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
   let imgStartedAt = 0
   let imgTicker: ReturnType<typeof setInterval> | null = null
 
+  let usageIn = 0
+  let usageOut = 0
+  const reportUsage = () => {
+    if (o.onUsage && (usageIn > 0 || usageOut > 0)) o.onUsage(usageIn, usageOut)
+  }
+
   const placeholderFor = (prefix: string, secs: number): string => {
     const sep = prefix ? "\n\n" : ""
     return `${prefix}${sep}🎨 生成图像中…（已等 ${secs}s）`
@@ -529,6 +538,44 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
                 }
                 continue
               }
+            }
+          }
+          if (o.protocol === "openai") {
+            // Responses API：完成事件带整段 usage。
+            const resp = (json as { response?: { usage?: { input_tokens?: number; output_tokens?: number } } }).response
+            if (json.type === "response.completed" && resp?.usage) {
+              usageIn = resp.usage.input_tokens ?? usageIn
+              usageOut = resp.usage.output_tokens ?? usageOut
+              reportUsage()
+            }
+            // 兼容 chat-completions 风格中转站：顶层 usage 字段。
+            const cc = json.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined
+            if (cc && (cc.prompt_tokens != null || cc.completion_tokens != null)) {
+              usageIn = cc.prompt_tokens ?? usageIn
+              usageOut = cc.completion_tokens ?? usageOut
+              reportUsage()
+            }
+          } else if (o.protocol === "claude") {
+            if (json.type === "message_start") {
+              const msg = json.message as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined
+              if (msg?.usage) {
+                usageIn = msg.usage.input_tokens ?? usageIn
+                usageOut = msg.usage.output_tokens ?? usageOut
+                reportUsage()
+              }
+            } else if (json.type === "message_delta") {
+              const u = json.usage as { output_tokens?: number } | undefined
+              if (u?.output_tokens != null) {
+                usageOut = u.output_tokens
+                reportUsage()
+              }
+            }
+          } else if (o.protocol === "gemini") {
+            const um = json.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number } | undefined
+            if (um) {
+              usageIn = um.promptTokenCount ?? usageIn
+              usageOut = um.candidatesTokenCount ?? usageOut
+              reportUsage()
             }
           }
           const delta = extractDelta(o.protocol, json)

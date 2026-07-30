@@ -30,15 +30,7 @@ export interface WorkerMessage {
 export type AgentEventType =
   | "text" | "tool_call" | "approval_required" | "tool_result" | "done" | "error" | "usage"
 
-const CONTEXT_LIMITS: Record<string, number> = {
-  "claude-opus-4-8": 200_000,
-  "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5": 200_000,
-}
-export const DEFAULT_CONTEXT_LIMIT = 200_000
-export function contextLimit(model: string): number {
-  return CONTEXT_LIMITS[model] ?? DEFAULT_CONTEXT_LIMIT
-}
+export { contextLimit, DEFAULT_CONTEXT_LIMIT } from "./context-limits"
 
 export interface AgentEvent {
   type: AgentEventType

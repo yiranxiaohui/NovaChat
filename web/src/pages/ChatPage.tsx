@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
+import { estimateMessagesTokens } from "@/lib/context-limits"
 import { listModels } from "@/lib/models"
 import { listPlatformModels, type PlatformModel } from "@/lib/platform-models"
 import { cn } from "@/lib/utils"
@@ -771,6 +772,8 @@ export default function ChatPage() {
   const [attachedSkills, setAttachedSkills] = useState<Skill[]>([])
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [messages, setMessages] = useState<UiMessage[]>([])
+  // 普通聊天上下文占用：null = 本会话尚未拿到真实 usage，显示估算值。
+  const [chatUsageTokens, setChatUsageTokens] = useState<number | null>(null)
   const [systemPrompt, setSystemPrompt] = useState("")
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [input, setInput] = useState("")
@@ -883,6 +886,7 @@ export default function ChatPage() {
       setSystemPrompt("")
       setAttachedSkills([])
       setCurrentConversation(null)
+      setChatUsageTokens(null)
       return
     }
     // A conversation just created by send() that we're about to stream into:
@@ -909,6 +913,7 @@ export default function ChatPage() {
           rows.map((m) => ({ id: m.id, role: m.role, content: m.content }))
         )
         setAttachedSkills(skills)
+        setChatUsageTokens(null)
       })
       .catch((e) => {
         if (cancelled) return
@@ -1069,6 +1074,15 @@ export default function ChatPage() {
     () => composeSystemPromptWithSkills(systemPrompt, attachedSkills),
     [systemPrompt, attachedSkills]
   )
+
+  // 展示用上下文 token：真实 usage 优先，没有则按消息文本估算。
+  const displayContextTokens = useMemo(() => {
+    if (chatUsageTokens != null) return chatUsageTokens
+    return estimateMessagesTokens([
+      effectiveSystemPrompt,
+      ...messages.map((m) => m.content),
+    ])
+  }, [chatUsageTokens, effectiveSystemPrompt, messages])
 
   // Sticky-bottom auto-scroll: only follow the stream when the user is already
   // pinned to the bottom. As soon as they scroll up to read earlier content we
@@ -1352,6 +1366,7 @@ export default function ChatPage() {
             return copy
           })
         },
+        onUsage: (p, c) => setChatUsageTokens(p + c),
       })
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
@@ -1455,6 +1470,7 @@ export default function ChatPage() {
             return copy
           })
         },
+        onUsage: (p, c) => setChatUsageTokens(p + c),
       })
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
@@ -1936,6 +1952,26 @@ export default function ChatPage() {
                   )}
                 </>
               )}
+              {!workerMode && (() => {
+                const limit = contextLimit(settings.model)
+                const pct = Math.min(
+                  100,
+                  Math.round((displayContextTokens / limit) * 100)
+                )
+                const cls =
+                  pct >= 95
+                    ? "text-red-500"
+                    : pct >= 80
+                      ? "text-orange-500"
+                      : "text-muted-foreground"
+                return (
+                  <span className={`ml-auto text-xs ${cls}`}>
+                    上下文 {formatTokens(displayContextTokens)} /{" "}
+                    {formatTokens(limit)} ({pct}%)
+                    {pct >= 95 ? "，建议新开会话" : ""}
+                  </span>
+                )
+              })()}
             </div>
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2 rounded-xl border border-border bg-card p-2">

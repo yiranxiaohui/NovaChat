@@ -10,6 +10,7 @@ export type PlatformModel = {
   kind: "chat" | "image"
   cost_credits: number
   protocol: "openai" | "claude" | "gemini"
+  context_limit: number | null
 }
 
 export async function listPlatformModels(

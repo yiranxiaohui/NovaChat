@@ -80,6 +80,7 @@ export type ModelPrice = {
   display_name: string | null
   enabled: boolean
   protocol: ChannelProtocol
+  context_limit: number | null
 }
 
 export type PricingInput = {
@@ -89,6 +90,7 @@ export type PricingInput = {
   display_name?: string | null
   enabled?: boolean
   protocol: ChannelProtocol
+  context_limit?: number | null
 }
 
 export type AllChannelModel = {

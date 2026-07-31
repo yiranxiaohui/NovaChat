@@ -434,12 +434,10 @@ function PricingDialog({
               type="number"
               min={0}
               value={form.context_limit ?? ""}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  context_limit: Number(e.target.value) > 0 ? Number(e.target.value) : null,
-                })
-              }
+              onChange={(e) => {
+                const n = Math.floor(Number(e.target.value))
+                setForm({ ...form, context_limit: n > 0 ? n : null })
+              }}
               placeholder="留空自动推断"
             />
           </div>

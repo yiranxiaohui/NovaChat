@@ -864,7 +864,7 @@ export default function ChatPage() {
   }, [user])
 
   useEffect(() => {
-    if (settings.chatMode !== "platform") return
+    if (settings.chatMode !== "platform" || workerMode) return
     let cancelled = false
     listPlatformModels("chat")
       .then((list) => {
@@ -881,7 +881,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true
     }
-  }, [settings.chatMode])
+  }, [settings.chatMode, workerMode])
 
   async function refreshCredits() {
     try {

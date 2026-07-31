@@ -47,6 +47,7 @@ pub struct ModelPrice {
     pub display_name: Option<String>,
     pub enabled: bool,
     pub protocol: String,
+    pub context_limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -413,15 +414,15 @@ pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, 
     let sql = db::q(
         kind,
         &format!(
-            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol \
+            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol, context_limit \
              FROM model_pricing ORDER BY kind, model"
         ),
     );
-    let rows: Vec<(i64, String, String, i64, Option<String>, i64, String)> =
+    let rows: Vec<(i64, String, String, i64, Option<String>, i64, String, Option<i64>)> =
         sqlx::query_as(&sql).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, model, kind_, cost_credits, display_name, enabled, protocol)| ModelPrice {
+        .map(|(id, model, kind_, cost_credits, display_name, enabled, protocol, context_limit)| ModelPrice {
             id,
             model,
             kind: kind_,
@@ -429,6 +430,7 @@ pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, 
             display_name,
             enabled: enabled != 0,
             protocol,
+            context_limit,
         })
         .collect())
 }
@@ -443,13 +445,13 @@ pub async fn get_price(
     let sql = db::q(
         kind,
         &format!(
-            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol \
+            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol, context_limit \
              FROM model_pricing WHERE model = ?"
         ),
     );
-    let row: Option<(i64, String, String, i64, Option<String>, i64, String)> =
+    let row: Option<(i64, String, String, i64, Option<String>, i64, String, Option<i64>)> =
         sqlx::query_as(&sql).bind(model).fetch_optional(pool).await?;
-    Ok(row.map(|(id, model, kind_, cost_credits, display_name, enabled, protocol)| ModelPrice {
+    Ok(row.map(|(id, model, kind_, cost_credits, display_name, enabled, protocol, context_limit)| ModelPrice {
         id,
         model,
         kind: kind_,
@@ -457,6 +459,7 @@ pub async fn get_price(
         display_name,
         enabled: enabled != 0,
         protocol,
+        context_limit,
     }))
 }
 
@@ -471,6 +474,8 @@ pub struct PricingInput {
     pub enabled: bool,
     #[serde(default = "default_protocol")]
     pub protocol: String,
+    #[serde(default)]
+    pub context_limit: Option<i64>,
 }
 fn default_protocol() -> String { "openai".to_string() }
 
@@ -482,26 +487,30 @@ pub async fn upsert_price(
     let now = db::now_expr(kind);
     let sql = match kind {
         DbKind::Sqlite => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
              ON CONFLICT(model) DO UPDATE SET kind = excluded.kind, cost_credits = excluded.cost_credits, \
-             display_name = excluded.display_name, enabled = excluded.enabled, protocol = excluded.protocol, updated_at = {now}"
+             display_name = excluded.display_name, enabled = excluded.enabled, protocol = excluded.protocol, \
+             context_limit = excluded.context_limit, updated_at = {now}"
         ),
         DbKind::Postgres => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
              ON CONFLICT (model) DO UPDATE SET kind = EXCLUDED.kind, cost_credits = EXCLUDED.cost_credits, \
-             display_name = EXCLUDED.display_name, enabled = EXCLUDED.enabled, protocol = EXCLUDED.protocol, updated_at = {now}"
+             display_name = EXCLUDED.display_name, enabled = EXCLUDED.enabled, protocol = EXCLUDED.protocol, \
+             context_limit = EXCLUDED.context_limit, updated_at = {now}"
         ),
         DbKind::Mysql => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
              ON DUPLICATE KEY UPDATE kind = VALUES(kind), cost_credits = VALUES(cost_credits), \
-             display_name = VALUES(display_name), enabled = VALUES(enabled), protocol = VALUES(protocol), updated_at = {now}"
+             display_name = VALUES(display_name), enabled = VALUES(enabled), protocol = VALUES(protocol), \
+             context_limit = VALUES(context_limit), updated_at = {now}"
         ),
     };
     let sql = db::q(kind, &sql);
     let enabled_v: i64 = if input.enabled { 1 } else { 0 };
+    let ctx: Option<i64> = input.context_limit.filter(|n| *n > 0);
     let q = sqlx::query(&sql)
         .bind(&input.model)
         .bind(&input.kind)
@@ -509,6 +518,7 @@ pub async fn upsert_price(
         .bind(input.display_name.as_deref());
     let q = if matches!(kind, DbKind::Postgres) { q.bind(input.enabled) } else { q.bind(enabled_v) };
     let q = q.bind(&input.protocol);
+    let q = q.bind(ctx);
     q.execute(pool).await.map(|_| ())
 }
 
@@ -853,6 +863,7 @@ struct PlatformModel {
     kind: String, // "chat" | "image"
     cost_credits: i64,
     protocol: String, // top-priority channel's protocol
+    context_limit: Option<i64>,
 }
 
 async fn user_list_platform_models(
@@ -884,6 +895,7 @@ async fn user_list_platform_models(
             kind: p.kind.clone(),
             cost_credits: p.cost_credits,
             protocol: p.protocol.clone(),
+            context_limit: p.context_limit,
         });
     }
     Json(out).into_response()

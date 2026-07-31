@@ -137,6 +137,7 @@ function ModelPicker({
               kind: "chat" as const,
               cost_credits: 0,
               protocol: fetchProtocol as Protocol,
+              context_limit: null,
             }))
       setModels(list)
     } catch (e) {
@@ -774,6 +775,8 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<UiMessage[]>([])
   // 普通聊天上下文占用：null = 本会话尚未拿到真实 usage，显示估算值。
   const [chatUsageTokens, setChatUsageTokens] = useState<number | null>(null)
+  // 平台模式下按模型配置的上下文上限（model → context_limit），拉取失败静默回落关键词表。
+  const [platformContextMap, setPlatformContextMap] = useState<Map<string, number>>(new Map())
   const [systemPrompt, setSystemPrompt] = useState("")
   const [loadingMessages, setLoadingMessages] = useState(false)
   const [input, setInput] = useState("")
@@ -859,6 +862,26 @@ export default function ChatPage() {
       cancelled = true
     }
   }, [user])
+
+  useEffect(() => {
+    if (settings.chatMode !== "platform" || workerMode) return
+    let cancelled = false
+    listPlatformModels("chat")
+      .then((list) => {
+        if (cancelled) return
+        const map = new Map<string, number>()
+        for (const m of list) {
+          if (m.context_limit != null && m.context_limit > 0) map.set(m.model, m.context_limit)
+        }
+        setPlatformContextMap(map)
+      })
+      .catch(() => {
+        // 静默：回落关键词表
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [settings.chatMode, workerMode])
 
   async function refreshCredits() {
     try {
@@ -1954,7 +1977,10 @@ export default function ChatPage() {
                 </>
               )}
               {!workerMode && (() => {
-                const limit = contextLimit(settings.model)
+                const limit =
+                  (settings.chatMode === "platform"
+                    ? platformContextMap.get(settings.model)
+                    : undefined) ?? contextLimit(settings.model)
                 const pct = Math.min(
                   100,
                   Math.round((displayContextTokens / limit) * 100)

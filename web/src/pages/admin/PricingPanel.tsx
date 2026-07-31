@@ -71,6 +71,7 @@ export function PricingPanel() {
         display_name: r.display_name,
         enabled: !r.enabled,
         protocol: r.protocol,
+        context_limit: r.context_limit,
       })
       await load()
     } catch (e) {
@@ -117,6 +118,7 @@ export function PricingPanel() {
               <th className="px-3 py-2 text-left font-medium">类型</th>
               <th className="px-3 py-2 text-left font-medium">协议</th>
               <th className="px-3 py-2 text-right font-medium">积分/次</th>
+              <th className="px-3 py-2 text-right font-medium">上下文</th>
               <th className="px-3 py-2 text-left font-medium">启用</th>
               <th className="px-3 py-2 text-right font-medium">操作</th>
             </tr>
@@ -124,14 +126,14 @@ export function PricingPanel() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
                   加载中…
                 </td>
               </tr>
             )}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
                   暂无计费规则。点击「新建模型」添加白名单条目。
                 </td>
               </tr>
@@ -154,6 +156,15 @@ export function PricingPanel() {
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">
                   {r.cost_credits}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {r.context_limit != null
+                    ? r.context_limit >= 1_000_000
+                      ? `${(r.context_limit / 1_000_000).toFixed(r.context_limit % 1_000_000 === 0 ? 0 : 1)}M`
+                      : r.context_limit >= 1000
+                        ? `${(r.context_limit / 1000).toFixed(r.context_limit % 1000 === 0 ? 0 : 1)}K`
+                        : String(r.context_limit)
+                    : "自动"}
                 </td>
                 <td className="px-3 py-2">
                   <button
@@ -224,6 +235,7 @@ function PricingDialog({
           display_name: mode.row.display_name,
           enabled: mode.row.enabled,
           protocol: mode.row.protocol,
+          context_limit: mode.row.context_limit,
         }
       : {
           model: "",
@@ -232,6 +244,7 @@ function PricingDialog({
           display_name: null,
           enabled: true,
           protocol: "openai",
+          context_limit: null,
         }
   const [form, setForm] = useState<PricingInput>(initial)
   const [saving, setSaving] = useState(false)
@@ -413,6 +426,19 @@ function PricingDialog({
               onChange={(e) =>
                 setForm({ ...form, cost_credits: Number(e.target.value) || 0 })
               }
+            />
+          </div>
+          <div>
+            <Label>上下文 (tokens)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={form.context_limit ?? ""}
+              onChange={(e) => {
+                const n = Math.floor(Number(e.target.value))
+                setForm({ ...form, context_limit: n > 0 ? n : null })
+              }}
+              placeholder="留空自动推断"
             />
           </div>
           <div className="col-span-2">

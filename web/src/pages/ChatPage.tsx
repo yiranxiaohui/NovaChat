@@ -29,6 +29,7 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { CodeBlock } from "@/components/app/Markdown"
+import { ReasoningBlock } from "@/components/app/ReasoningBlock"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -85,7 +86,13 @@ import {
 } from "@/lib/worker"
 import { WorkerLog, type WorkerLogItem } from "@/components/app/WorkerEvents"
 
-type UiMessage = ChatMessage & { id?: number }
+// reasoning / reasoningMs 是纯前端字段：思考过程不落库，也不会进 append
+// 请求体，刷新页面后消失。
+type UiMessage = ChatMessage & {
+  id?: number
+  reasoning?: string
+  reasoningMs?: number
+}
 
 const PROTOCOL_COLOR: Record<Protocol, string> = {
   openai: "from-emerald-400 to-emerald-600",
@@ -624,6 +631,12 @@ function Bubble({
             "prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.85em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none"
           )}
         >
+          {message.reasoning && (
+            <ReasoningBlock
+              reasoning={message.reasoning}
+              elapsedMs={message.reasoningMs}
+            />
+          )}
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -705,7 +718,8 @@ function Bubble({
               },
             }}
           >
-            {message.content || "…"}
+            {/* 思考块已经表明正在工作，此时不必再挂一个孤零零的省略号 */}
+            {message.content || (message.reasoning ? "" : "…")}
           </ReactMarkdown>
         </div>
       </div>
@@ -1286,12 +1300,45 @@ export default function ChatPage() {
   async function refetchMessages(convId: number) {
     try {
       const rows = await conversationsApi.messages(convId)
-      setMessages(
-        rows.map((m) => ({ id: m.id, role: m.role, content: m.content }))
+      setMessages((prev) =>
+        rows.map((m, i) => {
+          const base = { id: m.id, role: m.role, content: m.content }
+          // 思考过程不落库，这里按位置把本地那份贴回去——否则回答刚保存完
+          // 就会被这次整体重建冲掉，思考区会一闪而过。refetch 紧跟 append，
+          // 两边顺序天然对齐。
+          const local = prev[i]
+          return local?.role === m.role && local.reasoning
+            ? {
+                ...base,
+                reasoning: local.reasoning,
+                reasoningMs: local.reasoningMs,
+              }
+            : base
+        })
       )
     } catch {
       // tolerate; IDs can't be refreshed, retry/edit just won't work
     }
+  }
+
+  /** 兜底定格思考耗时。正文首字到达时 onDelta 已经定格过；这里覆盖的是
+   * 「思考完但正文一直没来」的情况（用户点了停止 / 上游断流），否则思考区
+   * 会永远停在「思考中…」。 */
+  function freezeReasoning(startedAt: number) {
+    if (!startedAt) return
+    const ms = Date.now() - startedAt
+    setMessages((prev) => {
+      const copy = prev.slice()
+      const last = copy[copy.length - 1]
+      if (
+        last?.role === "assistant" &&
+        last.reasoning &&
+        last.reasoningMs === undefined
+      ) {
+        copy[copy.length - 1] = { ...last, reasoningMs: ms }
+      }
+      return copy
+    })
   }
 
   async function send() {
@@ -1355,6 +1402,9 @@ export default function ChatPage() {
 
     let assistantContent = ""
     let streamError: Error | null = null
+    // 思考计时：首个思考增量开始计，正文首字定格。
+    let reasoningStart = 0
+    let reasoningMs: number | undefined
 
     const toModel: ChatMessage[] = (effectiveSystemPrompt
       ? [
@@ -1376,7 +1426,25 @@ export default function ChatPage() {
         imageGen: settings.protocol === "openai",
         messages: toModel,
         signal: ctrl.signal,
+        onReasoning: (delta) => {
+          if (!reasoningStart) reasoningStart = Date.now()
+          setMessages((prev) => {
+            const copy = prev.slice()
+            const last = copy[copy.length - 1]
+            if (last?.role === "assistant") {
+              copy[copy.length - 1] = {
+                ...last,
+                reasoning: (last.reasoning ?? "") + delta,
+              }
+            }
+            return copy
+          })
+        },
         onDelta: (delta) => {
+          // 正文首字到达 = 思考结束，定格耗时供折叠标题显示。
+          if (reasoningStart && reasoningMs === undefined) {
+            reasoningMs = Date.now() - reasoningStart
+          }
           assistantContent += delta
           setMessages((prev) => {
             const copy = prev.slice()
@@ -1385,6 +1453,7 @@ export default function ChatPage() {
               copy[copy.length - 1] = {
                 ...last,
                 content: last.content + delta,
+                ...(reasoningMs !== undefined ? { reasoningMs } : {}),
               }
             }
             return copy
@@ -1409,6 +1478,7 @@ export default function ChatPage() {
       setStreaming(false)
       abortRef.current = null
       void refreshCredits()
+      freezeReasoning(reasoningStart)
     }
 
     if (streamError) {
@@ -1462,6 +1532,9 @@ export default function ChatPage() {
     abortRef.current = ctrl
     let assistantContent = ""
     let streamError: Error | null = null
+    // 思考计时：首个思考增量开始计，正文首字定格。
+    let reasoningStart = 0
+    let reasoningMs: number | undefined
 
     const history: ChatMessage[] = trimmed.map((m) => ({
       role: m.role,
@@ -1483,13 +1556,35 @@ export default function ChatPage() {
         imageGen: settings.protocol === "openai",
         messages: toModel,
         signal: ctrl.signal,
+        onReasoning: (delta) => {
+          if (!reasoningStart) reasoningStart = Date.now()
+          setMessages((prev) => {
+            const copy = prev.slice()
+            const tail = copy[copy.length - 1]
+            if (tail?.role === "assistant") {
+              copy[copy.length - 1] = {
+                ...tail,
+                reasoning: (tail.reasoning ?? "") + delta,
+              }
+            }
+            return copy
+          })
+        },
         onDelta: (delta) => {
+          // 正文首字到达 = 思考结束，定格耗时供折叠标题显示。
+          if (reasoningStart && reasoningMs === undefined) {
+            reasoningMs = Date.now() - reasoningStart
+          }
           assistantContent += delta
           setMessages((prev) => {
             const copy = prev.slice()
             const tail = copy[copy.length - 1]
             if (tail?.role === "assistant") {
-              copy[copy.length - 1] = { ...tail, content: tail.content + delta }
+              copy[copy.length - 1] = {
+                ...tail,
+                content: tail.content + delta,
+                ...(reasoningMs !== undefined ? { reasoningMs } : {}),
+              }
             }
             return copy
           })
@@ -1512,6 +1607,7 @@ export default function ChatPage() {
     } finally {
       setStreaming(false)
       abortRef.current = null
+      freezeReasoning(reasoningStart)
     }
 
     if (streamError) {

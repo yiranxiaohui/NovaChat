@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   ArrowLeft,
@@ -43,12 +43,16 @@ import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
 import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { listPlatformModels } from "@/lib/platform-models"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
-import { BrandMark } from "@/components/app/BrandMark"
 import { ImagePreview } from "@/components/app/ImagePreview"
 
 // Radix 的 SelectItem 不接受空字符串作为 value（会直接抛错），用哨兵值代表
 // 「不传该参数」。STYLE_OPTIONS 和「背景」都有 value: "" 的默认项，都走它。
 const EMPTY_OPT = "__default__"
+
+/** 生成结果卡片里的参数芯片（模型 / 尺寸 / 质量 / 风格）。带边框比纯色块更
+ * 克制，不会跟图片抢视线。 */
+const META_CHIP =
+  "rounded-md border border-border/60 bg-muted/50 px-1.5 py-0.5 font-medium text-foreground/75"
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -594,19 +598,31 @@ export default function ImageStudioPage() {
           "md:static md:w-80 md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none"
         )}
       >
-        <div className="flex items-center justify-between px-4 pb-3 pt-4">
-          <BrandMark />
-        </div>
-        <div className="flex flex-col gap-1 px-3 pb-2">
+        {/* 图像工作室是从对话进来的二级页面，顶部留品牌标不如直接给退路——
+            「返回对话」顶替 logo 的位置，省一行且入口更显眼。 */}
+        <div className="px-3 pb-3 pt-4">
           <Link
             to="/"
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           >
-            <ArrowLeft className="size-3.5" /> 返回对话
+            <ArrowLeft className="size-4" /> 返回对话
           </Link>
         </div>
 
-        <div className="nc-scroll flex-1 overflow-y-auto px-4 pb-4">
+        <div
+          className={cn(
+            "nc-scroll flex-1 overflow-y-auto px-4 pb-4",
+            // 标题加粗 + 控件淡灰底，让「字段名」和「可填区域」一眼分层。
+            // 用 data-slot 精确命中 shadcn 组件，避免误伤面板里的原生
+            // <label>/<input>（「显示全部」那个复选框）。
+            // 暗色下 shadcn 自带 dark:bg-input/30，特异性与这里相同，必须显式
+            // 写 dark: 变体才能稳定压过它，否则两种模式表现不一致。
+            "[&_[data-slot=label]]:font-semibold [&_[data-slot=label]]:text-foreground",
+            "[&_[data-slot=input]]:bg-muted/50 dark:[&_[data-slot=input]]:bg-muted/50",
+            "[&_[data-slot=textarea]]:bg-muted/50 dark:[&_[data-slot=textarea]]:bg-muted/50",
+            "[&_[data-slot=select-trigger]]:bg-muted/50 dark:[&_[data-slot=select-trigger]]:bg-muted/50"
+          )}
+        >
           <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
             <Sparkles className="size-4 text-primary" /> 生成参数
           </h2>
@@ -972,9 +988,16 @@ export default function ImageStudioPage() {
             </div>
           )}
 
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-3 py-4 md:px-6 md:py-6">
-            {/* Main preview slot */}
-            <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-3 py-4 md:px-6 md:py-6">
+            {/* Main preview slot。有结果时右侧让出一条空当，好让操作按钮挪到
+                卡片外面去；加载/空状态没有按钮，就不缩进。窄屏空间紧张，按钮
+                仍留在卡片内。 */}
+            <div
+              className={cn(
+                "rounded-xl border border-border bg-card p-4 shadow-sm",
+                !submitting && effectivePreview && "md:mr-14"
+              )}
+            >
               {submitting && (
                 <div className="flex h-80 flex-col items-center justify-center gap-3 text-muted-foreground">
                   <Loader2 className="size-8 animate-spin" />
@@ -1183,15 +1206,96 @@ function PreviewCard({
     )
   }
   if (!gen.image_path) return null
+  const hasMeta = Boolean(gen.model || gen.size || gen.quality || gen.style)
   return (
-    <div className="flex flex-col items-center gap-4">
+    // 窄屏工具条留在卡片内，所以要自己让出右边的位置；宽屏工具条整个挪到卡片
+    // 外面（由外层的 md:mr-14 腾地方），这里就不用再缩进了。
+    <div className="relative flex flex-col items-center gap-4 pr-10 md:pr-0">
       <img
         src={gen.image_path}
         alt={gen.prompt}
         onClick={() => setZoomOpen(true)}
         title="点击放大预览（滚轮缩放，支持拖动）"
-        className="max-h-[70vh] max-w-full cursor-zoom-in rounded-lg border border-border shadow-sm"
+        className="max-h-[80vh] min-w-0 max-w-full cursor-zoom-in rounded-lg border border-border shadow-sm"
       />
+      {/* 宽屏用负偏移越过卡片的 p-4 和边框，落到卡片外侧；窄屏收回卡片内 */}
+      <div className="absolute right-0 top-0 z-10 flex flex-col gap-1.5 md:-right-14">
+        <ImageAction
+          label="下载"
+          icon={<Download className="size-4" />}
+          href={gen.image_path}
+          download={fname || "image"}
+        />
+        <ImageAction
+          label={
+            copyState === "done"
+              ? "已复制"
+              : copyState === "error"
+                ? (copyError ?? "复制失败")
+                : copyState === "copying"
+                  ? "复制中…"
+                  : "复制图片到剪贴板"
+          }
+          icon={
+            copyState === "done" ? (
+              <Check className="size-4 text-emerald-500" />
+            ) : copyState === "error" ? (
+              <X className="size-4 text-destructive" />
+            ) : copyState === "copying" ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Copy className="size-4" />
+            )
+          }
+          onClick={() => void handleCopy()}
+          disabled={copyState === "copying"}
+        />
+        <ImageAction
+          label={
+            baseState === "done"
+              ? "已设为底图"
+              : baseState === "error"
+                ? "导入失败"
+                : baseState === "loading"
+                  ? "导入中…"
+                  : "把这张图当作底图继续编辑"
+          }
+          icon={
+            baseState === "done" ? (
+              <Check className="size-4 text-emerald-500" />
+            ) : baseState === "error" ? (
+              <X className="size-4 text-destructive" />
+            ) : baseState === "loading" ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <ArrowLeftToLine className="size-4" />
+            )
+          }
+          onClick={() => void handleUseAsBase()}
+          disabled={baseState === "loading"}
+        />
+        <ImageAction
+          label={
+            published
+              ? "已发布到广场"
+              : publishing
+                ? "发布中…"
+                : "发布到图片广场"
+          }
+          icon={
+            published ? (
+              <Check className="size-4 text-emerald-500" />
+            ) : publishing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Upload className="size-4" />
+            )
+          }
+          variant={published ? "secondary" : "default"}
+          disabled={!canPublish || published || publishing}
+          onClick={onPublish}
+        />
+      </div>
       {zoomOpen && (
         <ImagePreview
           src={gen.image_path}
@@ -1199,100 +1303,99 @@ function PreviewCard({
           onClose={() => setZoomOpen(false)}
         />
       )}
-      <div className="flex w-full max-w-lg flex-col gap-2 text-xs">
-        <div className="flex flex-wrap gap-1.5 text-muted-foreground">
-          {gen.model && (
-            <span className="rounded bg-muted px-1.5 py-0.5">{gen.model}</span>
+      <div className="w-full max-w-lg rounded-lg border border-border/60 bg-card/40 px-3 py-2.5 text-xs">
+        {hasMeta && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {gen.model && <span className={META_CHIP}>{gen.model}</span>}
+            {gen.size && (
+              <span className={cn(META_CHIP, "tabular-nums")}>
+                {gen.size.replace(/x/i, "×")}
+              </span>
+            )}
+            {gen.quality && (
+              <span className={META_CHIP}>质量 {gen.quality}</span>
+            )}
+            {gen.style && <span className={META_CHIP}>{gen.style}</span>}
+          </div>
+        )}
+        {/* 标签列与内容列用颜色分层，不用字重——加粗的标签会盖过提示词本身 */}
+        <div
+          className={cn(
+            "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5",
+            hasMeta && "mt-2.5 border-t border-border/50 pt-2.5"
           )}
-          {gen.size && (
-            <span className="rounded bg-muted px-1.5 py-0.5">{gen.size}</span>
-          )}
-          {gen.quality && (
-            <span className="rounded bg-muted px-1.5 py-0.5">
-              质量 {gen.quality}
-            </span>
-          )}
-          {gen.style && (
-            <span className="rounded bg-muted px-1.5 py-0.5">{gen.style}</span>
+        >
+          <span className="text-muted-foreground">提示词</span>
+          <span className="min-w-0 break-words text-foreground">
+            {gen.prompt}
+          </span>
+          {gen.revised_prompt && gen.revised_prompt !== gen.prompt && (
+            <>
+              <span className="text-muted-foreground">修订后</span>
+              <span className="min-w-0 break-words text-muted-foreground">
+                {gen.revised_prompt}
+              </span>
+            </>
           )}
         </div>
-        <p className="text-sm">
-          <b>Prompt：</b> {gen.prompt}
-        </p>
-        {gen.revised_prompt && gen.revised_prompt !== gen.prompt && (
-          <p className="text-muted-foreground">
-            <b>Revised：</b> {gen.revised_prompt}
-          </p>
-        )}
       </div>
-      <div className="flex w-full flex-wrap justify-center gap-2">
-        <Button asChild variant="outline" size="sm">
-          <a href={gen.image_path} download={fname || "image"}>
-            <Download className="size-4" /> 下载
+    </div>
+  )
+}
+
+/** 图片右侧竖排工具条里的一颗图标按钮。
+ *
+ * 只显示图标，hover 时在左侧弹出文字说明。项目没装 tooltip 组件，这里用
+ * group-hover 做一个轻量气泡，不为此引入新依赖。气泡朝左弹是因为工具条紧贴
+ * 图片右缘，朝右容易顶到容器边界。
+ */
+function ImageAction({
+  label,
+  icon,
+  onClick,
+  href,
+  download,
+  disabled,
+  variant = "outline",
+}: {
+  label: string
+  icon: ReactNode
+  onClick?: () => void
+  href?: string
+  download?: string
+  disabled?: boolean
+  variant?: "outline" | "default" | "secondary"
+}) {
+  return (
+    <div className="group/act relative">
+      {href ? (
+        <Button asChild variant={variant} size="icon-sm" aria-label={label}>
+          <a href={href} download={download}>
+            {icon}
           </a>
         </Button>
+      ) : (
         <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void handleCopy()}
-          disabled={copyState === "copying"}
-          title={copyError ?? "复制图片到剪贴板，然后可粘贴到左侧底图"}
+          variant={variant}
+          size="icon-sm"
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
         >
-          {copyState === "done" ? (
-            <>
-              <Check className="size-4 text-emerald-500" /> 已复制
-            </>
-          ) : copyState === "error" ? (
-            <>
-              <X className="size-4 text-destructive" /> 复制失败
-            </>
-          ) : (
-            <>
-              <Copy className="size-4" />{" "}
-              {copyState === "copying" ? "复制中…" : "复制图片"}
-            </>
-          )}
+          {icon}
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void handleUseAsBase()}
-          disabled={baseState === "loading"}
-          title="把这张图当作底图继续编辑"
-        >
-          {baseState === "done" ? (
-            <>
-              <Check className="size-4 text-emerald-500" /> 已设为底图
-            </>
-          ) : baseState === "error" ? (
-            <>
-              <X className="size-4 text-destructive" /> 失败
-            </>
-          ) : (
-            <>
-              <ArrowLeftToLine className="size-4" />{" "}
-              {baseState === "loading" ? "导入中…" : "用作底图"}
-            </>
-          )}
-        </Button>
-        <Button
-          variant={published ? "secondary" : "default"}
-          size="sm"
-          disabled={!canPublish || published || publishing}
-          onClick={onPublish}
-        >
-          {published ? (
-            <>
-              <Check className="size-4 text-emerald-500" /> 已发布到广场
-            </>
-          ) : (
-            <>
-              <Upload className="size-4" />{" "}
-              {publishing ? "发布中…" : "发布到图片广场"}
-            </>
-          )}
-        </Button>
-      </div>
+      )}
+      <span
+        role="tooltip"
+        className={cn(
+          "pointer-events-none absolute right-full top-1/2 z-20 mr-2 -translate-y-1/2",
+          "whitespace-nowrap rounded-md bg-popover px-2 py-1 text-xs",
+          "text-popover-foreground shadow-md ring-1 ring-border",
+          "opacity-0 transition-opacity group-hover/act:opacity-100"
+        )}
+      >
+        {label}
+      </span>
     </div>
   )
 }

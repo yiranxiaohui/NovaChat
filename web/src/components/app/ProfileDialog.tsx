@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react"
-import { createPortal } from "react-dom"
 import { Check, Copy, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useAuth } from "@/lib/auth-context"
 import { profileApi } from "@/lib/profile"
 import {
@@ -85,7 +92,8 @@ export function ProfileDialog({ open, onClose }: Props) {
     setAvatarBroken(false)
   }, [avatarUrl])
 
-  if (!open || !user) return null
+  // open 交给 Dialog 管；user 为空时整个组件不渲染，内部可放心解引用
+  if (!user) return null
 
   const trimmedAvatar = avatarUrl.trim()
   const initial = (
@@ -165,22 +173,18 @@ export function ProfileDialog({ open, onClose }: Props) {
 
   const showImage = trimmedAvatar && !avatarBroken
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-lg flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        className="nc-scroll flex flex-col gap-4"
         style={{ maxHeight: "calc(100svh - 2rem)", overflowY: "auto" }}
       >
-        <div>
-          <h2 className="text-lg font-semibold">个人资料</h2>
-          <p className="text-sm text-muted-foreground">
+        <DialogHeader>
+          <DialogTitle>个人资料</DialogTitle>
+          <DialogDescription>
             修改昵称、头像或密码。用户名一旦注册后不可更改。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -375,16 +379,15 @@ export function ProfileDialog({ open, onClose }: Props) {
           </div>
         )}
 
-        <div className="flex justify-end gap-2">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={() => void save()} disabled={saving || !dirty}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

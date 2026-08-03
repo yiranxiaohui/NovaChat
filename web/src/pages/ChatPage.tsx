@@ -32,6 +32,16 @@ import { CodeBlock } from "@/components/app/Markdown"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
+// Radix 的 SelectItem 不接受空字符串作为 value，用哨兵值代表「未选择工蜂」。
+const WORKER_NONE = "__none__"
 import { streamChat, type ChatMessage } from "@/lib/chat-stream"
 import { estimateMessagesTokens } from "@/lib/context-limits"
 import { listModels } from "@/lib/models"
@@ -1938,22 +1948,26 @@ export default function ChatPage() {
               </label>
               {workerMode && (
                 <>
-                  <select
-                    className="h-8 rounded-md border bg-background px-2 text-sm"
-                    value={workerId ?? ""}
-                    onChange={(e) =>
-                      setWorkerId(e.target.value ? Number(e.target.value) : null)
+                  <Select
+                    value={workerId === null ? WORKER_NONE : String(workerId)}
+                    onValueChange={(v) =>
+                      setWorkerId(v === WORKER_NONE ? null : Number(v))
                     }
                   >
-                    <option value="">选择工蜂…</option>
-                    {workers
-                      .filter((w) => w.online)
-                      .map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name}
-                        </option>
-                      ))}
-                  </select>
+                    <SelectTrigger size="sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={WORKER_NONE}>选择工蜂…</SelectItem>
+                      {workers
+                        .filter((w) => w.online)
+                        .map((w) => (
+                          <SelectItem key={w.id} value={String(w.id)}>
+                            {w.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
                   <Input
                     className="h-8 w-44"
                     value={workerModel}

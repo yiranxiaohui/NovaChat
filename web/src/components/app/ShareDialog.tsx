@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { toast } from "sonner"
 import {
   Check,
   Copy,
@@ -9,6 +10,22 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { useConfirm } from "@/lib/confirm-context"
 import { conversationsApi, type Conversation } from "@/lib/conversations"
 import { downloadConversation } from "@/lib/export-conversation"
 import { sharingApi, type ShareListRow } from "@/lib/sharing"
@@ -29,6 +46,7 @@ const EXPIRY_LABEL: Record<Expiry, string> = {
 }
 
 export function ShareDialog({ open, conversation, onClose }: Props) {
+  const { confirm } = useConfirm()
   const [shares, setShares] = useState<ShareListRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -58,7 +76,8 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
     }
   }, [open, conversation])
 
-  if (!open || !conversation) return null
+  // open 交给 Dialog 管；conversation 为空时整个组件不渲染，内部可放心解引用
+  if (!conversation) return null
 
   async function createShare() {
     if (!conversation) return
@@ -89,10 +108,17 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
   }
 
   async function revoke(token: string) {
-    if (!window.confirm("撤销后此链接立即失效，无法恢复。继续？")) return
+    const ok = await confirm({
+      title: "撤销这个分享链接？",
+      description: "撤销后此链接立即失效，无法恢复。",
+      confirmText: "撤销",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await sharingApi.revoke(token)
       setShares((s) => s.filter((r) => r.token !== token))
+      toast.success("分享链接已撤销")
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -117,6 +143,7 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
     try {
       const messages = await conversationsApi.messages(conversation.id)
       downloadConversation({ conversation, messages }, format)
+      toast.success(`已导出 ${format === "markdown" ? "Markdown" : "JSON"}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -125,22 +152,16 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[90vh] w-full max-w-lg flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="nc-scroll flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
             <Share2 className="size-5" /> 分享与导出
-          </h2>
-          <p className="text-xs text-muted-foreground">
+          </DialogTitle>
+          <DialogDescription className="text-xs">
             分享生成只读快照——快照创建后即冻结，之后修改 / 删除原对话都不影响。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -227,18 +248,18 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
             <label className="text-xs text-muted-foreground" htmlFor="exp">
               有效期
             </label>
-            <select
-              id="exp"
-              value={expiry}
-              onChange={(e) => setExpiry(e.target.value as Expiry)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-            >
-              {(Object.keys(EXPIRY_LABEL) as Expiry[]).map((k) => (
-                <option key={k} value={k}>
-                  {EXPIRY_LABEL[k]}
-                </option>
-              ))}
-            </select>
+            <Select value={expiry} onValueChange={(v) => setExpiry(v as Expiry)}>
+              <SelectTrigger id="exp" size="sm" className="text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(EXPIRY_LABEL) as Expiry[]).map((k) => (
+                  <SelectItem key={k} value={k} className="text-xs">
+                    {EXPIRY_LABEL[k]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               onClick={() => void createShare()}
@@ -276,12 +297,12 @@ export function ShareDialog({ open, conversation, onClose }: Props) {
           </div>
         </section>
 
-        <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <DialogFooter className="border-t border-border pt-3">
           <Button variant="outline" size="sm" onClick={onClose}>
             关闭
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

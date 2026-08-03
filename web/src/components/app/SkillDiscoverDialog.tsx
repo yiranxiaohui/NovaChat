@@ -3,6 +3,14 @@ import { CopyPlus, Flame, Search, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   skillsApi,
   type PublicSkill,
   type PublicSkillSort,
@@ -70,24 +78,19 @@ export function SkillDiscoverDialog({ open, onClose, onCloned }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      {/* z-[60]：本弹窗是从 SkillsDialog 内部再次打开的，要压在它上面 */}
+      <DialogContent
+        className="z-[60] flex flex-col gap-3 sm:max-w-3xl"
         style={{ maxHeight: "calc(100svh - 2rem)" }}
       >
-        <div>
-          <h2 className="text-lg font-semibold">发现公开 Skills</h2>
-          <p className="text-sm text-muted-foreground">
+        <DialogHeader>
+          <DialogTitle>发现公开 Skills</DialogTitle>
+          <DialogDescription>
             点「克隆」把 skill 完整复制到你自己的库,之后可挂到任意会话。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-[12rem] flex-1">
@@ -207,12 +210,12 @@ export function SkillDiscoverDialog({ open, onClose, onCloned }: Props) {
           </ul>
         </div>
 
-        <div className="flex justify-end">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             关闭
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

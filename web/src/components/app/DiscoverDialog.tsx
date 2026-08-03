@@ -2,6 +2,14 @@ import { useEffect, useState } from "react"
 import { CopyPlus, Flame, Search, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { promptsApi, type PublicPrompt, type PublicSort } from "@/lib/prompts"
 
 type Props = {
@@ -66,24 +74,18 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        className="flex flex-col gap-3 sm:max-w-3xl"
         style={{ maxHeight: "calc(100svh - 2rem)" }}
       >
-        <div>
-          <h2 className="text-lg font-semibold">发现公开提示词</h2>
-          <p className="text-sm text-muted-foreground">
+        <DialogHeader>
+          <DialogTitle>发现公开提示词</DialogTitle>
+          <DialogDescription>
             点击「克隆」会把提示词完整复制到你自己的库。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-[12rem] flex-1">
@@ -198,12 +200,12 @@ export function DiscoverDialog({ open, onClose, onCloned }: Props) {
           </ul>
         </div>
 
-        <div className="flex justify-end">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             关闭
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -23,6 +23,7 @@ import { searchApi, type SearchHit } from "@/lib/search"
 import { workerApi, type WorkerSession } from "@/lib/worker"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth-context"
+import { useConfirm } from "@/lib/confirm-context"
 import { BrandMark } from "./BrandMark"
 import { ProfileDialog } from "./ProfileDialog"
 
@@ -53,6 +54,7 @@ function relativeTime(iso: string): string {
 }
 
 export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Props) {
+  const { confirm, prompt } = useConfirm()
   const { id: paramId } = useParams()
   const activeId = paramId ? Number(paramId) : null
   const location = useLocation()
@@ -169,7 +171,11 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   async function rename(c: SidebarItem) {
-    const next = window.prompt("重命名会话", c.title)
+    const next = await prompt({
+      title: "重命名会话",
+      defaultValue: c.title,
+      placeholder: "会话标题",
+    })
     if (next == null) return
     const title = next.trim()
     if (!title || title === c.title) return
@@ -188,7 +194,13 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   async function remove(c: SidebarItem) {
-    if (!window.confirm(`删除会话 "${c.title}"？此操作不可撤销。`)) return
+    const ok = await confirm({
+      title: `删除会话 "${c.title}"？`,
+      description: "此操作不可撤销。",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       if (c.kind === "worker") {
         await workerApi.removeSession(c.id)
@@ -206,12 +218,13 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
 
   async function removeAll() {
     const chatCount = items.filter((x) => x.kind === "chat").length
-    if (
-      !window.confirm(
-        `确定要清空全部 ${chatCount} 个会话吗？此操作不可撤销。`
-      )
-    )
-      return
+    const ok = await confirm({
+      title: `确定要清空全部 ${chatCount} 个会话吗？`,
+      description: "此操作不可撤销。",
+      confirmText: "清空",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await conversationsApi.removeAll()
       setItems((s) => s.filter((x) => x.kind !== "chat"))

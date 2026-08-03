@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useState } from "react"
 import { Receipt, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { creditsApi, type LedgerEntry } from "@/lib/credits"
-import { cn } from "@/lib/utils"
 import { StatsView } from "./StatsView"
 
 type Props = {
@@ -140,27 +147,23 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-background p-4 shadow-lg sm:max-h-[80vh] sm:p-6"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      {/* 右上角已有刷新按钮，关掉自带的 X 免得两者叠在一起；底部另有「关闭」 */}
+      <DialogContent
+        showCloseButton={false}
+        className="flex max-h-[90vh] flex-col gap-3 p-4 sm:max-h-[80vh] sm:max-w-2xl sm:p-6"
       >
-        <div className="flex items-start justify-between gap-2">
+        <DialogHeader className="flex-row items-start justify-between gap-2 text-left">
           <div>
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <DialogTitle className="flex items-center gap-2">
               <Receipt className="size-5" /> 积分中心
-            </h2>
-            <p className="text-xs text-muted-foreground">
+            </DialogTitle>
+            <DialogDescription className="text-xs">
               {tab === "stats"
                 ? "看一眼这段时间花在哪里、剩下多少。"
                 : "每次扣费 / 退款 / 充值 / 邀请奖励都会在这里记录。"}
-            </p>
+            </DialogDescription>
           </div>
           {tab === "ledger" && (
             <Button
@@ -173,25 +176,17 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
               <RefreshCw className={"size-4 " + (loading ? "animate-spin" : "")} />
             </Button>
           )}
-        </div>
+        </DialogHeader>
 
-        <div className="inline-flex shrink-0 self-start rounded-md border border-border p-0.5">
-          {(["stats", "ledger"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={cn(
-                "rounded px-3 py-1 text-xs transition-colors",
-                tab === t
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent"
-              )}
-            >
-              {t === "stats" ? "统计" : "明细"}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as "stats" | "ledger")}
+          className="min-h-0 flex-1 gap-3"
+        >
+          <TabsList className="self-start">
+            <TabsTrigger value="stats">统计</TabsTrigger>
+            <TabsTrigger value="ledger">明细</TabsTrigger>
+          </TabsList>
 
         {error && tab === "ledger" && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -199,10 +194,17 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
           </div>
         )}
 
-        <div className="nc-scroll min-h-[200px] flex-1 overflow-y-auto">
-          {tab === "stats" ? (
+          <TabsContent
+            value="stats"
+            className="nc-scroll min-h-[200px] overflow-y-auto"
+          >
             <StatsView loader={statsLoader} active={open && tab === "stats"} />
-          ) : (
+          </TabsContent>
+
+          <TabsContent
+            value="ledger"
+            className="nc-scroll min-h-[200px] overflow-y-auto"
+          >
             <div className="rounded-md border border-border">
               {entries.length === 0 && !loading ? (
                 <p className="px-3 py-10 text-center text-sm text-muted-foreground">
@@ -248,8 +250,8 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
                 </table>
               )}
             </div>
-          )}
-        </div>
+          </TabsContent>
+        </Tabs>
 
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs text-muted-foreground">
@@ -271,7 +273,7 @@ export function CreditsLedgerDialog({ open, onClose }: Props) {
             </Button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

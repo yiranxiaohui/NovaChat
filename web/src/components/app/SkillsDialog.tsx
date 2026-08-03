@@ -9,6 +9,15 @@ import {
   Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { useConfirm } from "@/lib/confirm-context"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -33,6 +42,7 @@ export function SkillsDialog({
   onClose,
   onAttachedChange,
 }: Props) {
+  const { confirm } = useConfirm()
   const [items, setItems] = useState<Skill[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -141,7 +151,13 @@ export function SkillsDialog({
   }
 
   async function remove(s: Skill) {
-    if (!window.confirm(`删除 skill "${s.name}"？所有会话的关联都会被移除。`)) return
+    const ok = await confirm({
+      title: `删除 skill "${s.name}"？`,
+      description: "所有会话的关联都会被移除。",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await skillsApi.remove(s.id)
       setItems((list) => list.filter((x) => x.id !== s.id))
@@ -185,26 +201,22 @@ export function SkillsDialog({
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      {/* 标题栏右侧已有「发现 / 新建」按钮，关掉自带 X 免得挤在一起 */}
+      <DialogContent
+        showCloseButton={false}
+        className="flex flex-col gap-3 sm:max-w-3xl"
         style={{ maxHeight: "calc(100svh - 2rem)" }}
       >
-        <div className="flex items-start justify-between gap-2">
+        <DialogHeader className="flex-row items-start justify-between gap-2 text-left">
           <div>
-            <h2 className="text-lg font-semibold">Skills</h2>
-            <p className="text-sm text-muted-foreground">
+            <DialogTitle>Skills</DialogTitle>
+            <DialogDescription>
               {conversationId
                 ? "勾选的 skill 会拼到本会话系统提示词;模型按描述自主应用。"
                 : "新建会话后可勾选挂载到会话。"}
-            </p>
+            </DialogDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -218,7 +230,7 @@ export function SkillsDialog({
               <Plus /> 新建
             </Button>
           </div>
-        </div>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -373,18 +385,18 @@ export function SkillsDialog({
           </ul>
         </div>
 
-        <div className="flex justify-end">
+        <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             关闭
           </Button>
-        </div>
-      </div>
+        </DialogFooter>
 
-      <SkillDiscoverDialog
-        open={discoverOpen}
-        onClose={() => setDiscoverOpen(false)}
-        onCloned={() => void refresh()}
-      />
-    </div>
+        <SkillDiscoverDialog
+          open={discoverOpen}
+          onClose={() => setDiscoverOpen(false)}
+          onCloned={() => void refresh()}
+        />
+      </DialogContent>
+    </Dialog>
   )
 }

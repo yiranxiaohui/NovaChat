@@ -22,9 +22,37 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+
+// Radix 的 SelectItem 不接受空字符串作为 value，用哨兵值代表「不过滤」。
+const STATUS_ALL = "__all__"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
+import { useConfirm } from "@/lib/confirm-context"
 import {
   adminApi,
   type AdminInviteRow,
@@ -289,6 +317,7 @@ function OverviewPanel() {
 }
 
 function UsersPanel({ currentUserId }: { currentUserId: number }) {
+  const { confirm } = useConfirm()
   const [users, setUsers] = useState<AdminUser[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -322,7 +351,11 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
   async function toggleAdmin(u: AdminUser) {
     const next = !u.is_admin
     const verb = next ? "提升为管理员" : "撤销管理员"
-    if (!window.confirm(`确认${verb} ${u.username}？`)) return
+    const ok = await confirm({
+      title: `确认${verb} ${u.username}？`,
+      confirmText: next ? "提升" : "撤销",
+    })
+    if (!ok) return
     try {
       await adminApi.updateUser(u.id, { is_admin: next })
       await load()
@@ -332,12 +365,13 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
   }
 
   async function removeUser(u: AdminUser) {
-    if (
-      !window.confirm(
-        `删除用户 "${u.username}" 及其全部会话、消息、Skills？此操作不可撤销。`
-      )
-    )
-      return
+    const ok = await confirm({
+      title: `删除用户 "${u.username}"？`,
+      description: "其全部会话、消息、Skills 都会一并删除，此操作不可撤销。",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await adminApi.deleteUser(u.id)
       await load()
@@ -481,53 +515,51 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
         })}
       </div>
 
-      <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
-        <table className="w-full min-w-[36rem] text-sm">
-          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">ID</th>
-              <th className="px-3 py-2 text-left font-medium">用户</th>
-              <th className="px-3 py-2 text-left font-medium">角色</th>
-              <th className="px-3 py-2 text-left font-medium">邮箱</th>
-              <th className="px-3 py-2 text-right font-medium">会话</th>
-              <th className="px-3 py-2 text-right font-medium">消息</th>
-              <th className="px-3 py-2 text-right font-medium">Skills</th>
-              <th className="px-3 py-2 text-left font-medium">注册时间</th>
-              <th className="px-3 py-2 text-right font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="hidden rounded-lg border border-border md:block">
+        {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+        <Table className="min-w-[36rem]">
+          <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>用户</TableHead>
+              <TableHead>角色</TableHead>
+              <TableHead>邮箱</TableHead>
+              <TableHead className="text-right">会话</TableHead>
+              <TableHead className="text-right">消息</TableHead>
+              <TableHead className="text-right">Skills</TableHead>
+              <TableHead>注册时间</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
-              <tr>
-                <td
+              <TableRow>
+                <TableCell
                   colSpan={9}
-                  className="px-3 py-6 text-center text-muted-foreground"
+                  className="py-6 text-center text-muted-foreground"
                 >
                   加载中…
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {!loading && filtered.length === 0 && (
-              <tr>
-                <td
+              <TableRow>
+                <TableCell
                   colSpan={9}
-                  className="px-3 py-6 text-center text-muted-foreground"
+                  className="py-6 text-center text-muted-foreground"
                 >
                   没有匹配的用户
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {filtered.map((u) => {
               const isSelf = u.id === currentUserId
               return (
-                <tr
-                  key={u.id}
-                  className="border-t border-border hover:bg-accent/30"
-                >
-                  <td className="px-3 py-2 tabular-nums text-muted-foreground">
+                <TableRow key={u.id}>
+                  <TableCell className="tabular-nums text-muted-foreground">
                     {u.id}
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell>
                     <div className="flex items-center gap-2">
                       {u.avatar_url ? (
                         <img
@@ -551,8 +583,8 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
                         )}
                       </div>
                     </div>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell>
                     {u.is_admin ? (
                       <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                         <Shield className="size-3" /> 管理员
@@ -567,26 +599,26 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
                         （你）
                       </span>
                     )}
-                  </td>
-                  <td
-                    className="max-w-[14rem] truncate px-3 py-2 text-xs text-muted-foreground"
+                  </TableCell>
+                  <TableCell
+                    className="max-w-[14rem] truncate text-xs text-muted-foreground"
                     title={u.email ?? ""}
                   >
                     {u.email || "—"}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
                     {u.conversations}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
                     {u.messages}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
                     {u.skills}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
                     {u.created_at.replace("T", " ").replace("Z", "")}
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell>
                     <div className="flex justify-end gap-1">
                       <Button
                         size="xs"
@@ -617,12 +649,12 @@ function UsersPanel({ currentUserId }: { currentUserId: number }) {
                         <Trash2 />
                       </Button>
                     </div>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       {editing && (
@@ -684,21 +716,16 @@ function EditUserDialog({
     }
   }
 
+  // 父级用 {editing && <EditUserDialog/>} 控制挂载，这里常开，关闭走 onClose
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div>
-          <h2 className="text-lg font-semibold">编辑用户 · {user.username}</h2>
-          <p className="text-sm text-muted-foreground">
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="flex flex-col gap-4 sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>编辑用户 · {user.username}</DialogTitle>
+          <DialogDescription>
             修改昵称或重置密码。改密码会使该用户已有的登录全部失效。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -729,16 +756,16 @@ function EditUserDialog({
           />
         </div>
 
-        <div className="flex justify-end gap-2">
+        <DialogFooter className="flex-row justify-end">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={() => void save()} disabled={saving}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -890,30 +917,21 @@ function CreditsPanel() {
         用户在未填自己 API Key 时会消耗站点共享额度；每次对话按「每次消耗」配置扣积分，图像按图像配置扣。上游报错会自动退款。
       </p>
 
-      <div className="inline-flex shrink-0 self-start rounded-md border border-border p-0.5">
-        {(["stats", "users"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={
-              "rounded px-3 py-1 text-xs transition-colors " +
-              (tab === t
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent")
-            }
-          >
-            {t === "stats" ? "全站统计" : "用户余额"}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as "stats" | "users")}
+        className="gap-3"
+      >
+        <TabsList className="self-start">
+          <TabsTrigger value="stats">全站统计</TabsTrigger>
+          <TabsTrigger value="users">用户余额</TabsTrigger>
+        </TabsList>
 
-      {tab === "stats" && (
-        <StatsView loader={adminCreditsApi.stats} showTopUsers active />
-      )}
+        <TabsContent value="stats">
+          <StatsView loader={adminCreditsApi.stats} showTopUsers active />
+        </TabsContent>
 
-      {tab === "users" && (
-      <>
+        <TabsContent value="users" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <Input
           value={query}
@@ -970,41 +988,42 @@ function CreditsPanel() {
         ))}
       </div>
 
-      <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
-        <table className="w-full min-w-[36rem] text-sm">
-          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">ID</th>
-              <th className="px-3 py-2 text-left font-medium">用户</th>
-              <th className="px-3 py-2 text-right font-medium">余额</th>
-              <th className="px-3 py-2 text-right font-medium">历史消耗</th>
-              <th className="px-3 py-2 text-right font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="hidden rounded-lg border border-border md:block">
+        {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+        <Table className="min-w-[36rem]">
+          <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>用户</TableHead>
+              <TableHead className="text-right">余额</TableHead>
+              <TableHead className="text-right">历史消耗</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
-              <tr>
-                <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
                   加载中…
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {!loading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
                   没有匹配的用户
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {filtered.map((r) => (
-              <tr key={r.user_id} className="border-t border-border hover:bg-accent/30">
-                <td className="px-3 py-2 tabular-nums text-muted-foreground">{r.user_id}</td>
-                <td className="px-3 py-2 font-medium">{r.username}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{r.balance}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              <TableRow key={r.user_id}>
+                <TableCell className="tabular-nums text-muted-foreground">{r.user_id}</TableCell>
+                <TableCell className="font-medium">{r.username}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.balance}</TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">
                   {r.lifetime_used}
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <div className="flex justify-end">
                     <Button
                       size="xs"
@@ -1014,14 +1033,14 @@ function CreditsPanel() {
                       <Coins /> 调整
                     </Button>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
-      </>
-      )}
+        </TabsContent>
+      </Tabs>
 
       {editing && (
         <AdjustCreditsDialog
@@ -1088,21 +1107,16 @@ function AdjustCreditsDialog({
     }
   }
 
+  // 父级用 {editing && <AdjustCreditsDialog/>} 控制挂载，这里常开，关闭走 onClose
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div>
-          <h2 className="text-lg font-semibold">调整积分 · {row.username}</h2>
-          <p className="text-sm text-muted-foreground">
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="flex flex-col gap-4 sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>调整积分 · {row.username}</DialogTitle>
+          <DialogDescription>
             当前余额 {row.balance}，累计消耗 {row.lifetime_used}。所有改动都会写入流水。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -1164,16 +1178,16 @@ function AdjustCreditsDialog({
           />
         </div>
 
-        <div className="flex justify-end gap-2">
+        <DialogFooter className="flex-row justify-end">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={() => void save()} disabled={saving}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1286,58 +1300,56 @@ function InvitesPanel() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[36rem] text-sm">
-          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">邀请人</th>
-              <th className="px-3 py-2 text-left font-medium">邀请码</th>
-              <th className="px-3 py-2 text-left font-medium">被邀请人</th>
-              <th className="px-3 py-2 text-left font-medium">注册时间</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="rounded-lg border border-border">
+        {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+        <Table className="min-w-[36rem]">
+          <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
+            <TableRow>
+              <TableHead>邀请人</TableHead>
+              <TableHead>邀请码</TableHead>
+              <TableHead>被邀请人</TableHead>
+              <TableHead>注册时间</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
-              <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
                   加载中…
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {!loading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
                   暂无邀请记录
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {filtered.map((r) => (
-              <tr
-                key={`${r.inviter_id}-${r.invitee_id}`}
-                className="border-t border-border hover:bg-accent/30"
-              >
-                <td className="px-3 py-2">
+              <TableRow key={`${r.inviter_id}-${r.invitee_id}`}>
+                <TableCell>
                   <span className="font-medium">{r.inviter_username}</span>
                   <span className="ml-1 text-xs text-muted-foreground">
                     #{r.inviter_id}
                   </span>
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                </TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
                   {r.inviter_code ?? "—"}
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <span className="font-medium">{r.invitee_username}</span>
                   <span className="ml-1 text-xs text-muted-foreground">
                     #{r.invitee_id}
                   </span>
-                </td>
-                <td className="px-3 py-2 text-xs text-muted-foreground">
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
                   {r.invitee_created_at.replace("T", " ").replace("Z", "")}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </div>
   )
@@ -1498,15 +1510,19 @@ function EmailPanel() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">加密方式</Label>
-            <select
+            <Select
               defaultValue={cfg.smtp_security || "starttls"}
-              onChange={(e) => set("smtp_security", e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              onValueChange={(v) => set("smtp_security", v)}
             >
-              <option value="starttls">STARTTLS（推荐，端口 587）</option>
-              <option value="tls">TLS / SSL（端口 465）</option>
-              <option value="none">不加密（仅局域网测试）</option>
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="starttls">STARTTLS（推荐，端口 587）</SelectItem>
+                <SelectItem value="tls">TLS / SSL（端口 465）</SelectItem>
+                <SelectItem value="none">不加密（仅局域网测试）</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs">用户名</Label>
@@ -1817,72 +1833,87 @@ function PaymentsPanel() {
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold">充值订单</h2>
           <div className="flex items-center gap-2">
-            <select
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              value={statusFilter}
-              onChange={(e) =>
-                setStatusFilter(e.target.value as typeof statusFilter)
+            <Select
+              value={statusFilter || STATUS_ALL}
+              onValueChange={(v) =>
+                setStatusFilter(
+                  (v === STATUS_ALL ? "" : v) as typeof statusFilter
+                )
               }
             >
-              <option value="">全部状态</option>
-              <option value="pending">待支付</option>
-              <option value="paid">已支付</option>
-              <option value="failed">已关闭</option>
-            </select>
+              <SelectTrigger size="sm" className="text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={STATUS_ALL} className="text-xs">
+                  全部状态
+                </SelectItem>
+                <SelectItem value="pending" className="text-xs">
+                  待支付
+                </SelectItem>
+                <SelectItem value="paid" className="text-xs">
+                  已支付
+                </SelectItem>
+                <SelectItem value="failed" className="text-xs">
+                  已关闭
+                </SelectItem>
+              </SelectContent>
+            </Select>
             <Button variant="outline" size="sm" onClick={() => void loadAll()}>
               <RefreshCw /> 刷新
             </Button>
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full min-w-[32rem] text-xs">
-            <thead className="bg-muted/40 text-[10px] uppercase text-muted-foreground">
-              <tr>
-                <th className="px-2 py-2 text-left font-medium">订单号</th>
-                <th className="px-2 py-2 text-left font-medium">用户</th>
-                <th className="px-2 py-2 text-left font-medium">方式</th>
-                <th className="px-2 py-2 text-right font-medium">金额</th>
-                <th className="px-2 py-2 text-right font-medium">积分</th>
-                <th className="px-2 py-2 text-left font-medium">状态</th>
-                <th className="px-2 py-2 text-left font-medium">创建</th>
-                <th className="px-2 py-2 text-left font-medium">支付时间</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="rounded-lg border border-border">
+          {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+          <Table className="min-w-[32rem] text-xs">
+            <TableHeader className="bg-muted/40 text-[10px] uppercase [&_th]:h-8 [&_th]:px-2 [&_th]:text-[10px] [&_th]:text-muted-foreground">
+              <TableRow>
+                <TableHead>订单号</TableHead>
+                <TableHead>用户</TableHead>
+                <TableHead>方式</TableHead>
+                <TableHead className="text-right">金额</TableHead>
+                <TableHead className="text-right">积分</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>创建</TableHead>
+                <TableHead>支付时间</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody className="[&_td]:px-2 [&_td]:py-1.5">
               {orders.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-2 py-6 text-center text-muted-foreground">
+                <TableRow>
+                  <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                     暂无订单
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
               {orders.map((o) => (
-                <tr key={o.id} className="border-t border-border">
-                  <td className="px-2 py-1.5 font-mono text-[11px]">
+                <TableRow key={o.id}>
+                  <TableCell className="font-mono text-[11px]">
                     {o.out_trade_no}
-                  </td>
-                  <td className="px-2 py-1.5">{o.username}</td>
-                  <td className="px-2 py-1.5">{o.payway}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">
+                  </TableCell>
+                  <TableCell>{o.username}</TableCell>
+                  <TableCell>{o.payway}</TableCell>
+                  <TableCell className="text-right tabular-nums">
                     ¥{(o.amount_cents / 100).toFixed(2)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
                     +{o.credits}
-                  </td>
-                  <td className="px-2 py-1.5">
+                  </TableCell>
+                  <TableCell>
                     <OrderStatus status={o.status} />
-                  </td>
-                  <td className="px-2 py-1.5 text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {o.created_at}
-                  </td>
-                  <td className="px-2 py-1.5 text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {o.paid_at ?? "-"}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </div>
     </div>

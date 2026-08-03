@@ -3,6 +3,21 @@ import { Coins, ExternalLink, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { paymentsApi, type PaymentOrder } from "@/lib/payments"
 
 type Props = {
@@ -80,25 +95,17 @@ export function RechargeDialog({ open, onClose, onPaid }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-lg flex-col gap-4 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="flex flex-col gap-4">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
             <Coins className="size-5" /> 充值积分
-          </h2>
-          <p className="text-sm text-muted-foreground">
+          </DialogTitle>
+          <DialogDescription>
             支付完成后，积分将在几秒内到账。若长时间未到账请联系管理员。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -184,39 +191,40 @@ export function RechargeDialog({ open, onClose, onPaid }: Props) {
             <p className="text-xs text-muted-foreground">暂无订单</p>
           ) : (
             <div className="nc-scroll max-h-48 overflow-y-auto rounded border border-border">
-              <table className="w-full text-xs">
-                <thead className="bg-muted/40 text-[10px] uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-2 py-1 text-left font-medium">订单号</th>
-                    <th className="px-2 py-1 text-right font-medium">金额</th>
-                    <th className="px-2 py-1 text-right font-medium">积分</th>
-                    <th className="px-2 py-1 text-left font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
+              {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+              <Table className="text-xs">
+                <TableHeader className="bg-muted/40 text-[10px] uppercase [&_th]:h-7 [&_th]:px-2 [&_th]:py-1 [&_th]:text-[10px] [&_th]:text-muted-foreground">
+                  <TableRow>
+                    <TableHead>订单号</TableHead>
+                    <TableHead className="text-right">金额</TableHead>
+                    <TableHead className="text-right">积分</TableHead>
+                    <TableHead>状态</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="[&_td]:px-2 [&_td]:py-1">
                   {history.slice(0, 20).map((o) => (
-                    <tr key={o.id} className="border-t border-border">
-                      <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground">
+                    <TableRow key={o.id}>
+                      <TableCell className="font-mono text-[10px] text-muted-foreground">
                         {o.out_trade_no}
-                      </td>
-                      <td className="px-2 py-1 text-right tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
                         ¥{(o.amount_cents / 100).toFixed(2)}
-                      </td>
-                      <td className="px-2 py-1 text-right tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
                         +{o.credits}
-                      </td>
-                      <td className="px-2 py-1">
+                      </TableCell>
+                      <TableCell>
                         <StatusPill status={o.status} />
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

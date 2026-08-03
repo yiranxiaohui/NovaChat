@@ -18,9 +18,11 @@ import {
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/lib/auth-context"
+import { useConfirm } from "@/lib/confirm-context"
 import {
   plazaApi,
   type MyPlazaImage,
@@ -36,6 +38,7 @@ type DetailTarget =
   | { kind: "mine"; image: MyPlazaImage }
 
 export default function ImagePlazaPage() {
+  const { confirm } = useConfirm()
   const { state: authState } = useAuth()
   const currentUsername =
     authState.status === "authed" ? authState.user.username : null
@@ -153,7 +156,13 @@ export default function ImagePlazaPage() {
   }
 
   async function remove(p: MyPlazaImage) {
-    if (!window.confirm("从广场撤回这张图片？磁盘文件不会被删除。")) return
+    const ok = await confirm({
+      title: "从广场撤回这张图片？",
+      description: "磁盘文件不会被删除。",
+      confirmText: "撤回",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await plazaApi.remove(p.id)
       setMineItems((list) => list.filter((x) => x.id !== p.id))
@@ -620,6 +629,7 @@ function DetailOverlay({
   onCommentCountChange: (delta: number) => void
   onError: (msg: string) => void
 }) {
+  const { confirm } = useConfirm()
   const image = detail.image
   const isMine = detail.kind === "mine"
   const authorUsername = isMine
@@ -691,7 +701,12 @@ function DetailOverlay({
   }
 
   async function remove(c: PlazaComment) {
-    if (!window.confirm("删除这条评论？")) return
+    const ok = await confirm({
+      title: "删除这条评论？",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await plazaApi.deleteComment(c.id)
       setComments((list) => list.filter((x) => x.id !== c.id))
@@ -703,15 +718,16 @@ function DetailOverlay({
 
   const liked = !isMine && (image as PlazaImage).liked_by_me > 0
 
+  // 父级用 {detail && <DetailOverlay/>} 控制挂载，这里常开，关闭走 onClose
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg md:h-[80vh] md:flex-row"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      {/* p-0：左侧图片要满铺；右上角已有自绘的关闭按钮，故关掉自带的 */}
+      <DialogContent
+        showCloseButton={false}
+        aria-describedby={undefined}
+        className="flex flex-col overflow-hidden p-0 sm:max-w-4xl md:h-[80vh] md:flex-row"
       >
+        <DialogTitle className="sr-only">图片详情</DialogTitle>
         <div className="relative flex min-h-[40vh] flex-1 items-center justify-center bg-muted md:min-h-0">
           <img
             src={`/api/images/${image.filename}`}
@@ -884,8 +900,8 @@ function DetailOverlay({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

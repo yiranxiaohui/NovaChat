@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 type Props = {
   open: boolean
@@ -29,24 +37,18 @@ export function SystemPromptDialog({ open, value, onClose, onSave }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-background p-6 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        className="gap-3 sm:max-w-2xl"
         style={{ maxHeight: "calc(100svh - 2rem)" }}
       >
-        <div>
-          <h2 className="text-lg font-semibold">系统提示词</h2>
-          <p className="text-sm text-muted-foreground">
+        <DialogHeader>
+          <DialogTitle>系统提示词</DialogTitle>
+          <DialogDescription>
             仅对本会话生效。留空则不发送 system 消息。
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
         <Textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -55,7 +57,7 @@ export function SystemPromptDialog({ open, value, onClose, onSave }: Props) {
           placeholder="You are a helpful assistant…"
           autoFocus
         />
-        <div className="flex items-center justify-end gap-2">
+        <DialogFooter className="flex-row items-center justify-end">
           <Button
             size="sm"
             variant="ghost"
@@ -70,8 +72,8 @@ export function SystemPromptDialog({ open, value, onClose, onSave }: Props) {
           <Button size="sm" onClick={save} disabled={!dirty || saving}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

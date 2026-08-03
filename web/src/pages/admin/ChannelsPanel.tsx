@@ -1,6 +1,28 @@
 import { useEffect, useState } from "react"
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -102,60 +124,61 @@ export function ChannelsPanel() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[48rem] text-sm">
-          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">ID</th>
-              <th className="px-3 py-2 text-left font-medium">名称</th>
-              <th className="px-3 py-2 text-left font-medium">协议</th>
-              <th className="px-3 py-2 text-left font-medium">类型</th>
-              <th className="px-3 py-2 text-left font-medium">Base URL</th>
-              <th className="px-3 py-2 text-left font-medium">API Key</th>
-              <th className="px-3 py-2 text-left font-medium">优先级</th>
-              <th className="px-3 py-2 text-left font-medium">启用</th>
-              <th className="px-3 py-2 text-right font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="rounded-lg border border-border">
+        {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+        <Table className="min-w-[48rem]">
+          <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>名称</TableHead>
+              <TableHead>协议</TableHead>
+              <TableHead>类型</TableHead>
+              <TableHead>Base URL</TableHead>
+              <TableHead>API Key</TableHead>
+              <TableHead>优先级</TableHead>
+              <TableHead>启用</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
-              <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={9} className="py-6 text-center text-muted-foreground">
                   加载中…
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {!loading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={9} className="py-6 text-center text-muted-foreground">
                   暂无渠道。点击「新建渠道」添加第一个上游。
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {filtered.map((c) => (
-              <tr key={c.id} className="border-t border-border hover:bg-accent/30">
-                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+              <TableRow key={c.id}>
+                <TableCell className="font-mono text-xs text-muted-foreground">
                   #{c.id}
-                </td>
-                <td className="px-3 py-2 font-medium">{c.name}</td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell className="font-medium">{c.name}</TableCell>
+                <TableCell>
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {c.protocol}
                   </span>
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {c.kind}
                   </span>
-                </td>
-                <td className="px-3 py-2 max-w-[18rem] truncate font-mono text-xs text-muted-foreground">
+                </TableCell>
+                <TableCell className="max-w-[18rem] truncate font-mono text-xs text-muted-foreground">
                   {c.base_url}
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                </TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
                   {c.api_key}
-                </td>
-                <td className="px-3 py-2 tabular-nums">{c.priority}</td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell className="tabular-nums">{c.priority}</TableCell>
+                <TableCell>
                   <button
                     onClick={() => void onToggle(c)}
                     className={
@@ -167,8 +190,8 @@ export function ChannelsPanel() {
                   >
                     {c.enabled ? "启用" : "禁用"}
                   </button>
-                </td>
-                <td className="px-3 py-2 text-right">
+                </TableCell>
+                <TableCell className="text-right">
                   <div className="inline-flex items-center gap-1">
                     <Button
                       size="sm"
@@ -185,11 +208,11 @@ export function ChannelsPanel() {
                       <Trash2 />
                     </Button>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       {dialog && (
@@ -265,12 +288,18 @@ function ChannelDialog({
     }
   }
 
+  // 父级用 {dialog && <ChannelDialog/>} 控制挂载，所以这里常开，关闭走 onClose
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-lg">
-        <h3 className="mb-3 text-base font-semibold">
-          {mode.kind === "create" ? "新建渠道" : `编辑渠道 #${mode.channel.id}`}
-        </h3>
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="block rounded-xl bg-card p-5"
+      >
+        <DialogHeader className="mb-3">
+          <DialogTitle className="text-base">
+            {mode.kind === "create" ? "新建渠道" : `编辑渠道 #${mode.channel.id}`}
+          </DialogTitle>
+        </DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Label>名称</Label>
@@ -282,35 +311,41 @@ function ChannelDialog({
           </div>
           <div>
             <Label>协议</Label>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Select
               value={form.protocol}
-              onChange={(e) =>
-                setForm({ ...form, protocol: e.target.value as ChannelProtocol })
+              onValueChange={(v) =>
+                setForm({ ...form, protocol: v as ChannelProtocol })
               }
             >
-              {PROTOCOLS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROTOCOLS.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label>类型</Label>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Select
               value={form.kind}
-              onChange={(e) =>
-                setForm({ ...form, kind: e.target.value as ChannelKind })
-              }
+              onValueChange={(v) => setForm({ ...form, kind: v as ChannelKind })}
             >
-              {KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KINDS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {k}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="col-span-2">
             <Label>Base URL</Label>
@@ -362,15 +397,15 @@ function ChannelDialog({
             {err}
           </div>
         )}
-        <div className="mt-4 flex justify-end gap-2">
+        <DialogFooter className="mt-4 flex-row justify-end">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={() => void submit()} disabled={saving}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

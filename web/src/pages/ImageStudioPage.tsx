@@ -6,6 +6,7 @@ import {
   Check,
   Copy,
   Download,
+  History,
   ImageIcon,
   ImagePlus,
   Images,
@@ -22,13 +23,32 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { useAuth } from "@/lib/auth-context"
+import { useConfirm } from "@/lib/confirm-context"
 import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
 import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { listPlatformModels } from "@/lib/platform-models"
 import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
 import { BrandMark } from "@/components/app/BrandMark"
 import { ImagePreview } from "@/components/app/ImagePreview"
+
+// Radix 的 SelectItem 不接受空字符串作为 value（会直接抛错），用哨兵值代表
+// 「不传该参数」。STYLE_OPTIONS 和「背景」都有 value: "" 的默认项，都走它。
+const EMPTY_OPT = "__default__"
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -160,6 +180,8 @@ async function copyImageToClipboard(url: string): Promise<void> {
 }
 
 export default function ImageStudioPage() {
+  // 只取 confirm：本组件已有名为 prompt 的 state，解构 prompt 会撞名
+  const { confirm } = useConfirm()
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
   const nav = useNavigate()
@@ -186,9 +208,12 @@ export default function ImageStudioPage() {
   // so the IMAGE_MODEL_RE heuristic must not filter them.
   const [modelsFromPlatform, setModelsFromPlatform] = useState(false)
   const visibleModels = useMemo(() => {
-    if (modelsFromPlatform || showAllModels) return models
-    const imageLike = models.filter((m) => IMAGE_MODEL_RE.test(m))
-    return imageLike.length > 0 ? imageLike : models
+    // 过滤空模型名：Radix 的 SelectItem 不接受空字符串 value，上游返回脏数据
+    // 时会整页崩掉。
+    const clean = models.filter((m) => m)
+    if (modelsFromPlatform || showAllModels) return clean
+    const imageLike = clean.filter((m) => IMAGE_MODEL_RE.test(m))
+    return imageLike.length > 0 ? imageLike : clean
   }, [models, modelsFromPlatform, showAllModels])
 
   const [submitting, setSubmitting] = useState(false)
@@ -205,6 +230,7 @@ export default function ImageStudioPage() {
   )
   const [pastedFlash, setPastedFlash] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const tickRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -527,7 +553,12 @@ export default function ImageStudioPage() {
   }
 
   async function removeHistory(g: StudioGeneration) {
-    if (!window.confirm("删除这条历史？")) return
+    const ok = await confirm({
+      title: "删除这条历史？",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await studioApi.remove(g.id)
       await loadHistory()
@@ -604,20 +635,21 @@ export default function ImageStudioPage() {
                 placeholder={modelsLoading ? "加载中…" : "gpt-image-1"}
               />
             ) : (
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-              >
-                {!visibleModels.includes(model) && model && (
-                  <option value={model}>{model}（手动输入）</option>
-                )}
-                {visibleModels.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {!visibleModels.includes(model) && model && (
+                    <SelectItem value={model}>{model}（手动输入）</SelectItem>
+                  )}
+                  {visibleModels.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             <div className="flex items-center justify-between text-[11px] text-muted-foreground">
               {modelsError ? (
@@ -649,49 +681,58 @@ export default function ImageStudioPage() {
 
           <div className="mb-3 flex flex-col gap-1.5">
             <Label className="text-xs">尺寸</Label>
-            <select
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {SIZE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <Select value={size} onValueChange={setSize}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SIZE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
             <Label className="text-xs">质量</Label>
-            <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              {QUALITY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <Select value={quality} onValueChange={setQuality}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {QUALITY_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
             <Label className="text-xs">
               风格 <span className="text-muted-foreground">(仅 DALL·E 3)</span>
             </Label>
-            <select
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            <Select
+              value={style || EMPTY_OPT}
+              onValueChange={(v) => setStyle(v === EMPTY_OPT ? "" : v)}
             >
-              {STYLE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STYLE_OPTIONS.map((o) => (
+                  <SelectItem
+                    key={o.value || EMPTY_OPT}
+                    value={o.value || EMPTY_OPT}
+                  >
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
@@ -739,16 +780,20 @@ export default function ImageStudioPage() {
             <Label className="text-xs">
               背景 <span className="text-muted-foreground">(仅 gpt-image-1)</span>
             </Label>
-            <select
-              value={background}
-              onChange={(e) => setBackground(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            <Select
+              value={background || EMPTY_OPT}
+              onValueChange={(v) => setBackground(v === EMPTY_OPT ? "" : v)}
             >
-              <option value="">默认</option>
-              <option value="auto">auto</option>
-              <option value="opaque">不透明</option>
-              <option value="transparent">透明（PNG/WebP）</option>
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={EMPTY_OPT}>默认</SelectItem>
+                <SelectItem value="auto">auto</SelectItem>
+                <SelectItem value="opaque">不透明</SelectItem>
+                <SelectItem value="transparent">透明（PNG/WebP）</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="mb-3 flex flex-col gap-1.5">
@@ -835,7 +880,10 @@ export default function ImageStudioPage() {
               className="text-sm"
             />
           </div>
+        </div>
 
+        {/* 钉在侧栏底部：上面参数再长也不用滚到底才能点生成 */}
+        <div className="shrink-0 border-t border-sidebar-border px-4 py-3">
           <Button
             onClick={() => void generate()}
             disabled={submitting || !prompt.trim()}
@@ -891,6 +939,20 @@ export default function ImageStudioPage() {
             >
               <RefreshCw className="size-3.5" />
               <span className="hidden sm:inline">刷新历史</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setHistoryOpen(true)}
+              title="历史生成"
+            >
+              <History className="size-3.5" />
+              <span className="hidden sm:inline">历史生成</span>
+              {history.length > 0 && (
+                <span className="rounded bg-muted px-1 text-[10px] tabular-nums text-muted-foreground">
+                  {history.length}
+                </span>
+              )}
             </Button>
           </div>
         </header>
@@ -966,37 +1028,52 @@ export default function ImageStudioPage() {
               )}
             </div>
 
-            {/* History grid */}
-            <div>
-              <h2 className="mb-3 text-sm font-semibold">最近生成</h2>
-              {history.length === 0 ? (
-                <p className="text-xs text-muted-foreground">暂无历史</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                  {history.map((g) => {
-                    const fname = g.image_path ? filenameFromPath(g.image_path) : null
-                    const published = fname ? publishedFilenames.has(fname) : false
-                    return (
-                      <HistoryCard
-                        key={g.id}
-                        gen={g}
-                        published={published}
-                        publishing={fname ? publishingFilename === fname : false}
-                        onSelect={() => setCurrent(g)}
-                        onPublish={() => void publishToPlaza(g)}
-                        onRemove={() => void removeHistory(g)}
-                        onRetry={() => void retryGeneration(g)}
-                        onPickParams={() => void pickParams(g)}
-                        retrying={submitting}
-                      />
-                    )
-                  })}
-                </div>
-              )}
-            </div>
           </div>
         </main>
       </div>
+
+      {/* 历史生成：从右侧滑出，主区域只留当前预览 */}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent className="gap-0 sm:max-w-lg">
+          <SheetHeader className="border-b border-border">
+            <SheetTitle>历史生成</SheetTitle>
+            <SheetDescription>
+              {history.length > 0
+                ? `共 ${history.length} 条，点卡片载入到预览区。`
+                : "这里会列出你生成过的图片。"}
+            </SheetDescription>
+          </SheetHeader>
+          <div className="nc-scroll min-h-0 flex-1 overflow-y-auto p-4">
+            {history.length === 0 ? (
+              <p className="text-xs text-muted-foreground">暂无历史</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {history.map((g) => {
+                  const fname = g.image_path ? filenameFromPath(g.image_path) : null
+                  const published = fname ? publishedFilenames.has(fname) : false
+                  return (
+                    <HistoryCard
+                      key={g.id}
+                      gen={g}
+                      published={published}
+                      publishing={fname ? publishingFilename === fname : false}
+                      onSelect={() => {
+                        setCurrent(g)
+                        setHistoryOpen(false)
+                      }}
+                      onPublish={() => void publishToPlaza(g)}
+                      onRemove={() => void removeHistory(g)}
+                      onRetry={() => void retryGeneration(g)}
+                      onPickParams={() => void pickParams(g)}
+                      retrying={submitting}
+                    />
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
 
     </div>
   )

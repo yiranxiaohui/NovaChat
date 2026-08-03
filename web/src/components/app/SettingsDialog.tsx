@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react"
 import { Check, Cloud, Copy, ImageIcon, KeyRound, MessageSquare, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -151,7 +160,6 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
     setImageError(null)
   }, [imageBaseUrl, imageProtocol])
 
-  if (!open) return null
 
   const meta = PROTOCOL_META[protocol]
   const imgMeta = IMAGE_PROTOCOL_META[imageProtocol]
@@ -263,36 +271,37 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-md rounded-lg border border-border bg-background p-4 shadow-lg sm:p-6"
-        onClick={(e) => e.stopPropagation()}
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      {/* block：面板内部靠 mt-* 排版，用默认的 grid+gap 会多出一层间距 */}
+      <DialogContent
+        className="nc-scroll block p-4 sm:max-w-md sm:p-6"
         style={{ maxHeight: "calc(100svh - 1rem)", overflow: "auto" }}
       >
-        <h2 className="text-lg font-semibold">模型设置</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {cloudSync
-            ? "☁️ 已开启云端同步：所有字段会保存到服务器，登录后自动恢复。"
-            : "仅保存在当前浏览器 (localStorage)，不会上传到服务器。"}
-        </p>
+        <DialogHeader>
+          <DialogTitle>模型设置</DialogTitle>
+          <DialogDescription className="mt-1">
+            {cloudSync
+              ? "☁️ 已开启云端同步：所有字段会保存到服务器，登录后自动恢复。"
+              : "仅保存在当前浏览器 (localStorage)，不会上传到服务器。"}
+          </DialogDescription>
+        </DialogHeader>
 
-        {/* Tabs */}
-        <div className="mt-4 inline-flex rounded-lg border border-border bg-muted/40 p-1 text-sm">
-          <TabBtn active={tab === "chat"} onClick={() => setTab("chat")}>
-            <MessageSquare className="size-3.5" /> 对话
-          </TabBtn>
-          <TabBtn active={tab === "image"} onClick={() => setTab("image")}>
-            <ImageIcon className="size-3.5" /> 图像
-          </TabBtn>
-          <TabBtn active={tab === "worker"} onClick={() => setTab("worker")}>
-            工蜂
-          </TabBtn>
-        </div>
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as "chat" | "image" | "worker")}
+          className="mt-4"
+        >
+          <TabsList>
+            <TabsTrigger value="chat">
+              <MessageSquare className="size-3.5" /> 对话
+            </TabsTrigger>
+            <TabsTrigger value="image">
+              <ImageIcon className="size-3.5" /> 图像
+            </TabsTrigger>
+            <TabsTrigger value="worker">工蜂</TabsTrigger>
+          </TabsList>
 
-        {tab === "chat" ? (
+          <TabsContent value="chat">
           <div className="mt-4 flex flex-col gap-3">
             <ModeToggle
               mode={chatMode}
@@ -435,7 +444,9 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </>
             )}
           </div>
-        ) : tab === "image" ? (
+          </TabsContent>
+
+          <TabsContent value="image">
           <div className="mt-4 flex flex-col gap-3">
             <ModeToggle
               mode={imageMode}
@@ -550,11 +561,14 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
               </>
             )}
           </div>
-        ) : (
-          <div className="mt-4">
-            <WorkerSettings />
-          </div>
-        )}
+          </TabsContent>
+
+          <TabsContent value="worker">
+            <div className="mt-4">
+              <WorkerSettings />
+            </div>
+          </TabsContent>
+        </Tabs>
 
         <label className="mt-4 flex items-start gap-2 text-sm">
           <input
@@ -568,7 +582,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           </span>
         </label>
 
-        <div className="mt-6 flex justify-end gap-2">
+        <DialogFooter className="mt-6 flex-row justify-end">
           <Button variant="ghost" onClick={onClose}>
             取消
           </Button>
@@ -594,34 +608,9 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           >
             保存
           </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function TabBtn({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors",
-        active
-          ? "bg-background text-foreground shadow-sm"
-          : "text-muted-foreground hover:text-foreground"
-      )}
-    >
-      {children}
-    </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

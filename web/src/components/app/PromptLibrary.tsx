@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react"
+import { toast } from "sonner"
+import { useConfirm } from "@/lib/confirm-context"
 import {
   Compass,
   Download,
@@ -11,6 +13,14 @@ import {
   Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -30,6 +40,7 @@ type EditorState =
   | null
 
 export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
+  const { confirm } = useConfirm()
   const [items, setItems] = useState<Prompt[]>([])
   const [defaultId, setDefaultId] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
@@ -125,7 +136,12 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
   }
 
   async function remove(p: Prompt) {
-    if (!window.confirm(`删除提示词 "${p.name}"？`)) return
+    const ok = await confirm({
+      title: `删除提示词 "${p.name}"？`,
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
     try {
       await promptsApi.remove(p.id)
       setItems((s) => s.filter((x) => x.id !== p.id))
@@ -159,6 +175,7 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
 
   function exportAll() {
     window.location.href = promptsApi.exportUrl()
+    toast.success("提示词库已导出")
   }
 
   async function importFromFile(file: File) {
@@ -190,25 +207,21 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
     }
   }
 
-  if (!open) return null
-
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-2 sm:p-4"
-        onClick={onClose}
-      >
-        <div
-          className="flex w-full max-w-3xl flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:p-6"
-          onClick={(e) => e.stopPropagation()}
+      <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+        {/* 标题栏右侧已有「发现 / 导出 / 导入 / 新建」，关掉自带 X */}
+        <DialogContent
+          showCloseButton={false}
+          className="nc-scroll flex flex-col gap-3 overflow-y-auto p-4 sm:max-w-3xl sm:p-6"
           style={{ maxHeight: "calc(100svh - 1rem)" }}
         >
-          <div className="flex items-start justify-between gap-2">
+          <DialogHeader className="flex-row items-start justify-between gap-2 text-left">
             <div>
-              <h2 className="text-lg font-semibold">提示词库</h2>
-              <p className="text-sm text-muted-foreground">
+              <DialogTitle>提示词库</DialogTitle>
+              <DialogDescription>
                 标星 = 新会话默认；地球图标 = 对所有注册用户公开。
-              </p>
+              </DialogDescription>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => setDiscoverOpen(true)}>
@@ -240,7 +253,7 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
                 <Plus /> 新建
               </Button>
             </div>
-          </div>
+          </DialogHeader>
 
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -378,13 +391,13 @@ export function PromptLibrary({ open, onClose, onApplyToCurrent }: Props) {
             </ul>
           </div>
 
-          <div className="flex justify-end">
+          <DialogFooter>
             <Button variant="outline" onClick={onClose}>
               关闭
             </Button>
-          </div>
-        </div>
-      </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <DiscoverDialog
         open={discoverOpen}

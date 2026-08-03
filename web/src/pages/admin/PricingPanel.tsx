@@ -1,6 +1,28 @@
 import { useEffect, useState } from "react"
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -109,55 +131,56 @@ export function PricingPanel() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[40rem] text-sm">
-          <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">模型</th>
-              <th className="px-3 py-2 text-left font-medium">显示名</th>
-              <th className="px-3 py-2 text-left font-medium">类型</th>
-              <th className="px-3 py-2 text-left font-medium">协议</th>
-              <th className="px-3 py-2 text-right font-medium">积分/次</th>
-              <th className="px-3 py-2 text-right font-medium">上下文</th>
-              <th className="px-3 py-2 text-left font-medium">启用</th>
-              <th className="px-3 py-2 text-right font-medium">操作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="rounded-lg border border-border">
+        {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
+        <Table className="min-w-[40rem]">
+          <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
+            <TableRow>
+              <TableHead>模型</TableHead>
+              <TableHead>显示名</TableHead>
+              <TableHead>类型</TableHead>
+              <TableHead>协议</TableHead>
+              <TableHead className="text-right">积分/次</TableHead>
+              <TableHead className="text-right">上下文</TableHead>
+              <TableHead>启用</TableHead>
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
-              <tr>
-                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                   加载中…
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {!loading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
+              <TableRow>
+                <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                   暂无计费规则。点击「新建模型」添加白名单条目。
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {filtered.map((r) => (
-              <tr key={r.id} className="border-t border-border hover:bg-accent/30">
-                <td className="px-3 py-2 font-mono text-xs">{r.model}</td>
-                <td className="px-3 py-2 text-muted-foreground">
+              <TableRow key={r.id}>
+                <TableCell className="font-mono text-xs">{r.model}</TableCell>
+                <TableCell className="text-muted-foreground">
                   {r.display_name ?? "—"}
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {r.kind}
                   </span>
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {r.protocol}
                   </span>
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums">
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
                   {r.cost_credits}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">
                   {r.context_limit != null
                     ? r.context_limit >= 1_000_000
                       ? `${(r.context_limit / 1_000_000).toFixed(r.context_limit % 1_000_000 === 0 ? 0 : 1)}M`
@@ -165,8 +188,8 @@ export function PricingPanel() {
                         ? `${(r.context_limit / 1000).toFixed(r.context_limit % 1000 === 0 ? 0 : 1)}K`
                         : String(r.context_limit)
                     : "自动"}
-                </td>
-                <td className="px-3 py-2">
+                </TableCell>
+                <TableCell>
                   <button
                     onClick={() => void onToggle(r)}
                     className={
@@ -178,8 +201,8 @@ export function PricingPanel() {
                   >
                     {r.enabled ? "启用" : "禁用"}
                   </button>
-                </td>
-                <td className="px-3 py-2 text-right">
+                </TableCell>
+                <TableCell className="text-right">
                   <div className="inline-flex items-center gap-1">
                     <Button
                       size="sm"
@@ -196,11 +219,11 @@ export function PricingPanel() {
                       <Trash2 />
                     </Button>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       {dialog && (
@@ -299,12 +322,18 @@ function PricingDialog({
     }
   }
 
+  // 父级用 {dialog && <PricingDialog/>} 控制挂载，所以这里常开，关闭走 onClose
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-lg">
-        <h3 className="mb-3 text-base font-semibold">
-          {mode.kind === "create" ? "新建计费规则" : `编辑 ${mode.row.model}`}
-        </h3>
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="block rounded-xl bg-card p-5 sm:max-w-md"
+      >
+        <DialogHeader className="mb-3">
+          <DialogTitle className="text-base">
+            {mode.kind === "create" ? "新建计费规则" : `编辑 ${mode.row.model}`}
+          </DialogTitle>
+        </DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Label>模型 ID</Label>
@@ -384,35 +413,41 @@ function PricingDialog({
           </div>
           <div>
             <Label>类型</Label>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Select
               value={form.kind}
-              onChange={(e) =>
-                setForm({ ...form, kind: e.target.value as ChannelKind })
-              }
+              onValueChange={(v) => setForm({ ...form, kind: v as ChannelKind })}
             >
-              {KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KINDS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {k}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label>协议</Label>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            <Select
               value={form.protocol}
-              onChange={(e) =>
-                setForm({ ...form, protocol: e.target.value as ChannelProtocol })
+              onValueChange={(v) =>
+                setForm({ ...form, protocol: v as ChannelProtocol })
               }
             >
-              {PROTOCOLS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROTOCOLS.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="mt-1 text-xs text-muted-foreground">
               自动路由到该协议的启用渠道，无需手动绑定。
             </p>
@@ -469,7 +504,7 @@ function PricingDialog({
             {err}
           </div>
         )}
-        <div className="mt-4 flex justify-end gap-2">
+        <DialogFooter className="mt-4 flex-row justify-end">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
@@ -479,8 +514,8 @@ function PricingDialog({
           >
             {saving ? "保存中…" : "保存"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

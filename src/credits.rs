@@ -84,7 +84,7 @@ pub async fn set_setting(
 /// free-form `reason` string. Rows existing before this column was added carry
 /// NULL — those buckets become "unknown" in the dashboard.
 pub struct LedgerMeta<'a> {
-    /// One of "chat", "image", "grant", "recharge", "adjust".
+    /// One of "chat", "image", "video", "grant", "recharge", "adjust".
     pub kind: &'a str,
     /// "openai" / "claude" / "gemini" when applicable.
     pub protocol: Option<&'a str>,
@@ -105,6 +105,14 @@ impl<'a> LedgerMeta<'a> {
     }
     pub fn refund_image(model: &'a str) -> Self {
         Self { kind: "image", protocol: None, model: Some(model) }
+    }
+    pub fn video(model: &'a str) -> Self {
+        Self { kind: "video", protocol: Some("openai"), model: Some(model) }
+    }
+    /// Refund of a video deduction — kept under "video" kind so net-spend
+    /// math (sum deltas where kind='video') stays correct.
+    pub fn refund_video(model: &'a str) -> Self {
+        Self { kind: "video", protocol: None, model: Some(model) }
     }
     pub fn grant() -> Self {
         Self { kind: "grant", protocol: None, model: None }

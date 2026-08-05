@@ -19,6 +19,7 @@ mod setup;
 mod sharing;
 mod skills;
 mod studio;
+mod videos;
 mod worker;
 
 use axum::{
@@ -1100,6 +1101,8 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::user_routes())
         .merge(payments::admin_routes())
         .merge(studio::routes())
+        .merge(videos::routes())
+        .merge(videos::admin_routes())
         .merge(invites::routes())
         .merge(search::routes())
         .merge(sharing::user_routes())

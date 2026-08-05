@@ -608,14 +608,27 @@ async fn create_job(
         kind,
         &format!(
             "UPDATE video_jobs SET upstream_video_id = ?, status = 'running', \
-             started_at = {now}, last_polled_at = {now} WHERE id = ?"
+             started_at = {now}, last_polled_at = {now} WHERE id = ? AND status = 'pending'"
         ),
     );
-    let _ = sqlx::query(&update_sql)
+    let updated = sqlx::query(&update_sql)
         .bind(&upstream_id)
         .bind(job_id)
         .execute(pool)
-        .await;
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+
+    if updated == 0 {
+        // Row was already reaped (and refunded) by the sweeper as an orphan
+        // while our upstream POST was still in flight. The video may still
+        // get created upstream, but we must not double-grant credits here —
+        // just report the failure to the caller.
+        return err(
+            StatusCode::BAD_GATEWAY,
+            "任务已超时被回收，积分已退还，请重试".to_string(),
+        );
+    }
 
     (StatusCode::CREATED, Json(CreateJobResp { token, cost })).into_response()
 }
@@ -901,6 +914,11 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, data_dir: 
     }
 
     // 3. Advance orphans: running/pending not polled for 10 min (user closed page).
+    //    Guard against racing create_job: a freshly-inserted pending row has
+    //    upstream_video_id = NULL and last_polled_at = NULL while the create
+    //    POST is still in flight. Only treat it as orphaned once either the
+    //    upstream id has been recorded, or the row itself is old enough
+    //    (2 minutes) that the in-flight create attempt must have finished.
     let orphans: Vec<(String,)> = {
         let sql = db::q(
             kind,
@@ -908,8 +926,10 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, data_dir: 
                 "SELECT token FROM video_jobs \
                  WHERE status IN ('pending','running') \
                    AND (last_polled_at IS NULL OR last_polled_at < {}) \
+                   AND (upstream_video_id IS NOT NULL OR created_at < {}) \
                  ORDER BY created_at ASC LIMIT 20",
-                minutes_ago_expr(kind, 10)
+                minutes_ago_expr(kind, 10),
+                minutes_ago_expr(kind, 2)
             ),
         );
         sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
@@ -1057,10 +1077,23 @@ async fn download_completed_video(
         kind,
         &format!(
             "UPDATE video_jobs SET status = 'completed', video_path = ?, progress = 100, \
-             finished_at = {now} WHERE id = ?"
+             finished_at = {now} WHERE id = ? AND status <> 'failed'"
         ),
     );
-    let _ = sqlx::query(&sql).bind(&video_path).bind(job.id).execute(pool).await;
+    let updated = sqlx::query(&sql)
+        .bind(&video_path)
+        .bind(job.id)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+
+    if updated == 0 {
+        // Job was already marked failed (e.g. by the 2h-timeout sweeper)
+        // while the download was in flight — don't resurrect it, and don't
+        // leave an orphan file behind.
+        let _ = tokio::fs::remove_file(&path).await;
+    }
 }
 
 async fn handle_download_failure(pool: &Pool, kind: DbKind, job: &JobRow, msg: &str) {

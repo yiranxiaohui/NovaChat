@@ -275,7 +275,7 @@ function VideoPricingDialog({
   function addSizeRule() {
     setForm({
       ...form,
-      size_rules: [...form.size_rules, { size: "", multiplier: 1 }],
+      size_rules: [...form.size_rules, { size: "", multiplier: 100 }],
     })
   }
 
@@ -313,8 +313,8 @@ function VideoPricingDialog({
       if (!SIZE_RE.test(r.size.trim())) {
         return `分辨率格式不合法：「${r.size}」，应形如 1280x720`
       }
-      if (!(r.multiplier > 0)) {
-        return `分辨率「${r.size}」的倍率必须大于 0`
+      if (!(r.multiplier > 0) || !Number.isInteger(r.multiplier)) {
+        return `倍率必须为正整数（百分比，100=原价），分辨率「${r.size}」`
       }
     }
     return null
@@ -441,7 +441,7 @@ function VideoPricingDialog({
             </p>
           </div>
           <div className="col-span-2">
-            <Label>分辨率倍率</Label>
+            <Label>分辨率倍率（%，100 = 原价）</Label>
             <div className="mt-1 flex flex-col gap-2">
               {form.size_rules.map((r, idx) => (
                 <div key={idx} className="flex items-center gap-2">
@@ -456,14 +456,14 @@ function VideoPricingDialog({
                   <Input
                     type="number"
                     min={0}
-                    step="0.1"
+                    step="1"
                     value={r.multiplier}
                     onChange={(e) =>
                       updateSizeRule(idx, {
                         multiplier: Number(e.target.value) || 0,
                       })
                     }
-                    placeholder="倍率"
+                    placeholder="倍率(%)，100=原价"
                     className="w-24"
                   />
                   <Button

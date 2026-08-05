@@ -148,6 +148,9 @@ export type ChatStreamOptions = {
   maxTokens?: number
   signal?: AbortSignal
   onDelta: (delta: string) => void
+  // 模型的思考过程增量（推理模型才有）。上游不回传时一次也不会调用。
+  // 我们不主动向上游索要思考内容，只解析它自愿回传的部分。
+  onReasoning?: (delta: string) => void
   // Apply a transformation to the current assistant message content. Used
   // by the hosted image_generation flow to show a ticking "生成图像中…"
   // placeholder without persisting it into the saved message content.
@@ -163,7 +166,10 @@ type PreparedRequest = {
   directHeaders: Record<string, string>
 }
 
-async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
+async function prepareOpenAi(
+  o: ChatStreamOptions,
+  withThinking: boolean
+): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
@@ -209,6 +215,9 @@ async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
       stream: true,
       ...(system ? { instructions: system } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+      // 索要推理摘要。非推理模型（gpt-4o 等）会 400，由 streamChat 的降级
+      // 重试兜底。
+      ...(withThinking ? { reasoning: { summary: "auto" } } : {}),
       ...(tools.length ? { tools } : {}),
     },
     directHeaders: {
@@ -217,7 +226,10 @@ async function prepareOpenAi(o: ChatStreamOptions): Promise<PreparedRequest> {
   }
 }
 
-async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
+async function prepareClaude(
+  o: ChatStreamOptions,
+  withThinking: boolean
+): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
@@ -267,15 +279,33 @@ async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
       return { role: m.role, content: parts }
     })
   )
+  // extended thinking 的硬性约束：budget_tokens 至少 1024 且必须小于
+  // max_tokens，同时 temperature 只能是 1（传别的值直接 400）。这里把上限抬到
+  // 至少 2048，保证思考和正文都有空间。
+  const maxTokens = withThinking
+    ? Math.max(o.maxTokens ?? 4096, 2048)
+    : (o.maxTokens ?? 4096)
+
   return {
     url: `${trimSlash(o.baseUrl)}/v1/messages`,
     body: {
       model: o.model,
-      max_tokens: o.maxTokens ?? 4096,
+      max_tokens: maxTokens,
       messages: rest,
       stream: true,
       ...(system ? { system } : {}),
-      ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+      // 开思考时不传 temperature —— API 要求它必须为 1，省略即取默认值 1。
+      ...(!withThinking && o.temperature !== undefined
+        ? { temperature: o.temperature }
+        : {}),
+      ...(withThinking
+        ? {
+            thinking: {
+              type: "enabled",
+              budget_tokens: Math.floor(maxTokens / 2),
+            },
+          }
+        : {}),
       ...(o.webSearch
         ? {
             tools: [
@@ -296,7 +326,10 @@ async function prepareClaude(o: ChatStreamOptions): Promise<PreparedRequest> {
   }
 }
 
-async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
+async function prepareGemini(
+  o: ChatStreamOptions,
+  withThinking: boolean
+): Promise<PreparedRequest> {
   const system = o.messages
     .filter((m) => m.role === "system")
     .map((m) => m.content)
@@ -332,10 +365,15 @@ async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
     })
   )
   const generationConfig =
-    o.temperature !== undefined || o.maxTokens !== undefined
+    o.temperature !== undefined || o.maxTokens !== undefined || withThinking
       ? {
           ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
           ...(o.maxTokens !== undefined ? { maxOutputTokens: o.maxTokens } : {}),
+          // 不加 includeThoughts，parts 里就不会出现 thought:true 的片段。
+          // 老模型不认这个字段会 400，由 streamChat 的降级重试兜底。
+          ...(withThinking
+            ? { thinkingConfig: { includeThoughts: true } }
+            : {}),
         }
       : undefined
   return {
@@ -354,54 +392,84 @@ async function prepareGemini(o: ChatStreamOptions): Promise<PreparedRequest> {
   }
 }
 
-function prepare(o: ChatStreamOptions): Promise<PreparedRequest> {
+function prepare(
+  o: ChatStreamOptions,
+  withThinking: boolean
+): Promise<PreparedRequest> {
   switch (o.protocol) {
     case "openai":
-      return prepareOpenAi(o)
+      return prepareOpenAi(o, withThinking)
     case "claude":
-      return prepareClaude(o)
+      return prepareClaude(o, withThinking)
     case "gemini":
-      return prepareGemini(o)
+      return prepareGemini(o, withThinking)
   }
 }
 
-function extractDelta(protocol: Protocol, json: unknown): string | undefined {
+/** 一个 SSE 帧解析出的两路内容：`text` 进正文气泡，`reasoning` 进折叠的
+ * 思考区。两者可能同时为空（心跳、usage 等无关帧）。 */
+type Chunk = { text?: string; reasoning?: string }
+
+function extractDelta(protocol: Protocol, json: unknown): Chunk {
   const j = json as Record<string, unknown>
   switch (protocol) {
     case "openai": {
       // Responses API stream events carry a `type` field; text chunks come
       // through as `response.output_text.delta` with a string `delta`.
       if (j.type === "response.output_text.delta") {
-        return typeof j.delta === "string" ? j.delta : undefined
+        return { text: typeof j.delta === "string" ? j.delta : undefined }
+      }
+      // 官方 Responses API 的推理摘要流。
+      if (j.type === "response.reasoning_summary_text.delta") {
+        return { reasoning: typeof j.delta === "string" ? j.delta : undefined }
       }
       // Tolerate relays that still emit chat-completions-style chunks via
-      // the /v1/responses endpoint.
-      const choices = (j.choices ?? []) as Array<{ delta?: { content?: string } }>
-      return choices[0]?.delta?.content
+      // the /v1/responses endpoint. 中转站的推理模型（DeepSeek-R1 等）把思考
+      // 放在 `reasoning_content`；OpenRouter 系用 `reasoning`。
+      const choices = (j.choices ?? []) as Array<{
+        delta?: { content?: string; reasoning_content?: string; reasoning?: string }
+      }>
+      const d = choices[0]?.delta
+      return {
+        text: d?.content,
+        reasoning: d?.reasoning_content ?? d?.reasoning,
+      }
     }
     case "claude": {
       if (j.type === "content_block_delta") {
-        const delta = j.delta as { type?: string; text?: string } | undefined
-        if (delta?.type === "text_delta") return delta.text
+        const delta = j.delta as
+          | { type?: string; text?: string; thinking?: string }
+          | undefined
+        if (delta?.type === "text_delta") return { text: delta.text }
+        // extended thinking；`signature_delta` 是签名校验数据，不展示。
+        if (delta?.type === "thinking_delta") return { reasoning: delta.thinking }
       }
-      return undefined
+      return {}
     }
     case "gemini": {
+      // 思考片段是带 `thought: true` 的 part，必须与正文分开——否则会被当成
+      // 正常回答混进气泡里。
       const cands = (j.candidates ?? []) as Array<{
-        content?: { parts?: Array<{ text?: string }> }
+        content?: { parts?: Array<{ text?: string; thought?: boolean }> }
       }>
       const parts = cands[0]?.content?.parts ?? []
-      const text = parts.map((p) => p.text ?? "").join("")
-      return text || undefined
+      let text = ""
+      let reasoning = ""
+      for (const p of parts) {
+        if (p.thought) reasoning += p.text ?? ""
+        else text += p.text ?? ""
+      }
+      return { text: text || undefined, reasoning: reasoning || undefined }
     }
   }
 }
 
-export async function streamChat(o: ChatStreamOptions): Promise<void> {
-  const prepared = await prepare(o)
+async function sendRequest(
+  o: ChatStreamOptions,
+  prepared: PreparedRequest
+): Promise<Response> {
   const payload = JSON.stringify(prepared.body)
 
-  let res: Response
   // Platform mode MUST go through the backend proxy: the server resolves the
   // admin-configured shared channel and deducts credits, and the browser can
   // never reach that upstream directly. Force proxy whenever usePlatform is set
@@ -421,30 +489,54 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
       headers["X-Upstream-Url"] = prepared.url
       headers["X-Upstream-Key"] = o.apiKey
     }
-    res = await fetch(`/api/proxy/${o.protocol}`, {
+    return fetch(`/api/proxy/${o.protocol}`, {
       method: "POST",
       headers,
       body: payload,
       credentials: "same-origin",
       signal: o.signal,
     })
-  } else {
-    res = await fetch(prepared.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        ...prepared.directHeaders,
-      },
-      body: payload,
-      signal: o.signal,
-    })
   }
+  return fetch(prepared.url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...prepared.directHeaders,
+    },
+    body: payload,
+    signal: o.signal,
+  })
+}
 
-  if (!res.ok || !res.body) {
+/** 上游报的错是不是「不认识思考参数」。不支持思考的模型（gpt-4o、Claude 3.5、
+ * 老 Gemini）会在 400 里点名这些字段，据此决定要不要去掉参数重试。 */
+function isThinkingRejected(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  return /thinking|reasoning|budget_tokens|includeThoughts/i.test(body)
+}
+
+export async function streamChat(o: ChatStreamOptions): Promise<void> {
+  // 默认索要思考过程。模型不认这些参数时下面会去掉重试，所以非推理模型不会
+  // 因此不可用。
+  let res = await sendRequest(o, await prepare(o, true))
+
+  if (!res.ok) {
     const text = await res.text().catch(() => "")
-    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+    if (isThinkingRejected(res.status, text)) {
+      // 后端对非 2xx 会退还积分，这次重试不会重复扣费。
+      res = await sendRequest(o, await prepare(o, false))
+      if (!res.ok) {
+        const retryText = await res.text().catch(() => "")
+        throw new Error(
+          `HTTP ${res.status}: ${retryText || res.statusText}`
+        )
+      }
+    } else {
+      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+    }
   }
+  if (!res.body) throw new Error(`HTTP ${res.status}: 响应没有可读的流`)
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -578,8 +670,10 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
               reportUsage()
             }
           }
-          const delta = extractDelta(o.protocol, json)
-          if (delta) o.onDelta(delta)
+          const chunk = extractDelta(o.protocol, json)
+          // 思考先于正文推送，保证 UI 能在正文开始前就展示思考流。
+          if (chunk.reasoning) o.onReasoning?.(chunk.reasoning)
+          if (chunk.text) o.onDelta(chunk.text)
         } catch {
           // tolerate keep-alive / non-json frames
         }

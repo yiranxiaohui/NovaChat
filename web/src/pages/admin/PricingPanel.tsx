@@ -34,7 +34,7 @@ import {
   type PricingInput,
 } from "@/lib/channels"
 
-const KINDS: ChannelKind[] = ["chat", "image"]
+const KINDS: ChannelKind[] = ["chat", "image", "video"]
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
 
 type DialogMode =
@@ -415,7 +415,14 @@ function PricingDialog({
             <Label>类型</Label>
             <Select
               value={form.kind}
-              onValueChange={(v) => setForm({ ...form, kind: v as ChannelKind })}
+              onValueChange={(v) =>
+                setForm({
+                  ...form,
+                  kind: v as ChannelKind,
+                  // 后端约束：video 仅支持 openai 协议
+                  ...(v === "video" ? { protocol: "openai" as ChannelProtocol } : {}),
+                })
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -433,6 +440,7 @@ function PricingDialog({
             <Label>协议</Label>
             <Select
               value={form.protocol}
+              disabled={form.kind === "video"}
               onValueChange={(v) =>
                 setForm({ ...form, protocol: v as ChannelProtocol })
               }

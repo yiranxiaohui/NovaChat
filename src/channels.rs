@@ -787,8 +787,8 @@ async fn admin_upsert_pricing(
     Extension(s): Extension<InstalledState>,
     Json(input): Json<PricingInput>,
 ) -> Response {
-    if !matches!(input.kind.as_str(), "chat" | "image") {
-        return err(StatusCode::BAD_REQUEST, "kind must be 'chat' or 'image'");
+    if let Err(e) = validate_protocol_kind(&input.protocol, &input.kind) {
+        return err(StatusCode::BAD_REQUEST, e);
     }
     if input.cost_credits < 0 {
         return err(StatusCode::BAD_REQUEST, "cost_credits must be >= 0");

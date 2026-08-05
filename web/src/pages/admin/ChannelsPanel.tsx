@@ -179,7 +179,7 @@ export function ChannelsPanel() {
                 <TableCell className="max-w-[18rem] truncate font-mono text-xs text-muted-foreground">
                   {c.base_url}
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
+                <TableCell className="max-w-[12rem] truncate font-mono text-xs text-muted-foreground" title={c.api_key}>
                   {c.api_key}
                 </TableCell>
                 <TableCell className="tabular-nums">{c.priority}</TableCell>
@@ -250,7 +250,7 @@ function ChannelDialog({
           protocol: mode.channel.protocol,
           kind: mode.channel.kind,
           base_url: mode.channel.base_url,
-          api_key: "", // never prefill (server returns redacted)
+          api_key: mode.channel.api_key,
           enabled: mode.channel.enabled,
           priority: mode.channel.priority,
         }
@@ -375,16 +375,9 @@ function ChannelDialog({
             />
           </div>
           <div className="col-span-2">
-            <Label>
-              API Key
-              {mode.kind === "edit" && (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  （留空保持不变）
-                </span>
-              )}
-            </Label>
+            <Label>API Key</Label>
             <Input
-              type="password"
+              type="text"
               value={form.api_key}
               onChange={(e) => setForm({ ...form, api_key: e.target.value })}
               placeholder="sk-..."

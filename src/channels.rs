@@ -577,14 +577,7 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 async fn admin_list_channels(Extension(s): Extension<InstalledState>) -> Response {
     match list_channels(&s.pool, s.kind).await {
-        Ok(v) => {
-            // redact api_key in list response
-            let v: Vec<_> = v
-                .into_iter()
-                .map(|mut c| { c.api_key = redact(&c.api_key); c })
-                .collect();
-            Json(v).into_response()
-        }
+        Ok(v) => Json(v).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -814,13 +807,6 @@ async fn admin_delete_pricing(
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
-}
-
-fn redact(key: &str) -> String {
-    if key.len() <= 8 { return "********".into(); }
-    let head = &key[..4];
-    let tail = &key[key.len() - 4..];
-    format!("{head}…{tail}")
 }
 
 fn validate_protocol_kind(protocol: &str, kind: &str) -> Result<(), String> {

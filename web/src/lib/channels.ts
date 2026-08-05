@@ -31,7 +31,6 @@ export type Channel = {
   protocol: ChannelProtocol
   kind: ChannelKind
   base_url: string
-  /** Redacted to "abcd…wxyz" by the server. */
   api_key: string
   enabled: boolean
   priority: number

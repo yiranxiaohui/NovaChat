@@ -331,6 +331,14 @@ function VideoPricingDialog({
       setErr("时长必须为正整数，多个用逗号分隔，如 4,8,12")
       return
     }
+    if (allowedSeconds.length === 0) {
+      setErr("允许时长不能为空")
+      return
+    }
+    if (form.size_rules.length === 0) {
+      setErr("至少需要一个分辨率档位")
+      return
+    }
     const sizeErr = validateSizeRules()
     if (sizeErr) {
       setErr(sizeErr)
@@ -429,7 +437,7 @@ function VideoPricingDialog({
               placeholder="4, 8, 12"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              留空表示不限制时长选项。
+              必填，如 4,8,12。
             </p>
           </div>
           <div className="col-span-2">
@@ -470,7 +478,7 @@ function VideoPricingDialog({
               ))}
               {form.size_rules.length === 0 && (
                 <p className="text-xs text-muted-foreground">
-                  暂无档位，默认按 1 倍计费。
+                  至少添加一个分辨率档位。
                 </p>
               )}
               <Button

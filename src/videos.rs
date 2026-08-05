@@ -143,7 +143,8 @@ fn validate_input(input: &VideoPricingInput) -> Result<(), String> {
 /// Upsert following the "UPDATE first, INSERT if 0 rows affected" pattern —
 /// one SQL statement per dialect, no ON CONFLICT.
 pub async fn upsert_pricing(pool: &Pool, kind: DbKind, input: &VideoPricingInput) -> Result<(), sqlx::Error> {
-    let enabled_v: i64 = if input.enabled.unwrap_or(true) { 1 } else { 0 };
+    let enabled_bool = input.enabled.unwrap_or(true);
+    let enabled_v: i64 = if enabled_bool { 1 } else { 0 };
     let allowed_seconds = serde_json::to_string(&input.allowed_seconds).unwrap_or_else(|_| "[]".into());
     let size_rules = serde_json::to_string(&input.size_rules).unwrap_or_else(|_| "[]".into());
     let now = db::now_expr(kind);
@@ -152,9 +153,10 @@ pub async fn upsert_pricing(pool: &Pool, kind: DbKind, input: &VideoPricingInput
         "UPDATE video_pricing SET display_name = ?, enabled = ?, base_credits = ?, \
          per_second = ?, allowed_seconds = ?, size_rules = ?, updated_at = {now} WHERE model = ?"
     ));
-    let result = sqlx::query(&update_sql)
-        .bind(input.display_name.as_deref())
-        .bind(enabled_v)
+    let q = sqlx::query(&update_sql).bind(input.display_name.as_deref());
+    // Postgres has a native BOOLEAN column; binding i64 there fails at runtime.
+    let q = if matches!(kind, DbKind::Postgres) { q.bind(enabled_bool) } else { q.bind(enabled_v) };
+    let result = q
         .bind(input.base_credits)
         .bind(input.per_second)
         .bind(&allowed_seconds)
@@ -169,11 +171,11 @@ pub async fn upsert_pricing(pool: &Pool, kind: DbKind, input: &VideoPricingInput
              (model, display_name, enabled, base_credits, per_second, allowed_seconds, size_rules, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, {now}, {now})"
         ));
-        sqlx::query(&insert_sql)
+        let q = sqlx::query(&insert_sql)
             .bind(&input.model)
-            .bind(input.display_name.as_deref())
-            .bind(enabled_v)
-            .bind(input.base_credits)
+            .bind(input.display_name.as_deref());
+        let q = if matches!(kind, DbKind::Postgres) { q.bind(enabled_bool) } else { q.bind(enabled_v) };
+        q.bind(input.base_credits)
             .bind(input.per_second)
             .bind(&allowed_seconds)
             .bind(&size_rules)

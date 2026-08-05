@@ -371,7 +371,7 @@ function PricingDialog({
                             setForm({
                               ...form,
                               model: m.model,
-                              display_name: form.display_name || m.model.toUpperCase(),
+                              display_name: form.display_name || m.model,
                             })
                             setModelPickerOpen(false)
                           }}

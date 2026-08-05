@@ -9,16 +9,18 @@
 
 use axum::{
     Extension, Json, Router,
-    extract::Path,
+    extract::{Path, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get},
+    routing::{delete, get, post},
 };
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState, InstalledState, admin, channels,
+    AppState, CurrentUser, InstalledState, admin, channels, credits,
+    credits::LedgerMeta,
     db::{self, DbKind, Pool},
 };
 
@@ -269,6 +271,356 @@ async fn user_list_models(Extension(s): Extension<InstalledState>) -> Response {
     Json(out).into_response()
 }
 
+fn random_hex(n: usize) -> String {
+    let mut bytes = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// job creation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct CreateJobReq {
+    model: String,
+    prompt: String,
+    seconds: i64,
+    size: String,
+    /// e.g. "/api/images/abcd1234.png" — 先经 POST /api/images/save 上传。
+    input_image_path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreateJobResp {
+    token: String,
+    cost: i64,
+}
+
+/// Refund a job's cost_credits exactly once. The UPDATE-guard makes retries
+/// (sweeper + poll racing) safe: only the caller that flips refunded gets to
+/// grant.
+pub(crate) async fn refund_job(
+    pool: &Pool,
+    kind: DbKind,
+    job_id: i64,
+    user_id: i64,
+    model: &str,
+    cost: i64,
+    suffix: &str,
+) {
+    if cost <= 0 {
+        return;
+    }
+    let bt = db::bool_true(kind);
+    let sql = db::q(
+        kind,
+        &format!("UPDATE video_jobs SET refunded = {bt} WHERE id = ? AND refunded <> {bt}"),
+    );
+    let n = sqlx::query(&sql)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+    if n == 0 {
+        return; // already refunded (or DB error — err on not double-granting)
+    }
+    let reason = format!("refund_video_{model}_{suffix}");
+    let _ = credits::grant(pool, kind, user_id, cost, &reason, &LedgerMeta::refund_video(model)).await;
+}
+
+/// Insert a new video_jobs row, returning its id. Three-dialect id-return
+/// pattern mirrors `channels::create_channel`.
+async fn insert_job(
+    pool: &Pool,
+    kind: DbKind,
+    token: &str,
+    user_id: i64,
+    model: &str,
+    prompt: &str,
+    seconds: i64,
+    size: &str,
+    input_image_path: Option<&str>,
+    channel_id: i64,
+    cost: i64,
+) -> Result<i64, sqlx::Error> {
+    let returning = db::returning_id(kind);
+    let sql = db::q(
+        kind,
+        &format!(
+            "INSERT INTO video_jobs \
+             (token, user_id, model, prompt, seconds, size, input_image_path, channel_id, cost_credits, status) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending'){returning}"
+        ),
+    );
+    match kind {
+        DbKind::Postgres | DbKind::Sqlite => {
+            let row: (i64,) = sqlx::query_as(&sql)
+                .bind(token)
+                .bind(user_id)
+                .bind(model)
+                .bind(prompt)
+                .bind(seconds)
+                .bind(size)
+                .bind(input_image_path)
+                .bind(channel_id)
+                .bind(cost)
+                .fetch_one(pool)
+                .await?;
+            Ok(row.0)
+        }
+        DbKind::Mysql => {
+            let r = sqlx::query(&sql)
+                .bind(token)
+                .bind(user_id)
+                .bind(model)
+                .bind(prompt)
+                .bind(seconds)
+                .bind(size)
+                .bind(input_image_path)
+                .bind(channel_id)
+                .bind(cost)
+                .execute(pool)
+                .await?;
+            Ok(r.last_insert_id().unwrap_or(0))
+        }
+    }
+}
+
+async fn mark_job_failed(pool: &Pool, kind: DbKind, job_id: i64, error: &str) {
+    let now = db::now_expr(kind);
+    let trimmed: String = error.chars().take(500).collect();
+    let sql = db::q(
+        kind,
+        &format!(
+            "UPDATE video_jobs SET status = 'failed', error = ?, finished_at = {now} WHERE id = ?"
+        ),
+    );
+    let _ = sqlx::query(&sql).bind(&trimmed).bind(job_id).execute(pool).await;
+}
+
+async fn create_job(
+    State(state): State<AppState>,
+    Extension(s): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(req): Json<CreateJobReq>,
+) -> Response {
+    let pool = &s.pool;
+    let kind = s.kind;
+
+    let prompt = req.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "prompt 不能为空");
+    }
+
+    let pricing = match get_pricing(pool, kind, &req.model).await {
+        Ok(Some(p)) if p.enabled => p,
+        Ok(_) => return err(StatusCode::BAD_REQUEST, "模型不存在或未启用"),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    let cost = match compute_cost(&pricing, req.seconds, &req.size) {
+        Some(c) => c,
+        None => return err(StatusCode::BAD_REQUEST, "该模型不支持所选时长或分辨率"),
+    };
+
+    // Load the optional reference image up-front so a bad path fails before
+    // any credits move.
+    let mut image_bytes: Option<Vec<u8>> = None;
+    let mut image_name: String = String::new();
+    let mut image_mime: String = "application/octet-stream".to_string();
+    if let Some(path) = req.input_image_path.as_deref() {
+        if !path.starts_with("/api/images/") {
+            return err(StatusCode::BAD_REQUEST, "参考图不存在");
+        }
+        let name = path.rsplit('/').next().unwrap_or("");
+        if name.is_empty() || name.contains("..") || name.contains('/') {
+            return err(StatusCode::BAD_REQUEST, "参考图不存在");
+        }
+        let file_path = state.data_dir.join("images").join(name);
+        match tokio::fs::read(&file_path).await {
+            Ok(bytes) => {
+                image_mime = mime_guess::from_path(&file_path)
+                    .first_or_octet_stream()
+                    .essence_str()
+                    .to_string();
+                image_name = name.to_string();
+                image_bytes = Some(bytes);
+            }
+            Err(_) => return err(StatusCode::BAD_REQUEST, "参考图不存在"),
+        }
+    }
+
+    let model = req.model.clone();
+
+    // Deduct first, then attempt upstream — refunds happen on any failure past this point.
+    let _new_balance = match credits::try_deduct(
+        pool,
+        kind,
+        user.id,
+        cost,
+        &format!("video_{model}"),
+        &LedgerMeta::video(&model),
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(balance) => {
+            return err(
+                StatusCode::PAYMENT_REQUIRED,
+                format!("积分不足：需要 {cost}，当前余额 {balance}"),
+            );
+        }
+    };
+
+    let choice = match channels::select_one(pool, kind, &model, "video").await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            let _ = credits::grant(
+                pool,
+                kind,
+                user.id,
+                cost,
+                &format!("refund_video_{model}_no_channel"),
+                &LedgerMeta::refund_video(&model),
+            )
+            .await;
+            return err(StatusCode::BAD_REQUEST, "暂无可用视频渠道，请联系管理员");
+        }
+        Err(e) => {
+            let _ = credits::grant(
+                pool,
+                kind,
+                user.id,
+                cost,
+                &format!("refund_video_{model}_no_channel"),
+                &LedgerMeta::refund_video(&model),
+            )
+            .await;
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    };
+
+    let token = random_hex(16);
+    let job_id = match insert_job(
+        pool,
+        kind,
+        &token,
+        user.id,
+        &model,
+        &prompt,
+        req.seconds,
+        &req.size,
+        req.input_image_path.as_deref(),
+        choice.channel.id,
+        cost,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = credits::grant(
+                pool,
+                kind,
+                user.id,
+                cost,
+                &format!("refund_video_{model}_no_channel"),
+                &LedgerMeta::refund_video(&model),
+            )
+            .await;
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    };
+
+    let base = choice.channel.base_url.trim_end_matches('/');
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", choice.upstream_model.clone())
+        .text("prompt", prompt.clone())
+        .text("seconds", req.seconds.to_string())
+        .text("size", req.size.clone());
+    if let Some(bytes) = image_bytes {
+        match reqwest::multipart::Part::bytes(bytes)
+            .file_name(image_name.clone())
+            .mime_str(&image_mime)
+        {
+            Ok(part) => form = form.part("input_reference", part),
+            Err(e) => {
+                let msg = format!("multipart: {e}");
+                mark_job_failed(pool, kind, job_id, &msg).await;
+                refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
+                return err(StatusCode::BAD_GATEWAY, msg);
+            }
+        }
+    }
+
+    let res = state
+        .http
+        .post(format!("{base}/v1/videos"))
+        .bearer_auth(&choice.channel.api_key)
+        .multipart(form)
+        .send()
+        .await;
+
+    let resp = match res {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("上游请求失败: {e}");
+            mark_job_failed(pool, kind, job_id, &msg).await;
+            refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
+            return err(StatusCode::BAD_GATEWAY, msg);
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let truncated: String = body.chars().take(500).collect();
+        let msg = format!("上游返回 {status}: {truncated}");
+        mark_job_failed(pool, kind, job_id, &msg).await;
+        refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
+        return err(StatusCode::BAD_GATEWAY, msg);
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = format!("上游响应解析失败: {e}");
+            mark_job_failed(pool, kind, job_id, &msg).await;
+            refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
+            return err(StatusCode::BAD_GATEWAY, msg);
+        }
+    };
+
+    let upstream_id = match body.get("id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            let msg = format!("上游响应缺少 id: {body}");
+            mark_job_failed(pool, kind, job_id, &msg).await;
+            refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
+            return err(StatusCode::BAD_GATEWAY, msg);
+        }
+    };
+
+    let now = db::now_expr(kind);
+    let update_sql = db::q(
+        kind,
+        &format!(
+            "UPDATE video_jobs SET upstream_video_id = ?, status = 'running', \
+             started_at = {now}, last_polled_at = {now} WHERE id = ?"
+        ),
+    );
+    let _ = sqlx::query(&update_sql)
+        .bind(&upstream_id)
+        .bind(job_id)
+        .execute(pool)
+        .await;
+
+    (StatusCode::CREATED, Json(CreateJobResp { token, cost })).into_response()
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/videos/models", get(user_list_models))
+    Router::new()
+        .route("/videos/models", get(user_list_models))
+        .route("/videos/jobs", post(create_job))
 }

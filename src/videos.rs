@@ -837,7 +837,16 @@ pub async fn advance_job(
         return;
     }
 
-    poll_upstream_once(http, pool, kind, data_dir, &job).await;
+    // Re-fetch after acquiring the lock: the pre-lock snapshot may be stale
+    // (another poller could have completed/failed the job between our fetch
+    // and the lock UPDATE), and polling from a stale row would re-download
+    // and orphan the previous mp4 / miscount download_retries.
+    match fetch_job(pool, kind, token).await {
+        Some(job) if job.status != "completed" && job.status != "failed" => {
+            poll_upstream_once(http, pool, kind, data_dir, &job).await;
+        }
+        _ => {}
+    }
     release_lock(pool, kind, token).await;
 }
 
@@ -1123,6 +1132,16 @@ async fn serve_video(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let total = bytes.len() as u64;
+    // Guard the `total - 1` arithmetic below: an empty file has no satisfiable
+    // byte range (and would underflow u64 in debug builds).
+    if total == 0 {
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
+            .body(Body::empty())
+            .unwrap();
+    }
     if let Some(r) = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())

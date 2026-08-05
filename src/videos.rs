@@ -9,8 +9,9 @@
 
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
-    http::StatusCode,
+    body::Body,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -619,8 +620,549 @@ async fn create_job(
     (StatusCode::CREATED, Json(CreateJobResp { token, cost })).into_response()
 }
 
+// ---------------------------------------------------------------------------
+// lazy-poll advancement
+// ---------------------------------------------------------------------------
+
+/// SQL fragment for "3 seconds ago" in the given dialect's datetime domain.
+fn three_seconds_ago_expr(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::Sqlite => "datetime('now','-3 seconds')",
+        DbKind::Mysql => "DATE_SUB(NOW(), INTERVAL 3 SECOND)",
+        DbKind::Postgres => "now() - interval '3 seconds'",
+    }
+}
+
+/// SQL fragment for "N minutes ago" in the given dialect's datetime domain.
+/// `n` is a validated caller-controlled literal (never user input), so
+/// interpolating it directly into the SQL string is safe.
+pub(crate) fn minutes_ago_expr(kind: DbKind, n: i64) -> String {
+    match kind {
+        DbKind::Sqlite => format!("datetime('now','-{n} minutes')"),
+        DbKind::Mysql => format!("DATE_SUB(NOW(), INTERVAL {n} MINUTE)"),
+        DbKind::Postgres => format!("now() - interval '{n} minutes'"),
+    }
+}
+
+/// Look up a channel's (base_url, api_key) by id. No dependency on
+/// channels.rs internals beyond the shared `upstream_channels` table.
+pub(crate) async fn channel_by_id(
+    pool: &Pool,
+    kind: DbKind,
+    id: i64,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let sql = db::q(kind, "SELECT base_url, api_key FROM upstream_channels WHERE id = ?");
+    let row: Option<(String, String)> = sqlx::query_as(&sql).bind(id).fetch_optional(pool).await?;
+    Ok(row)
+}
+
+// Named struct (rather than a tuple) — sqlx's tuple `FromRow` impls only go
+// up to ~16 elements and we have 21 columns. `refunded`/`polling` are read
+// via `db::bool_as_int` so they decode as i64 across dialects (see db.rs);
+// converted to bool right after fetch.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct JobRowRaw {
+    id: i64,
+    user_id: i64,
+    token: String,
+    model: String,
+    prompt: String,
+    seconds: i64,
+    size: String,
+    input_image_path: Option<String>,
+    upstream_video_id: Option<String>,
+    channel_id: Option<i64>,
+    cost_credits: i64,
+    status: String,
+    progress: i64,
+    video_path: Option<String>,
+    error: Option<String>,
+    refunded: i64,
+    download_retries: i64,
+    polling: i64,
+    #[allow(dead_code)]
+    last_polled_at: Option<String>,
+    created_at: String,
+    finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct JobRow {
+    id: i64,
+    user_id: i64,
+    token: String,
+    model: String,
+    prompt: String,
+    seconds: i64,
+    size: String,
+    input_image_path: Option<String>,
+    upstream_video_id: Option<String>,
+    channel_id: Option<i64>,
+    cost_credits: i64,
+    status: String,
+    progress: i64,
+    video_path: Option<String>,
+    error: Option<String>,
+    refunded: bool,
+    download_retries: i64,
+    #[allow(dead_code)]
+    polling: bool,
+    #[allow(dead_code)]
+    last_polled_at: Option<String>,
+    created_at: String,
+    finished_at: Option<String>,
+}
+
+impl From<JobRowRaw> for JobRow {
+    fn from(r: JobRowRaw) -> Self {
+        JobRow {
+            id: r.id,
+            user_id: r.user_id,
+            token: r.token,
+            model: r.model,
+            prompt: r.prompt,
+            seconds: r.seconds,
+            size: r.size,
+            input_image_path: r.input_image_path,
+            upstream_video_id: r.upstream_video_id,
+            channel_id: r.channel_id,
+            cost_credits: r.cost_credits,
+            status: r.status,
+            progress: r.progress,
+            video_path: r.video_path,
+            error: r.error,
+            refunded: r.refunded != 0,
+            download_retries: r.download_retries,
+            polling: r.polling != 0,
+            last_polled_at: r.last_polled_at,
+            created_at: r.created_at,
+            finished_at: r.finished_at,
+        }
+    }
+}
+
+const JOB_COLS: &str = "id, user_id, token, model, prompt, seconds, size, input_image_path, \
+     upstream_video_id, channel_id, cost_credits, status, progress, video_path, error, \
+     __REFUNDED__, download_retries, __POLLING__, last_polled_at, created_at, finished_at";
+
+fn job_cols(kind: DbKind) -> String {
+    JOB_COLS
+        .replace("__REFUNDED__", &db::bool_as_int(kind, "refunded"))
+        .replace("__POLLING__", &db::bool_as_int(kind, "polling"))
+}
+
+#[derive(Serialize)]
+struct JobView {
+    token: String,
+    model: String,
+    prompt: String,
+    seconds: i64,
+    size: String,
+    status: String,
+    progress: i64,
+    video_path: Option<String>,
+    error: Option<String>,
+    cost_credits: i64,
+    refunded: bool,
+    created_at: String,
+    finished_at: Option<String>,
+}
+
+impl From<&JobRow> for JobView {
+    fn from(r: &JobRow) -> Self {
+        JobView {
+            token: r.token.clone(),
+            model: r.model.clone(),
+            prompt: r.prompt.clone(),
+            seconds: r.seconds,
+            size: r.size.clone(),
+            status: r.status.clone(),
+            progress: r.progress,
+            video_path: r.video_path.clone(),
+            error: r.error.clone(),
+            cost_credits: r.cost_credits,
+            refunded: r.refunded,
+            created_at: r.created_at.clone(),
+            finished_at: r.finished_at.clone(),
+        }
+    }
+}
+
+async fn fetch_job(pool: &Pool, kind: DbKind, token: &str) -> Option<JobRow> {
+    let cols = job_cols(kind);
+    let sql = db::q(kind, &format!("SELECT {cols} FROM video_jobs WHERE token = ?"));
+    let row: Option<JobRowRaw> = sqlx::query_as(&sql).bind(token).fetch_optional(pool).await.ok()?;
+    row.map(JobRow::from)
+}
+
+async fn release_lock(pool: &Pool, kind: DbKind, token: &str) {
+    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) { "0" } else { "FALSE" };
+    let sql = db::q(kind, &format!("UPDATE video_jobs SET polling = {bf} WHERE token = ?"));
+    let _ = sqlx::query(&sql).bind(token).execute(pool).await;
+}
+
+/// Advance a single job's state by polling the upstream provider once, subject
+/// to a 3-second throttle. Consumed by the get_job handler for on-demand
+/// polling and by the Task 6 sweeper for background advancement.
+pub async fn advance_job(
+    http: &reqwest::Client,
+    pool: &Pool,
+    kind: DbKind,
+    data_dir: &std::path::Path,
+    token: &str,
+) {
+    let Some(job) = fetch_job(pool, kind, token).await else { return };
+    if job.status == "completed" || job.status == "failed" {
+        return;
+    }
+
+    let bt = db::bool_true(kind);
+    let now = db::now_expr(kind);
+    let lock_sql = db::q(
+        kind,
+        &format!(
+            "UPDATE video_jobs SET polling = {bt}, last_polled_at = {now} \
+             WHERE token = ? AND polling <> {bt} \
+               AND (last_polled_at IS NULL OR last_polled_at < {})",
+            three_seconds_ago_expr(kind)
+        ),
+    );
+    let got = sqlx::query(&lock_sql)
+        .bind(token)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0);
+    if got == 0 {
+        return;
+    }
+
+    poll_upstream_once(http, pool, kind, data_dir, &job).await;
+    release_lock(pool, kind, token).await;
+}
+
+async fn poll_upstream_once(
+    http: &reqwest::Client,
+    pool: &Pool,
+    kind: DbKind,
+    data_dir: &std::path::Path,
+    job: &JobRow,
+) {
+    let Some(upstream_video_id) = job.upstream_video_id.as_deref() else {
+        // create_job never got a usable upstream id — nothing to poll.
+        mark_job_failed(pool, kind, job.id, "任务未成功创建").await;
+        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "create_error").await;
+        return;
+    };
+
+    let Some(channel_id) = job.channel_id else {
+        mark_job_failed(pool, kind, job.id, "渠道已删除").await;
+        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
+        return;
+    };
+
+    let (base, key) = match channel_by_id(pool, kind, channel_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            mark_job_failed(pool, kind, job.id, "渠道已删除").await;
+            refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
+            return;
+        }
+        Err(e) => {
+            let _ = mark_error_only(pool, kind, job.id, &e.to_string()).await;
+            return;
+        }
+    };
+    let base = base.trim_end_matches('/');
+
+    let resp = match http
+        .get(format!("{base}/v1/videos/{upstream_video_id}"))
+        .bearer_auth(&key)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Transient network failure: record error, keep status, retry next poll.
+            mark_error_only(pool, kind, job.id, &format!("轮询失败: {e}")).await;
+            return;
+        }
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            mark_error_only(pool, kind, job.id, &format!("轮询响应解析失败: {e}")).await;
+            return;
+        }
+    };
+
+    let status = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    match status {
+        "queued" | "in_progress" => {
+            let progress = body.get("progress").and_then(|v| v.as_i64()).unwrap_or(0);
+            let sql = db::q(kind, "UPDATE video_jobs SET progress = ? WHERE id = ?");
+            let _ = sqlx::query(&sql).bind(progress).bind(job.id).execute(pool).await;
+        }
+        "failed" => {
+            let msg = body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("上游生成失败");
+            mark_job_failed(pool, kind, job.id, msg).await;
+            refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
+        }
+        "completed" => {
+            download_completed_video(http, pool, kind, data_dir, job, base, upstream_video_id, &key).await;
+        }
+        _ => {
+            mark_error_only(pool, kind, job.id, &format!("未知上游状态: {status}")).await;
+        }
+    }
+}
+
+async fn mark_error_only(pool: &Pool, kind: DbKind, job_id: i64, error: &str) {
+    let trimmed: String = error.chars().take(500).collect();
+    let sql = db::q(kind, "UPDATE video_jobs SET error = ? WHERE id = ?");
+    let _ = sqlx::query(&sql).bind(&trimmed).bind(job_id).execute(pool).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_completed_video(
+    http: &reqwest::Client,
+    pool: &Pool,
+    kind: DbKind,
+    data_dir: &std::path::Path,
+    job: &JobRow,
+    base: &str,
+    upstream_video_id: &str,
+    key: &str,
+) {
+    let result: Result<Vec<u8>, String> = async {
+        let resp = http
+            .get(format!("{base}/v1/videos/{upstream_video_id}/content"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("上游返回 {}", resp.status()));
+        }
+        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+    }
+    .await;
+
+    let bytes = match result {
+        Ok(b) => b,
+        Err(e) => {
+            handle_download_failure(pool, kind, job, &e).await;
+            return;
+        }
+    };
+
+    let dir = data_dir.join("videos");
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        handle_download_failure(pool, kind, job, &format!("创建目录失败: {e}")).await;
+        return;
+    }
+    let name = format!("{}.mp4", random_hex(16));
+    let path = dir.join(&name);
+    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+        handle_download_failure(pool, kind, job, &format!("写盘失败: {e}")).await;
+        return;
+    }
+
+    let now = db::now_expr(kind);
+    let video_path = format!("/api/videos/{name}");
+    let sql = db::q(
+        kind,
+        &format!(
+            "UPDATE video_jobs SET status = 'completed', video_path = ?, progress = 100, \
+             finished_at = {now} WHERE id = ?"
+        ),
+    );
+    let _ = sqlx::query(&sql).bind(&video_path).bind(job.id).execute(pool).await;
+}
+
+async fn handle_download_failure(pool: &Pool, kind: DbKind, job: &JobRow, msg: &str) {
+    let retries = job.download_retries + 1;
+    let trimmed: String = msg.chars().take(500).collect();
+    if retries < 5 {
+        let sql = db::q(
+            kind,
+            "UPDATE video_jobs SET download_retries = ?, error = ? WHERE id = ?",
+        );
+        let _ = sqlx::query(&sql).bind(retries).bind(&trimmed).bind(job.id).execute(pool).await;
+    } else {
+        let now = db::now_expr(kind);
+        let sql = db::q(
+            kind,
+            &format!(
+                "UPDATE video_jobs SET status = 'failed', download_retries = ?, error = ?, \
+                 finished_at = {now} WHERE id = ?"
+            ),
+        );
+        let _ = sqlx::query(&sql).bind(retries).bind(&trimmed).bind(job.id).execute(pool).await;
+        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "download_failed").await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// get/list/delete handlers
+// ---------------------------------------------------------------------------
+
+async fn get_job(
+    State(state): State<AppState>,
+    Extension(s): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(token): Path<String>,
+) -> Response {
+    let pool = &s.pool;
+    let kind = s.kind;
+
+    let owned = fetch_job(pool, kind, &token).await;
+    match &owned {
+        Some(j) if j.user_id == user.id => {}
+        _ => return err(StatusCode::NOT_FOUND, "任务不存在"),
+    }
+
+    advance_job(&state.http, pool, kind, &state.data_dir, &token).await;
+
+    match fetch_job(pool, kind, &token).await {
+        Some(j) if j.user_id == user.id => Json(JobView::from(&j)).into_response(),
+        _ => err(StatusCode::NOT_FOUND, "任务不存在"),
+    }
+}
+
+#[derive(Deserialize)]
+struct ListJobsQuery {
+    #[serde(default)]
+    page: i64,
+}
+
+#[derive(Serialize)]
+struct ListJobsResp {
+    jobs: Vec<JobView>,
+    has_more: bool,
+}
+
+async fn list_jobs(
+    Extension(s): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(q): Query<ListJobsQuery>,
+) -> Response {
+    let pool = &s.pool;
+    let kind = s.kind;
+    let page = q.page.max(0);
+    let offset = page * 24;
+
+    let cols = job_cols(kind);
+    let sql = db::q(
+        kind,
+        &format!("SELECT {cols} FROM video_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 25 OFFSET ?"),
+    );
+    let rows: Vec<JobRowRaw> = match sqlx::query_as(&sql).bind(user.id).bind(offset).fetch_all(pool).await {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    let mut jobs: Vec<JobRow> = rows.into_iter().map(JobRow::from).collect();
+
+    let has_more = jobs.len() > 24;
+    jobs.truncate(24);
+    let views: Vec<JobView> = jobs.iter().map(JobView::from).collect();
+    Json(ListJobsResp { jobs: views, has_more }).into_response()
+}
+
+async fn delete_job(
+    State(state): State<AppState>,
+    Extension(s): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(token): Path<String>,
+) -> Response {
+    let pool = &s.pool;
+    let kind = s.kind;
+
+    let job = match fetch_job(pool, kind, &token).await {
+        Some(j) if j.user_id == user.id => j,
+        _ => return err(StatusCode::NOT_FOUND, "任务不存在"),
+    };
+
+    if job.status == "pending" || job.status == "running" {
+        return err(StatusCode::CONFLICT, "任务进行中，暂不能删除");
+    }
+
+    if let Some(video_path) = job.video_path.as_deref() {
+        if let Some(name) = video_path.rsplit('/').next() {
+            let _ = tokio::fs::remove_file(state.data_dir.join("videos").join(name)).await;
+        }
+    }
+
+    let sql = db::q(kind, "DELETE FROM video_jobs WHERE id = ?");
+    let _ = sqlx::query(&sql).bind(job.id).execute(pool).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ---------------------------------------------------------------------------
+// MP4 static serving (with Range support)
+// ---------------------------------------------------------------------------
+
+async fn serve_video(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let path = state.data_dir.join("videos").join(&name);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let total = bytes.len() as u64;
+    if let Some(r) = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+    {
+        let mut it = r.splitn(2, '-');
+        let start: u64 = it.next().unwrap_or("").parse().unwrap_or(0);
+        let end: u64 = it.next().unwrap_or("").parse().unwrap_or(total - 1).min(total - 1);
+        if start > end || start >= total {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                .body(Body::empty())
+                .unwrap();
+        }
+        let chunk = bytes[start as usize..=(end as usize)].to_vec();
+        return Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+            .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
+            .body(Body::from(chunk))
+            .unwrap();
+    }
+    Response::builder()
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+pub fn public_routes() -> Router<AppState> {
+    Router::new().route("/videos/{name}", get(serve_video))
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/videos/models", get(user_list_models))
-        .route("/videos/jobs", post(create_job))
+        .route("/videos/jobs", post(create_job).get(list_jobs))
+        .route("/videos/jobs/{token}", get(get_job).delete(delete_job))
 }

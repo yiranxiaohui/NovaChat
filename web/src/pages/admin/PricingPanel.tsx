@@ -32,10 +32,12 @@ import {
   type ChannelProtocol,
   type ModelPrice,
   type PricingInput,
+  type VideoSizeRule,
 } from "@/lib/channels"
 
 const KINDS: ChannelKind[] = ["chat", "image", "video"]
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
+const SIZE_RE = /^\d+x\d+$/
 
 type DialogMode =
   | { kind: "create" }
@@ -94,6 +96,10 @@ export function PricingPanel() {
         enabled: !r.enabled,
         protocol: r.protocol,
         context_limit: r.context_limit,
+        base_credits: r.base_credits,
+        per_second: r.per_second,
+        allowed_seconds: r.allowed_seconds,
+        size_rules: r.size_rules,
       })
       await load()
     } catch (e) {
@@ -178,7 +184,9 @@ export function PricingPanel() {
                   </span>
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
-                  {r.cost_credits}
+                  {r.kind === "video"
+                    ? `${r.base_credits}+${r.per_second}/秒`
+                    : r.cost_credits}
                 </TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">
                   {r.context_limit != null
@@ -240,6 +248,8 @@ export function PricingPanel() {
   )
 }
 
+type FormState = PricingInput & { allowedSecondsText: string }
+
 function PricingDialog({
   mode,
   onClose,
@@ -249,7 +259,7 @@ function PricingDialog({
   onClose: () => void
   onSaved: () => void | Promise<void>
 }) {
-  const initial: PricingInput =
+  const initial: FormState =
     mode.kind === "edit"
       ? {
           model: mode.row.model,
@@ -259,6 +269,10 @@ function PricingDialog({
           enabled: mode.row.enabled,
           protocol: mode.row.protocol,
           context_limit: mode.row.context_limit,
+          base_credits: mode.row.base_credits,
+          per_second: mode.row.per_second,
+          allowedSecondsText: (mode.row.allowed_seconds ?? []).join(", "),
+          size_rules: mode.row.size_rules ?? [],
         }
       : {
           model: "",
@@ -268,8 +282,12 @@ function PricingDialog({
           enabled: true,
           protocol: "openai",
           context_limit: null,
+          base_credits: 0,
+          per_second: 0,
+          allowedSecondsText: "",
+          size_rules: [],
         }
-  const [form, setForm] = useState<PricingInput>(initial)
+  const [form, setForm] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [allModels, setAllModels] = useState<AllChannelModel[]>([])
@@ -306,13 +324,67 @@ function PricingDialog({
     .slice(0, 80)
   const currentMatch = suggestions.find((m) => m.model === form.model)
 
+  const isVideo = form.kind === "video"
+  const sizeRules = form.size_rules ?? []
+
+  function updateSizeRule(idx: number, patch: Partial<VideoSizeRule>) {
+    setForm({
+      ...form,
+      size_rules: sizeRules.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
+    })
+  }
+
+  function parseAllowedSeconds(): number[] | null {
+    const text = form.allowedSecondsText.trim()
+    if (!text) return []
+    const nums: number[] = []
+    for (const p of text.split(",").map((s) => s.trim()).filter(Boolean)) {
+      const n = Number(p)
+      if (!Number.isInteger(n) || n <= 0) return null
+      nums.push(n)
+    }
+    return nums
+  }
+
   async function submit() {
-    setSaving(true)
     setErr(null)
+    let allowedSeconds: number[] | null = null
+    if (isVideo) {
+      allowedSeconds = parseAllowedSeconds()
+      if (allowedSeconds === null) {
+        setErr("时长必须为正整数，多个用逗号分隔，如 4,8,12")
+        return
+      }
+      if (allowedSeconds.length === 0) {
+        setErr("允许时长不能为空")
+        return
+      }
+      if (sizeRules.length === 0) {
+        setErr("至少需要一个分辨率档位")
+        return
+      }
+      for (const r of sizeRules) {
+        if (!SIZE_RE.test(r.size.trim())) {
+          setErr(`分辨率格式不合法：「${r.size}」，应形如 1280x720`)
+          return
+        }
+        if (!(r.multiplier > 0) || !Number.isInteger(r.multiplier)) {
+          setErr(`倍率必须为正整数（百分比，100=原价），分辨率「${r.size}」`)
+          return
+        }
+      }
+    }
+    setSaving(true)
     try {
+      const { allowedSecondsText: _text, ...input } = form
+      void _text
       await channelsAdminApi.upsertPricing({
-        ...form,
+        ...input,
         display_name: form.display_name?.toString().trim() || null,
+        allowed_seconds: isVideo ? allowedSeconds : null,
+        size_rules: isVideo
+          ? sizeRules.map((r) => ({ size: r.size.trim(), multiplier: r.multiplier }))
+          : null,
       })
       await onSaved()
     } catch (e) {
@@ -327,7 +399,7 @@ function PricingDialog({
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent
         aria-describedby={undefined}
-        className="block rounded-xl bg-card p-5 sm:max-w-md"
+        className="block max-h-[85vh] overflow-y-auto rounded-xl bg-card p-5 sm:max-w-md"
       >
         <DialogHeader className="mb-3">
           <DialogTitle className="text-base">
@@ -460,30 +532,131 @@ function PricingDialog({
               自动路由到该协议的启用渠道，无需手动绑定。
             </p>
           </div>
-          <div>
-            <Label>积分/次</Label>
-            <Input
-              type="number"
-              min={0}
-              value={form.cost_credits}
-              onChange={(e) =>
-                setForm({ ...form, cost_credits: Number(e.target.value) || 0 })
-              }
-            />
-          </div>
-          <div>
-            <Label>上下文 (tokens)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={form.context_limit ?? ""}
-              onChange={(e) => {
-                const n = Math.floor(Number(e.target.value))
-                setForm({ ...form, context_limit: n > 0 ? n : null })
-              }}
-              placeholder="留空自动推断"
-            />
-          </div>
+          {!isVideo && (
+            <>
+              <div>
+                <Label>积分/次</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.cost_credits}
+                  onChange={(e) =>
+                    setForm({ ...form, cost_credits: Number(e.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div>
+                <Label>上下文 (tokens)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.context_limit ?? ""}
+                  onChange={(e) => {
+                    const n = Math.floor(Number(e.target.value))
+                    setForm({ ...form, context_limit: n > 0 ? n : null })
+                  }}
+                  placeholder="留空自动推断"
+                />
+              </div>
+            </>
+          )}
+          {isVideo && (
+            <>
+              <div>
+                <Label>基础积分</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.base_credits}
+                  onChange={(e) =>
+                    setForm({ ...form, base_credits: Number(e.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div>
+                <Label>积分/秒</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.per_second}
+                  onChange={(e) =>
+                    setForm({ ...form, per_second: Number(e.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div className="col-span-2">
+                <Label>允许时长（秒，逗号分隔）</Label>
+                <Input
+                  value={form.allowedSecondsText}
+                  onChange={(e) =>
+                    setForm({ ...form, allowedSecondsText: e.target.value })
+                  }
+                  placeholder="4, 8, 12"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  计费 = (基础积分 + 积分/秒 × 时长) × 分辨率倍率。
+                </p>
+              </div>
+              <div className="col-span-2">
+                <Label>分辨率倍率（%，100 = 原价）</Label>
+                <div className="mt-1 flex flex-col gap-2">
+                  {sizeRules.map((r, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <Input
+                        value={r.size}
+                        onChange={(e) => updateSizeRule(idx, { size: e.target.value })}
+                        placeholder="1280x720"
+                        className="flex-1"
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        step="1"
+                        value={r.multiplier}
+                        onChange={(e) =>
+                          updateSizeRule(idx, { multiplier: Number(e.target.value) || 0 })
+                        }
+                        placeholder="倍率(%)"
+                        className="w-24"
+                      />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            size_rules: sizeRules.filter((_, i) => i !== idx),
+                          })
+                        }
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  ))}
+                  {sizeRules.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      至少添加一个分辨率档位。
+                    </p>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    type="button"
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        size_rules: [...sizeRules, { size: "", multiplier: 100 }],
+                      })
+                    }
+                    className="self-start"
+                  >
+                    <Plus /> 添加档位
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
           <div className="col-span-2">
             <Label>显示名（可空）</Label>
             <Input

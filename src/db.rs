@@ -95,6 +95,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (28, include_str!("../migrations/sqlite/0028_worker_messages.sql")),
     (29, include_str!("../migrations/sqlite/0029_model_pricing_context.sql")),
     (30, include_str!("../migrations/sqlite/0030_video_generation.sql")),
+    (31, include_str!("../migrations/sqlite/0031_unify_video_pricing.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -127,6 +128,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (28, include_str!("../migrations/mysql/0028_worker_messages.sql")),
     (29, include_str!("../migrations/mysql/0029_model_pricing_context.sql")),
     (30, include_str!("../migrations/mysql/0030_video_generation.sql")),
+    (31, include_str!("../migrations/mysql/0031_unify_video_pricing.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -159,6 +161,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (28, include_str!("../migrations/postgres/0028_worker_messages.sql")),
     (29, include_str!("../migrations/postgres/0029_model_pricing_context.sql")),
     (30, include_str!("../migrations/postgres/0030_video_generation.sql")),
+    (31, include_str!("../migrations/postgres/0031_unify_video_pricing.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

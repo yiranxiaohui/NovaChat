@@ -38,7 +38,14 @@ pub struct Channel {
     pub priority: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SizeRule {
+    pub size: String,
+    /// Percent multiplier, 100 = 1.0x.
+    pub multiplier: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPrice {
     pub id: i64,
     pub model: String,
@@ -48,6 +55,11 @@ pub struct ModelPrice {
     pub enabled: bool,
     pub protocol: String,
     pub context_limit: Option<i64>,
+    // video-kind billing: cost = (base_credits + per_second * seconds) * size multiplier
+    pub base_credits: i64,
+    pub per_second: i64,
+    pub allowed_seconds: Option<Vec<i64>>,
+    pub size_rules: Option<Vec<SizeRule>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -409,49 +421,16 @@ pub async fn set_channel_models(
 // model_pricing
 // ---------------------------------------------------------------------------
 
-pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, sqlx::Error> {
-    let enabled_col = db::bool_as_int(kind, "enabled");
-    let sql = db::q(
-        kind,
-        &format!(
-            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol, context_limit \
-             FROM model_pricing ORDER BY kind, model"
-        ),
-    );
-    let rows: Vec<(i64, String, String, i64, Option<String>, i64, String, Option<i64>)> =
-        sqlx::query_as(&sql).fetch_all(pool).await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, model, kind_, cost_credits, display_name, enabled, protocol, context_limit)| ModelPrice {
-            id,
-            model,
-            kind: kind_,
-            cost_credits,
-            display_name,
-            enabled: enabled != 0,
-            protocol,
-            context_limit,
-        })
-        .collect())
-}
+type PriceRow = (
+    i64, String, String, i64, Option<String>, i64, String, Option<i64>,
+    i64, i64, Option<String>, Option<String>,
+);
 
-#[allow(dead_code)] // consumed by Task 2.3 try_deduct rewrite
-pub async fn get_price(
-    pool: &Pool,
-    kind: DbKind,
-    model: &str,
-) -> Result<Option<ModelPrice>, sqlx::Error> {
-    let enabled_col = db::bool_as_int(kind, "enabled");
-    let sql = db::q(
-        kind,
-        &format!(
-            "SELECT id, model, kind, cost_credits, display_name, {enabled_col}, protocol, context_limit \
-             FROM model_pricing WHERE model = ?"
-        ),
-    );
-    let row: Option<(i64, String, String, i64, Option<String>, i64, String, Option<i64>)> =
-        sqlx::query_as(&sql).bind(model).fetch_optional(pool).await?;
-    Ok(row.map(|(id, model, kind_, cost_credits, display_name, enabled, protocol, context_limit)| ModelPrice {
+fn parse_price_row(
+    (id, model, kind_, cost_credits, display_name, enabled, protocol, context_limit,
+     base_credits, per_second, allowed_seconds, size_rules): PriceRow,
+) -> ModelPrice {
+    ModelPrice {
         id,
         model,
         kind: kind_,
@@ -460,13 +439,44 @@ pub async fn get_price(
         enabled: enabled != 0,
         protocol,
         context_limit,
-    }))
+        base_credits,
+        per_second,
+        allowed_seconds: allowed_seconds.map(|s| serde_json::from_str(&s).unwrap_or_default()),
+        size_rules: size_rules.map(|s| serde_json::from_str(&s).unwrap_or_default()),
+    }
+}
+
+const PRICE_COLS: &str = "id, model, kind, cost_credits, display_name, {enabled_col}, protocol, \
+     context_limit, base_credits, per_second, allowed_seconds, size_rules";
+
+fn price_select(kind: DbKind, tail: &str) -> String {
+    let enabled_col = db::bool_as_int(kind, "enabled");
+    let cols = PRICE_COLS.replace("{enabled_col}", &enabled_col);
+    db::q(kind, &format!("SELECT {cols} FROM model_pricing {tail}"))
+}
+
+pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, sqlx::Error> {
+    let sql = price_select(kind, "ORDER BY kind, model");
+    let rows: Vec<PriceRow> = sqlx::query_as(&sql).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(parse_price_row).collect())
+}
+
+#[allow(dead_code)] // consumed by Task 2.3 try_deduct rewrite
+pub async fn get_price(
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+) -> Result<Option<ModelPrice>, sqlx::Error> {
+    let sql = price_select(kind, "WHERE model = ?");
+    let row: Option<PriceRow> = sqlx::query_as(&sql).bind(model).fetch_optional(pool).await?;
+    Ok(row.map(parse_price_row))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PricingInput {
     pub model: String,
     pub kind: String,
+    #[serde(default)]
     pub cost_credits: i64,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -476,8 +486,58 @@ pub struct PricingInput {
     pub protocol: String,
     #[serde(default)]
     pub context_limit: Option<i64>,
+    // video-kind billing fields; ignored for chat/image
+    #[serde(default)]
+    pub base_credits: i64,
+    #[serde(default)]
+    pub per_second: i64,
+    #[serde(default)]
+    pub allowed_seconds: Option<Vec<i64>>,
+    #[serde(default)]
+    pub size_rules: Option<Vec<SizeRule>>,
 }
 fn default_protocol() -> String { "openai".to_string() }
+
+/// Video rows must carry a complete, well-formed rule set; chat/image rows
+/// must not carry one (their video columns are stored as NULL).
+pub fn validate_pricing_input(input: &PricingInput) -> Result<(), String> {
+    if input.cost_credits < 0 {
+        return Err("cost_credits must be >= 0".into());
+    }
+    if input.kind != "video" {
+        return Ok(());
+    }
+    if input.base_credits < 0 {
+        return Err("base_credits 必须 >= 0".into());
+    }
+    if input.per_second < 0 {
+        return Err("per_second 必须 >= 0".into());
+    }
+    let seconds = input.allowed_seconds.as_deref().unwrap_or(&[]);
+    if seconds.is_empty() {
+        return Err("allowed_seconds 不能为空".into());
+    }
+    if seconds.iter().any(|s| *s <= 0) {
+        return Err("allowed_seconds 中的时长必须大于 0".into());
+    }
+    let rules = input.size_rules.as_deref().unwrap_or(&[]);
+    if rules.is_empty() {
+        return Err("size_rules 不能为空".into());
+    }
+    for r in rules {
+        let ok = r
+            .size
+            .split_once('x')
+            .is_some_and(|(w, h)| w.parse::<u32>().is_ok() && h.parse::<u32>().is_ok());
+        if !ok {
+            return Err(format!("size 格式不合法: {}", r.size));
+        }
+        if r.multiplier <= 0 {
+            return Err(format!("size {} 的 multiplier 必须大于 0", r.size));
+        }
+    }
+    Ok(())
+}
 
 pub async fn upsert_price(
     pool: &Pool,
@@ -487,38 +547,63 @@ pub async fn upsert_price(
     let now = db::now_expr(kind);
     let sql = match kind {
         DbKind::Sqlite => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, \
+             base_credits, per_second, allowed_seconds, size_rules, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now}) \
              ON CONFLICT(model) DO UPDATE SET kind = excluded.kind, cost_credits = excluded.cost_credits, \
              display_name = excluded.display_name, enabled = excluded.enabled, protocol = excluded.protocol, \
-             context_limit = excluded.context_limit, updated_at = {now}"
+             context_limit = excluded.context_limit, base_credits = excluded.base_credits, \
+             per_second = excluded.per_second, allowed_seconds = excluded.allowed_seconds, \
+             size_rules = excluded.size_rules, updated_at = {now}"
         ),
         DbKind::Postgres => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, \
+             base_credits, per_second, allowed_seconds, size_rules, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now}) \
              ON CONFLICT (model) DO UPDATE SET kind = EXCLUDED.kind, cost_credits = EXCLUDED.cost_credits, \
              display_name = EXCLUDED.display_name, enabled = EXCLUDED.enabled, protocol = EXCLUDED.protocol, \
-             context_limit = EXCLUDED.context_limit, updated_at = {now}"
+             context_limit = EXCLUDED.context_limit, base_credits = EXCLUDED.base_credits, \
+             per_second = EXCLUDED.per_second, allowed_seconds = EXCLUDED.allowed_seconds, \
+             size_rules = EXCLUDED.size_rules, updated_at = {now}"
         ),
         DbKind::Mysql => format!(
-            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, {now}) \
+            "INSERT INTO model_pricing (model, kind, cost_credits, display_name, enabled, protocol, context_limit, \
+             base_credits, per_second, allowed_seconds, size_rules, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {now}) \
              ON DUPLICATE KEY UPDATE kind = VALUES(kind), cost_credits = VALUES(cost_credits), \
              display_name = VALUES(display_name), enabled = VALUES(enabled), protocol = VALUES(protocol), \
-             context_limit = VALUES(context_limit), updated_at = {now}"
+             context_limit = VALUES(context_limit), base_credits = VALUES(base_credits), \
+             per_second = VALUES(per_second), allowed_seconds = VALUES(allowed_seconds), \
+             size_rules = VALUES(size_rules), updated_at = {now}"
         ),
     };
     let sql = db::q(kind, &sql);
     let enabled_v: i64 = if input.enabled { 1 } else { 0 };
     let ctx: Option<i64> = input.context_limit.filter(|n| *n > 0);
+    let is_video = input.kind == "video";
+    let allowed_seconds: Option<String> = if is_video {
+        input.allowed_seconds.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
+    } else {
+        None
+    };
+    let size_rules: Option<String> = if is_video {
+        input.size_rules.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
+    } else {
+        None
+    };
     let q = sqlx::query(&sql)
         .bind(&input.model)
         .bind(&input.kind)
         .bind(input.cost_credits)
         .bind(input.display_name.as_deref());
     let q = if matches!(kind, DbKind::Postgres) { q.bind(input.enabled) } else { q.bind(enabled_v) };
-    let q = q.bind(&input.protocol);
-    let q = q.bind(ctx);
+    let q = q
+        .bind(&input.protocol)
+        .bind(ctx)
+        .bind(if is_video { input.base_credits } else { 0 })
+        .bind(if is_video { input.per_second } else { 0 })
+        .bind(allowed_seconds)
+        .bind(size_rules);
     q.execute(pool).await.map(|_| ())
 }
 
@@ -790,8 +875,8 @@ async fn admin_upsert_pricing(
     if let Err(e) = validate_protocol_kind(&input.protocol, &input.kind) {
         return err(StatusCode::BAD_REQUEST, e);
     }
-    if input.cost_credits < 0 {
-        return err(StatusCode::BAD_REQUEST, "cost_credits must be >= 0");
+    if let Err(e) = validate_pricing_input(&input) {
+        return err(StatusCode::BAD_REQUEST, e);
     }
     match upsert_price(&s.pool, s.kind, &input).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),

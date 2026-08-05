@@ -68,7 +68,6 @@ import {
 } from "@/lib/credits"
 import { ChannelsPanel } from "./admin/ChannelsPanel"
 import { PricingPanel } from "./admin/PricingPanel"
-import { VideoPricingPanel } from "./admin/VideoPricingPanel"
 import { StatsView } from "@/components/app/StatsView"
 import {
   adminPaymentsApi,
@@ -85,7 +84,6 @@ type Section =
   | "invites"
   | "channels"
   | "pricing"
-  | "video-pricing"
   | "shared"
   | "email"
   | "system"
@@ -98,7 +96,6 @@ const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?
   { key: "invites", label: "邀请", icon: Ticket },
   { key: "channels", label: "上游渠道", icon: Route },
   { key: "pricing", label: "模型计费", icon: Tag },
-  { key: "video-pricing", label: "视频定价", icon: Tag },
   { key: "email", label: "邮箱 / SMTP", icon: Mail },
   { key: "system", label: "系统信息", icon: Server },
 ]
@@ -223,7 +220,6 @@ export default function AdminPage() {
           {section === "invites" && <InvitesPanel />}
           {section === "channels" && <ChannelsPanel />}
           {section === "pricing" && <PricingPanel />}
-          {section === "video-pricing" && <VideoPricingPanel />}
           {section === "email" && <EmailPanel />}
           {section === "system" && <SystemPanel />}
         </main>

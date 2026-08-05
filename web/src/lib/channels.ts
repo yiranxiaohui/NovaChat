@@ -71,6 +71,8 @@ export type ChannelModelEntry = {
 // pricing
 // ---------------------------------------------------------------------------
 
+export type VideoSizeRule = { size: string; multiplier: number }
+
 export type ModelPrice = {
   id: number
   model: string
@@ -80,6 +82,11 @@ export type ModelPrice = {
   enabled: boolean
   protocol: ChannelProtocol
   context_limit: number | null
+  // video-kind billing: (base_credits + per_second × 秒) × 尺寸倍率
+  base_credits: number
+  per_second: number
+  allowed_seconds: number[] | null
+  size_rules: VideoSizeRule[] | null
 }
 
 export type PricingInput = {
@@ -90,6 +97,10 @@ export type PricingInput = {
   enabled?: boolean
   protocol: ChannelProtocol
   context_limit?: number | null
+  base_credits?: number
+  per_second?: number
+  allowed_seconds?: number[] | null
+  size_rules?: VideoSizeRule[] | null
 }
 
 export type AllChannelModel = {
@@ -206,52 +217,3 @@ export const channelsAdminApi = {
   },
 }
 
-// ---------------------------------------------------------------------------
-// video pricing
-// ---------------------------------------------------------------------------
-
-export type VideoSizeRule = { size: string; multiplier: number }
-
-export type VideoPricing = {
-  id: number
-  model: string
-  display_name: string | null
-  enabled: boolean
-  base_credits: number
-  per_second: number
-  allowed_seconds: number[]
-  size_rules: VideoSizeRule[]
-}
-
-export type VideoPricingInput = {
-  model: string
-  display_name?: string | null
-  enabled?: boolean
-  base_credits: number
-  per_second: number
-  allowed_seconds: number[]
-  size_rules: VideoSizeRule[]
-}
-
-export async function listVideoPricing(): Promise<VideoPricing[]> {
-  const res = await fetch("/api/admin/video-pricing", { credentials: "same-origin" })
-  return jsonOrThrow(res)
-}
-
-export async function upsertVideoPricing(input: VideoPricingInput): Promise<void> {
-  const res = await fetch("/api/admin/video-pricing", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  })
-  return okOrThrow(res)
-}
-
-export async function deleteVideoPricing(model: string): Promise<void> {
-  const res = await fetch(`/api/admin/video-pricing/${encodeURIComponent(model)}`, {
-    method: "DELETE",
-    credentials: "same-origin",
-  })
-  return okOrThrow(res)
-}

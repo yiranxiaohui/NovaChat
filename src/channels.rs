@@ -734,7 +734,7 @@ async fn admin_list_all_channel_models(
         .into_iter()
         .filter(|c| c.enabled)
         .filter(|c| match flavor.as_deref() {
-            Some(f) if matches!(f, "chat" | "image") => c.kind == f,
+            Some(f) if matches!(f, "chat" | "image" | "video") => c.kind == f,
             _ => true,
         })
         .collect();
@@ -827,8 +827,11 @@ fn validate_protocol_kind(protocol: &str, kind: &str) -> Result<(), String> {
     if !matches!(protocol, "openai" | "claude" | "gemini") {
         return Err("protocol must be openai/claude/gemini".into());
     }
-    if !matches!(kind, "chat" | "image") {
-        return Err("kind must be chat/image".into());
+    if !matches!(kind, "chat" | "image" | "video") {
+        return Err("kind must be chat/image/video".into());
+    }
+    if kind == "video" && protocol != "openai" {
+        return Err("视频渠道仅支持 openai 协议".into());
     }
     Ok(())
 }

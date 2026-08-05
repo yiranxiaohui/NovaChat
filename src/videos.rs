@@ -850,6 +850,75 @@ pub async fn advance_job(
     release_lock(pool, kind, token).await;
 }
 
+/// Runs every ~60s from main. Three duties, cheap when idle:
+/// 1) repair hung polling locks, 2) time out + refund stale jobs (>2h),
+/// 3) advance orphaned jobs nobody is actively polling.
+pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, data_dir: &std::path::Path) {
+    let bt = db::bool_true(kind);
+    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) { "0" } else { "FALSE" };
+
+    // 1. Repair hung polling locks (crashed mid-poll > 5 min ago).
+    let sql = db::q(
+        kind,
+        &format!(
+            "UPDATE video_jobs SET polling = {bf} \
+             WHERE polling = {bt} AND last_polled_at < {}",
+            minutes_ago_expr(kind, 5)
+        ),
+    );
+    let _ = sqlx::query(&sql).execute(pool).await;
+
+    // 2. Timeout: > 2h and still not terminal → fail + refund.
+    let stale: Vec<(i64, i64, String, i64)> = {
+        let sql = db::q(
+            kind,
+            &format!(
+                "SELECT id, user_id, model, cost_credits FROM video_jobs \
+                 WHERE status IN ('pending','running') AND created_at < {}",
+                minutes_ago_expr(kind, 120)
+            ),
+        );
+        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
+    };
+    for (id, user_id, model, cost) in stale {
+        let now = db::now_expr(kind);
+        let sql = db::q(
+            kind,
+            &format!(
+                "UPDATE video_jobs SET status = 'failed', error = '生成超时', finished_at = {now} \
+                 WHERE id = ? AND status IN ('pending','running')"
+            ),
+        );
+        let n = sqlx::query(&sql)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0);
+        if n > 0 {
+            refund_job(pool, kind, id, user_id, &model, cost, "timeout").await;
+        }
+    }
+
+    // 3. Advance orphans: running/pending not polled for 10 min (user closed page).
+    let orphans: Vec<(String,)> = {
+        let sql = db::q(
+            kind,
+            &format!(
+                "SELECT token FROM video_jobs \
+                 WHERE status IN ('pending','running') \
+                   AND (last_polled_at IS NULL OR last_polled_at < {}) \
+                 ORDER BY created_at ASC LIMIT 20",
+                minutes_ago_expr(kind, 10)
+            ),
+        );
+        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
+    };
+    for (token,) in orphans {
+        advance_job(http, pool, kind, data_dir, &token).await;
+    }
+}
+
 async fn poll_upstream_once(
     http: &reqwest::Client,
     pool: &Pool,

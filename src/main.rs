@@ -1215,6 +1215,22 @@ async fn main() {
         }
     }
 
+    // Video-generation sweeper: fixes hung polling locks, times out stale
+    // jobs (>2h) with a refund, and advances orphaned jobs whose owner closed
+    // the page before polling completed. Cheap no-op when there's no video
+    // activity. Runs every 60s, separate from the rate-limiter pruner above
+    // because `state.installed` isn't populated yet at that point.
+    let sweeper_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let installed = sweeper_state.installed.read().await.clone();
+            if let Some(s) = installed {
+                videos::sweep(&sweeper_state.http, &s.pool, s.kind, &sweeper_state.data_dir).await;
+            }
+        }
+    });
+
     let addr = std::env::var("NOVACHAT_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     println!("NovaChat listening on http://{addr}");

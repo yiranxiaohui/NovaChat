@@ -2,6 +2,11 @@
 -- video rows carry base_credits/per_second/allowed_seconds/size_rules;
 -- chat/image rows keep using cost_credits and leave the new columns NULL.
 
+-- Widen to video_pricing's width first so the INSERT below can't truncate
+-- (191 = utf8mb4 unique-index limit).
+ALTER TABLE model_pricing MODIFY model VARCHAR(191) NOT NULL;
+ALTER TABLE model_pricing MODIFY display_name VARCHAR(191) NULL;
+
 ALTER TABLE model_pricing ADD COLUMN base_credits BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE model_pricing ADD COLUMN per_second BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE model_pricing ADD COLUMN allowed_seconds LONGTEXT NULL;

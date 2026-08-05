@@ -461,7 +461,6 @@ pub async fn list_pricing(pool: &Pool, kind: DbKind) -> Result<Vec<ModelPrice>, 
     Ok(rows.into_iter().map(parse_price_row).collect())
 }
 
-#[allow(dead_code)] // consumed by Task 2.3 try_deduct rewrite
 pub async fn get_price(
     pool: &Pool,
     kind: DbKind,
@@ -501,6 +500,9 @@ fn default_protocol() -> String { "openai".to_string() }
 /// Video rows must carry a complete, well-formed rule set; chat/image rows
 /// must not carry one (their video columns are stored as NULL).
 pub fn validate_pricing_input(input: &PricingInput) -> Result<(), String> {
+    if input.model.trim().is_empty() {
+        return Err("model 不能为空".into());
+    }
     if input.cost_credits < 0 {
         return Err("cost_credits must be >= 0".into());
     }
@@ -952,6 +954,8 @@ async fn user_list_platform_models(
     let mut out: Vec<PlatformModel> = Vec::new();
     for p in pricing {
         if !p.enabled { continue; }
+        // video has its own listing (/videos/models) with full billing rules.
+        if p.kind == "video" { continue; }
         if let Some(ref f) = flavor_filter {
             if &p.kind != f { continue; }
         }

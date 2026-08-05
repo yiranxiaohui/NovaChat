@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom"
 import {
   BookMarked,
   Bot,
+  Clapperboard,
   ImageIcon,
   Images,
   LogOut,
@@ -252,6 +253,11 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         >
           <Link to="/studio" onClick={() => onNavigate?.()} title="多轮对话式生图（Responses API）">
             <ImageIcon className="size-4" /> 图像工作室
+          </Link>
+        </Button>
+        <Button asChild variant="outline" size="sm" className="w-full justify-start gap-2">
+          <Link to="/videos" onClick={() => onNavigate?.()} title="文生视频 / 图生视频">
+            <Clapperboard className="size-4" /> 视频工作室
           </Link>
         </Button>
 

@@ -23,7 +23,7 @@ async function okOrThrow(res: Response): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type ChannelProtocol = "openai" | "claude" | "gemini"
-export type ChannelKind = "chat" | "image"
+export type ChannelKind = "chat" | "image" | "video"
 
 export type Channel = {
   id: number
@@ -205,4 +205,54 @@ export const channelsAdminApi = {
       })
     )
   },
+}
+
+// ---------------------------------------------------------------------------
+// video pricing
+// ---------------------------------------------------------------------------
+
+export type VideoSizeRule = { size: string; multiplier: number }
+
+export type VideoPricing = {
+  id: number
+  model: string
+  display_name: string | null
+  enabled: boolean
+  base_credits: number
+  per_second: number
+  allowed_seconds: number[]
+  size_rules: VideoSizeRule[]
+}
+
+export type VideoPricingInput = {
+  model: string
+  display_name?: string | null
+  enabled?: boolean
+  base_credits: number
+  per_second: number
+  allowed_seconds: number[]
+  size_rules: VideoSizeRule[]
+}
+
+export async function listVideoPricing(): Promise<VideoPricing[]> {
+  const res = await fetch("/api/admin/video-pricing", { credentials: "same-origin" })
+  return jsonOrThrow(res)
+}
+
+export async function upsertVideoPricing(input: VideoPricingInput): Promise<void> {
+  const res = await fetch("/api/admin/video-pricing", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  })
+  return okOrThrow(res)
+}
+
+export async function deleteVideoPricing(model: string): Promise<void> {
+  const res = await fetch(`/api/admin/video-pricing/${encodeURIComponent(model)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  })
+  return okOrThrow(res)
 }

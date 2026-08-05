@@ -35,7 +35,12 @@ import {
 } from "@/lib/channels"
 
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
-const KINDS: ChannelKind[] = ["chat", "image"]
+const KINDS: ChannelKind[] = ["chat", "image", "video"]
+const KIND_LABELS: Record<ChannelKind, string> = {
+  chat: "对话",
+  image: "生图",
+  video: "视频",
+}
 
 type DialogMode =
   | { kind: "create" }
@@ -313,6 +318,7 @@ function ChannelDialog({
             <Label>协议</Label>
             <Select
               value={form.protocol}
+              disabled={form.kind === "video"}
               onValueChange={(v) =>
                 setForm({ ...form, protocol: v as ChannelProtocol })
               }
@@ -328,12 +334,25 @@ function ChannelDialog({
                 ))}
               </SelectContent>
             </Select>
+            {form.kind === "video" && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                视频渠道仅支持 OpenAI 兼容协议。
+              </p>
+            )}
           </div>
           <div>
             <Label>类型</Label>
             <Select
               value={form.kind}
-              onValueChange={(v) => setForm({ ...form, kind: v as ChannelKind })}
+              onValueChange={(v) => {
+                const kind = v as ChannelKind
+                setForm({
+                  ...form,
+                  kind,
+                  // 视频渠道目前只接 OpenAI 兼容协议，后端也会校验兜底。
+                  protocol: kind === "video" ? "openai" : form.protocol,
+                })
+              }}
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -341,7 +360,7 @@ function ChannelDialog({
               <SelectContent>
                 {KINDS.map((k) => (
                   <SelectItem key={k} value={k}>
-                    {k}
+                    {KIND_LABELS[k]}
                   </SelectItem>
                 ))}
               </SelectContent>

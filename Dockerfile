@@ -47,7 +47,7 @@ RUN cargo build --release --locked -p novachat \
 # ---- Stage 3: minimal runtime image --------------------------------------
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini gosu \
+    && apt-get install -y --no-install-recommends ca-certificates tini gosu ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/sbin/gosu /usr/local/bin/su-exec
 

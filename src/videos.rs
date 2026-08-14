@@ -10,6 +10,7 @@
 
 use axum::{
     Extension, Json, Router,
+    body::to_bytes,
     body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -184,6 +185,80 @@ struct CreateJobReq {
 struct CreateJobResp {
     token: String,
     cost: i64,
+}
+
+pub(crate) struct WorkflowVideoRequest {
+    pub model: String,
+    pub prompt: String,
+    pub seconds: i64,
+    pub size: String,
+    pub input_image_path: Option<String>,
+}
+
+pub(crate) struct WorkflowVideoState {
+    pub status: String,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+}
+
+pub(crate) async fn start_workflow_video(
+    state: AppState,
+    installed: InstalledState,
+    user_id: i64,
+    request: WorkflowVideoRequest,
+) -> Result<String, String> {
+    let response = create_job(
+        State(state),
+        Extension(installed),
+        Extension(CurrentUser { id: user_id }),
+        Json(CreateJobReq {
+            model: request.model,
+            prompt: request.prompt,
+            seconds: request.seconds,
+            size: request.size,
+            input_image_path: request.input_image_path,
+        }),
+    )
+    .await;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| format!("读取视频任务响应失败: {e}"))?;
+    if !status.is_success() {
+        let parsed = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| value.get("error").and_then(|v| v.as_str()).map(str::to_string));
+        return Err(parsed.unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string()));
+    }
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value.get("token").and_then(|v| v.as_str()).map(str::to_string))
+        .ok_or_else(|| "视频任务响应缺少 token".to_string())
+}
+
+pub(crate) async fn workflow_video_state(
+    state: &AppState,
+    installed: &InstalledState,
+    user_id: i64,
+    token: &str,
+) -> Result<WorkflowVideoState, String> {
+    advance_job(
+        &state.http,
+        &installed.pool,
+        installed.kind,
+        &state.storage,
+        token,
+    )
+    .await;
+    let row = fetch_job(&installed.pool, installed.kind, token)
+        .await
+        .filter(|job| job.user_id == user_id)
+        .ok_or_else(|| "视频任务不存在".to_string())?;
+    Ok(WorkflowVideoState {
+        status: row.status,
+        output_path: row.video_path,
+        error: row.error,
+    })
 }
 
 /// Refund a job's cost_credits exactly once. The UPDATE-guard makes retries

@@ -9,6 +9,7 @@ import AdminPage from "@/pages/AdminPage"
 import PaymentReturnPage from "@/pages/PaymentReturnPage"
 import ImageStudioPage from "@/pages/ImageStudioPage"
 import VideoStudioPage from "@/pages/VideoStudioPage"
+import WorkflowStudioPage from "@/pages/WorkflowStudioPage"
 import ImagePlazaPage from "@/pages/ImagePlazaPage"
 import SharedConversationPage from "@/pages/SharedConversationPage"
 import { Toaster } from "@/components/ui/sonner"
@@ -140,6 +141,14 @@ export default function App() {
               element={
                 <Protected>
                   <VideoStudioPage />
+                </Protected>
+              }
+            />
+            <Route
+              path="/workflows"
+              element={
+                <Protected>
+                  <WorkflowStudioPage />
                 </Protected>
               }
             />

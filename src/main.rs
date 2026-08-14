@@ -22,6 +22,7 @@ mod studio;
 mod storage;
 mod videos;
 mod worker;
+mod workflows;
 
 use axum::{
     Json, Router,
@@ -71,6 +72,8 @@ pub struct AppState {
     pub guest_proxy_limiter: std::sync::Arc<rate_limit::RateLimiter>,
     /// Online worker registry: worker_id -> handle with WS send channel.
     pub workers: crate::worker::WorkerRegistry,
+    /// Bounds CPU-heavy FFmpeg trim/merge work across all workflow runs.
+    pub media_process_slots: std::sync::Arc<tokio::sync::Semaphore>,
     /// Human-in-the-loop approval map: call_id -> oneshot used by the agent
     /// loop to pause on shell/write_file until the user approves via REST.
     pub approvals: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
@@ -1193,6 +1196,7 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::admin_routes())
         .merge(studio::routes())
         .merge(videos::routes())
+        .merge(workflows::routes())
         .merge(invites::routes())
         .merge(search::routes())
         .merge(sharing::user_routes())
@@ -1309,6 +1313,13 @@ async fn main() {
             lim
         },
         workers: crate::worker::WorkerRegistry::new(),
+        media_process_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+            std::env::var("NOVACHAT_MEDIA_CONCURRENCY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(2)
+                .clamp(1, 8),
+        )),
         approvals: Default::default(),
     };
 
@@ -1334,6 +1345,7 @@ async fn main() {
             Ok(s) => {
                 images::cleanup_stale_jobs(&s.pool, s.kind).await;
                 studio::cleanup_stale_jobs(&s.pool, s.kind).await;
+                workflows::recover(&s.pool, s.kind).await;
                 *state.installed.write().await = Some(s.clone());
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }
@@ -1359,6 +1371,19 @@ async fn main() {
             let installed = sweeper_state.installed.read().await.clone();
             if let Some(s) = installed {
                 videos::sweep(&sweeper_state.http, &s.pool, s.kind, &sweeper_state.storage).await;
+            }
+        }
+    });
+
+    // Workflow runs normally have a short-lived per-run driver. This sweeper
+    // resumes them after restarts and covers any driver interrupted by a panic.
+    let workflow_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let installed = workflow_state.installed.read().await.clone();
+            if let Some(installed) = installed {
+                workflows::sweep(&workflow_state, &installed).await;
             }
         }
     });

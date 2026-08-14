@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use axum::{
     Extension, Json, Router,
+    body::to_bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -247,6 +248,87 @@ struct GenerateReq {
 #[derive(Serialize)]
 struct GenerateCreated {
     token: String,
+}
+
+/// Platform-backed image request used by the persistent workflow executor.
+/// Workflow definitions intentionally never persist BYOK credentials.
+pub(crate) struct WorkflowImageRequest {
+    pub prompt: String,
+    pub model: String,
+    pub size: Option<String>,
+    pub quality: Option<String>,
+    pub style: Option<String>,
+    pub image_data_urls: Vec<String>,
+}
+
+pub(crate) struct WorkflowImageState {
+    pub status: String,
+    pub output_path: Option<String>,
+    pub error: Option<String>,
+}
+
+pub(crate) async fn start_workflow_generation(
+    state: AppState,
+    installed: InstalledState,
+    user_id: i64,
+    request: WorkflowImageRequest,
+) -> Result<String, String> {
+    let response = submit_generate(
+        State(state),
+        Extension(installed),
+        Extension(CurrentUser { id: user_id }),
+        HeaderMap::new(),
+        Json(GenerateReq {
+            prompt: request.prompt,
+            model: Some(request.model),
+            size: request.size,
+            quality: request.quality,
+            style: request.style,
+            image_data_url: None,
+            image_data_urls: (!request.image_data_urls.is_empty())
+                .then_some(request.image_data_urls),
+            n: Some(1),
+            negative_prompt: None,
+            seed: None,
+            background: None,
+        }),
+    )
+    .await;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .map_err(|e| format!("读取图片任务响应失败: {e}"))?;
+    if !status.is_success() {
+        return Err(String::from_utf8_lossy(&bytes).to_string());
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|value| value.get("token").and_then(Value::as_str).map(str::to_string))
+        .ok_or_else(|| "图片任务响应缺少 token".to_string())
+}
+
+pub(crate) async fn workflow_generation_state(
+    pool: &db::Pool,
+    kind: db::DbKind,
+    user_id: i64,
+    token: &str,
+) -> Result<WorkflowImageState, String> {
+    let sql = db::q(
+        kind,
+        "SELECT status, image_path, error FROM studio_generations WHERE token = ? AND user_id = ?",
+    );
+    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(&sql)
+        .bind(token)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    row.map(|(status, output_path, error)| WorkflowImageState {
+        status,
+        output_path,
+        error,
+    })
+    .ok_or_else(|| "图片任务不存在".to_string())
 }
 
 async fn insert_pending(

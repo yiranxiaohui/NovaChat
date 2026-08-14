@@ -17,6 +17,7 @@ import {
   Sparkles,
   Trash2,
   User,
+  Workflow,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -272,7 +273,7 @@ export function Sidebar({
           <span className="font-semibold">开启新对话</span>
         </Button>
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <Link
             to="/studio"
             onClick={() => onNavigate?.()}
@@ -294,6 +295,17 @@ export function Sidebar({
               <Clapperboard className="size-4" />
             </span>
             <span className="text-xs font-medium">视频工作室</span>
+          </Link>
+          <Link
+            to="/workflows"
+            onClick={() => onNavigate?.()}
+            title="图片 / 多视频 / 裁剪 / 合并节点画布"
+            className="group flex min-h-20 flex-col justify-between rounded-xl border border-sidebar-border bg-background/45 p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-background/80 hover:shadow-md"
+          >
+            <span className="grid size-8 place-items-center rounded-lg bg-emerald-500/10 text-emerald-600 transition-colors group-hover:bg-emerald-500/15 dark:text-emerald-300">
+              <Workflow className="size-4" />
+            </span>
+            <span className="text-xs font-medium">流水线</span>
           </Link>
         </div>
 

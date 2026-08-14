@@ -52,6 +52,18 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 
 测试在本地跑：`cargo test` + `cd web && npx tsc -b`。CI 只负责构建镜像、不跑测试。
 
+## 创作流水线
+
+`/workflows` 提供可拖拽、可连线的媒体节点画布，内置图片生成、视频生成、
+视频裁剪和视频合并节点。同一张图片可以分支到多个视频节点，合并节点会按连线
+创建顺序拼接视频。运行状态和节点产物持久化到数据库，页面关闭或服务重启后可
+继续跟踪；失败节点支持从该节点向下重试。
+
+裁剪和合并依赖运行环境中的 `ffmpeg` / `ffprobe`，官方容器镜像已内置。
+`NOVACHAT_FFMPEG`、`NOVACHAT_FFPROBE` 可指定自定义可执行文件路径，
+`NOVACHAT_MEDIA_CONCURRENCY` 控制全局并发媒体处理数（默认 `2`，范围 `1～8`），
+`NOVACHAT_MEDIA_TIMEOUT_SECONDS` 控制单次处理超时（默认 `7200` 秒）。
+
 ## S3 媒体存储
 
 NovaChat 默认把图片、视频和头像保存在 `NOVACHAT_DATA_DIR`。可在

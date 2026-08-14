@@ -489,6 +489,15 @@ struct NodeRunRow {
     finished_at: Option<String>,
 }
 
+#[derive(Clone, sqlx::FromRow)]
+struct RunLogRow {
+    id: i64,
+    node_key: Option<String>,
+    level: String,
+    message: String,
+    created_at: String,
+}
+
 #[derive(Serialize)]
 struct NodeRunView {
     node_id: String,
@@ -502,6 +511,15 @@ struct NodeRunView {
 }
 
 #[derive(Serialize)]
+struct RunLogView {
+    id: i64,
+    node_id: Option<String>,
+    level: String,
+    message: String,
+    created_at: String,
+}
+
+#[derive(Serialize)]
 struct RunView {
     token: String,
     workflow_id: Option<i64>,
@@ -512,6 +530,7 @@ struct RunView {
     created_at: String,
     finished_at: Option<String>,
     nodes: Vec<NodeRunView>,
+    logs: Vec<RunLogView>,
 }
 
 fn paths_of(row: &NodeRunRow) -> Vec<String> {
@@ -579,7 +598,49 @@ async fn fetch_node_runs(pool: &db::Pool, kind: db::DbKind, run_id: i64) -> Vec<
         .unwrap_or_default()
 }
 
-async fn run_view(pool: &db::Pool, kind: db::DbKind, run: RunRow) -> RunView {
+async fn fetch_run_logs(pool: &db::Pool, kind: db::DbKind, run_id: i64) -> Vec<RunLogRow> {
+    let sql = db::q(
+        kind,
+        "SELECT id, node_key, level, message, created_at FROM workflow_run_logs \
+         WHERE run_id = ? ORDER BY id DESC LIMIT 500",
+    );
+    let mut rows: Vec<RunLogRow> = sqlx::query_as(&sql)
+        .bind(run_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    rows.reverse();
+    rows
+}
+
+async fn append_run_log(
+    pool: &db::Pool,
+    kind: db::DbKind,
+    run_id: i64,
+    node_key: Option<&str>,
+    level: &str,
+    message: &str,
+) {
+    let message: String = message.chars().take(2000).collect();
+    let sql = db::q(
+        kind,
+        "INSERT INTO workflow_run_logs (run_id, node_key, level, message) VALUES (?, ?, ?, ?)",
+    );
+    let _ = sqlx::query(&sql)
+        .bind(run_id)
+        .bind(node_key)
+        .bind(level)
+        .bind(message)
+        .execute(pool)
+        .await;
+}
+
+async fn run_view(
+    pool: &db::Pool,
+    kind: db::DbKind,
+    run: RunRow,
+    include_logs: bool,
+) -> RunView {
     let nodes = fetch_node_runs(pool, kind, run.id)
         .await
         .into_iter()
@@ -597,6 +658,21 @@ async fn run_view(pool: &db::Pool, kind: db::DbKind, run: RunRow) -> RunView {
             }
         })
         .collect();
+    let logs = if include_logs {
+        fetch_run_logs(pool, kind, run.id)
+            .await
+            .into_iter()
+            .map(|row| RunLogView {
+                id: row.id,
+                node_id: row.node_key,
+                level: row.level,
+                message: row.message,
+                created_at: row.created_at,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     RunView {
         token: run.token,
         workflow_id: run.workflow_id,
@@ -607,6 +683,7 @@ async fn run_view(pool: &db::Pool, kind: db::DbKind, run: RunRow) -> RunView {
         created_at: run.created_at,
         finished_at: run.finished_at,
         nodes,
+        logs,
     }
 }
 
@@ -617,7 +694,7 @@ async fn get_run(
 ) -> Response {
     match fetch_run_by_token(&installed.pool, installed.kind, &token).await {
         Some(run) if run.user_id == user.id => {
-            Json(run_view(&installed.pool, installed.kind, run).await).into_response()
+            Json(run_view(&installed.pool, installed.kind, run, true).await).into_response()
         }
         _ => err(StatusCode::NOT_FOUND, "运行记录不存在"),
     }
@@ -643,7 +720,7 @@ async fn list_runs(
     };
     let mut views = Vec::with_capacity(rows.len());
     for row in rows {
-        views.push(run_view(&installed.pool, installed.kind, row).await);
+        views.push(run_view(&installed.pool, installed.kind, row, false).await);
     }
     Json(views).into_response()
 }
@@ -758,6 +835,15 @@ async fn create_run(
         }
     }
 
+    append_run_log(
+        &installed.pool,
+        installed.kind,
+        run_id,
+        None,
+        "info",
+        &format!("流水线已开始，共 {} 个节点", graph.nodes.len()),
+    )
+    .await;
     spawn_driver(state, run_id);
     (StatusCode::CREATED, Json(CreateRunResp { token })).into_response()
 }
@@ -780,7 +866,13 @@ fn spawn_driver(state: AppState, run_id: i64) {
     });
 }
 
-async fn set_node_failed(pool: &db::Pool, kind: db::DbKind, node_id: i64, message: &str) {
+async fn set_node_failed(
+    pool: &db::Pool,
+    kind: db::DbKind,
+    run_id: i64,
+    node: &NodeRunRow,
+    message: &str,
+) {
     let now = db::now_expr(kind);
     let message: String = message.chars().take(1000).collect();
     let sql = db::q(
@@ -790,11 +882,24 @@ async fn set_node_failed(pool: &db::Pool, kind: db::DbKind, node_id: i64, messag
              WHERE id = ? AND status IN ('starting', 'running')"
         ),
     );
-    let _ = sqlx::query(&sql)
-        .bind(message)
-        .bind(node_id)
+    let changed = sqlx::query(&sql)
+        .bind(&message)
+        .bind(node.id)
         .execute(pool)
+        .await
+        .map(|result| result.rows_affected())
+        .unwrap_or(0);
+    if changed > 0 {
+        append_run_log(
+            pool,
+            kind,
+            run_id,
+            Some(&node.node_key),
+            "error",
+            &format!("执行失败：{message}"),
+        )
         .await;
+    }
 }
 
 async fn set_node_complete(
@@ -823,6 +928,15 @@ async fn set_node_complete(
     if changed == 0 {
         return;
     }
+    append_run_log(
+        pool,
+        kind,
+        run.id,
+        Some(&node.node_key),
+        "success",
+        &format!("执行完成，生成 {} 个文件", output_paths.len()),
+    )
+    .await;
     let asset_kind = if node.node_type == "image_generation" {
         "image"
     } else {
@@ -891,7 +1005,8 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                         set_node_failed(
                             &installed.pool,
                             installed.kind,
-                            node.id,
+                            run.id,
+                            &node,
                             "图片任务没有输出",
                         )
                         .await;
@@ -901,13 +1016,14 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                     set_node_failed(
                         &installed.pool,
                         installed.kind,
-                        node.id,
+                        run.id,
+                        &node,
                         status.error.as_deref().unwrap_or("图片生成失败"),
                     )
                     .await;
                 }
                 Err(message) => {
-                    set_node_failed(&installed.pool, installed.kind, node.id, &message).await
+                    set_node_failed(&installed.pool, installed.kind, run.id, &node, &message).await
                 }
                 _ => {}
             },
@@ -927,7 +1043,8 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                             set_node_failed(
                                 &installed.pool,
                                 installed.kind,
-                                node.id,
+                                run.id,
+                                &node,
                                 "视频任务没有输出",
                             )
                             .await;
@@ -937,13 +1054,14 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                         set_node_failed(
                             &installed.pool,
                             installed.kind,
-                            node.id,
+                            run.id,
+                            &node,
                             status.error.as_deref().unwrap_or("视频生成失败"),
                         )
                         .await;
                     }
                     Err(message) => {
-                        set_node_failed(&installed.pool, installed.kind, node.id, &message).await
+                        set_node_failed(&installed.pool, installed.kind, run.id, &node, &message).await
                     }
                     _ => {}
                 }
@@ -981,10 +1099,23 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                      error = '上游节点失败', finished_at = {now} WHERE id = ? AND status = 'waiting'"
                 ),
             );
-            let _ = sqlx::query(&sql)
+            let changed = sqlx::query(&sql)
                 .bind(node_run.id)
                 .execute(&installed.pool)
+                .await
+                .map(|result| result.rows_affected())
+                .unwrap_or(0);
+            if changed > 0 {
+                append_run_log(
+                    &installed.pool,
+                    installed.kind,
+                    run.id,
+                    Some(&node_run.node_key),
+                    "warning",
+                    "上游节点失败，本节点已跳过",
+                )
                 .await;
+            }
             continue;
         }
         if !predecessors.iter().all(|node| node.status == "completed") {
@@ -1007,6 +1138,15 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
         if claimed == 0 {
             continue;
         }
+        append_run_log(
+            &installed.pool,
+            installed.kind,
+            run.id,
+            Some(&node_run.node_key),
+            "info",
+            "开始执行",
+        )
+        .await;
         let Some(graph_node) = graph_nodes
             .get(node_run.node_key.as_str())
             .copied()
@@ -1015,7 +1155,8 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
             set_node_failed(
                 &installed.pool,
                 installed.kind,
-                node_run.id,
+                run.id,
+                node_run,
                 "节点定义不存在",
             )
             .await;
@@ -1048,7 +1189,8 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
                 set_node_failed(
                     &installed_clone.pool,
                     installed_clone.kind,
-                    node_clone.id,
+                    run_clone.id,
+                    &node_clone,
                     &message,
                 )
                 .await;
@@ -1091,18 +1233,35 @@ async fn finish_run(
              WHERE id = ? AND status = 'running'"
         ),
     );
-    let _ = sqlx::query(&sql)
+    let changed = sqlx::query(&sql)
         .bind(status)
         .bind(error)
         .bind(run_id)
         .execute(pool)
-        .await;
+        .await
+        .map(|result| result.rows_affected())
+        .unwrap_or(0);
+    if changed == 0 {
+        return;
+    }
+    let (level, message) = if status == "completed" {
+        ("success", "流水线运行完成".to_string())
+    } else {
+        (
+            "error",
+            error
+                .map(|message| format!("流水线运行失败：{message}"))
+                .unwrap_or_else(|| "流水线运行失败".to_string()),
+        )
+    };
+    append_run_log(pool, kind, run_id, None, level, &message).await;
 }
 
 async fn mark_node_running(
     pool: &db::Pool,
     kind: db::DbKind,
-    node_id: i64,
+    run_id: i64,
+    node: &NodeRunRow,
     job_token: Option<&str>,
 ) -> Result<(), String> {
     let sql = db::q(
@@ -1112,7 +1271,7 @@ async fn mark_node_running(
     );
     let changed = sqlx::query(&sql)
         .bind(job_token)
-        .bind(node_id)
+        .bind(node.id)
         .execute(pool)
         .await
         .map_err(|error| error.to_string())?
@@ -1120,6 +1279,20 @@ async fn mark_node_running(
     if changed == 0 {
         return Err("节点状态已变化".into());
     }
+    let message = if job_token.is_some() {
+        "生成任务已提交，等待处理结果"
+    } else {
+        "媒体处理已启动"
+    };
+    append_run_log(
+        pool,
+        kind,
+        run_id,
+        Some(&node.node_key),
+        "info",
+        message,
+    )
+    .await;
     Ok(())
 }
 
@@ -1161,7 +1334,14 @@ async fn execute_node(
                 },
             )
             .await?;
-            mark_node_running(&installed.pool, installed.kind, node_run.id, Some(&token)).await
+            mark_node_running(
+                &installed.pool,
+                installed.kind,
+                run.id,
+                node_run,
+                Some(&token),
+            )
+            .await
         }
         "video_generation" => {
             let token = videos::start_workflow_video(
@@ -1177,10 +1357,17 @@ async fn execute_node(
                 },
             )
             .await?;
-            mark_node_running(&installed.pool, installed.kind, node_run.id, Some(&token)).await
+            mark_node_running(
+                &installed.pool,
+                installed.kind,
+                run.id,
+                node_run,
+                Some(&token),
+            )
+            .await
         }
         "video_trim" => {
-            mark_node_running(&installed.pool, installed.kind, node_run.id, None).await?;
+            mark_node_running(&installed.pool, installed.kind, run.id, node_run, None).await?;
             let _permit = state
                 .media_process_slots
                 .acquire()
@@ -1198,7 +1385,7 @@ async fn execute_node(
             Ok(())
         }
         "video_merge" => {
-            mark_node_running(&installed.pool, installed.kind, node_run.id, None).await?;
+            mark_node_running(&installed.pool, installed.kind, run.id, node_run, None).await?;
             let _permit = state
                 .media_process_slots
                 .acquire()
@@ -1515,14 +1702,27 @@ async fn cancel_run(
              finished_at = {now} WHERE run_id = ? AND status IN ('waiting', 'starting')"
         ),
     );
-    let _ = sqlx::query(&run_sql)
+    let changed = sqlx::query(&run_sql)
         .bind(run.id)
         .execute(&installed.pool)
-        .await;
+        .await
+        .map(|result| result.rows_affected())
+        .unwrap_or(0);
     let _ = sqlx::query(&node_sql)
         .bind(run.id)
         .execute(&installed.pool)
         .await;
+    if changed > 0 {
+        append_run_log(
+            &installed.pool,
+            installed.kind,
+            run.id,
+            None,
+            "warning",
+            "用户已停止后续节点",
+        )
+        .await;
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -1563,12 +1763,15 @@ async fn retry_node(
          error = NULL, started_at = NULL, finished_at = NULL WHERE run_id = ? AND node_key = ? \
          AND status IN ('failed', 'blocked', 'cancelled', 'completed')",
     );
-    for key in reset {
-        let _ = sqlx::query(&reset_sql)
+    let mut reset_count = 0_u64;
+    for key in &reset {
+        reset_count += sqlx::query(&reset_sql)
             .bind(run.id)
             .bind(key)
             .execute(&installed.pool)
-            .await;
+            .await
+            .map(|result| result.rows_affected())
+            .unwrap_or(0);
     }
     let run_sql = db::q(
         installed.kind,
@@ -1581,6 +1784,15 @@ async fn retry_node(
     {
         return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
+    append_run_log(
+        &installed.pool,
+        installed.kind,
+        run.id,
+        Some(&node_key),
+        "info",
+        &format!("从此节点重新运行，共重置 {reset_count} 个节点"),
+    )
+    .await;
     spawn_driver(state, run.id);
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1589,12 +1801,41 @@ async fn retry_node(
 /// resumed; local FFmpeg operations are safe to rerun. A node interrupted while
 /// creating a billable child job is failed for an explicit user retry.
 pub async fn recover(pool: &db::Pool, kind: db::DbKind) {
+    let recoverable_sql = db::q(
+        kind,
+        "SELECT run_id, node_key FROM workflow_node_runs WHERE status = 'running' \
+         AND node_type IN ('video_trim', 'video_merge')",
+    );
+    let recoverable: Vec<(i64, String)> = sqlx::query_as(&recoverable_sql)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
     let sql = db::q(
         kind,
         "UPDATE workflow_node_runs SET status = 'waiting', error = NULL, started_at = NULL \
          WHERE status = 'running' AND node_type IN ('video_trim', 'video_merge')",
     );
     let _ = sqlx::query(&sql).execute(pool).await;
+    for (run_id, node_key) in recoverable {
+        append_run_log(
+            pool,
+            kind,
+            run_id,
+            Some(&node_key),
+            "warning",
+            "服务器重启，媒体处理已重新排队",
+        )
+        .await;
+    }
+
+    let interrupted_sql = db::q(
+        kind,
+        "SELECT run_id, node_key FROM workflow_node_runs WHERE status = 'starting'",
+    );
+    let interrupted: Vec<(i64, String)> = sqlx::query_as(&interrupted_sql)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
     let now = db::now_expr(kind);
     let sql = db::q(
         kind,
@@ -1604,6 +1845,17 @@ pub async fn recover(pool: &db::Pool, kind: db::DbKind) {
         ),
     );
     let _ = sqlx::query(&sql).execute(pool).await;
+    for (run_id, node_key) in interrupted {
+        append_run_log(
+            pool,
+            kind,
+            run_id,
+            Some(&node_key),
+            "error",
+            "服务器在创建任务时重启，请重试此节点",
+        )
+        .await;
+    }
 }
 
 pub async fn sweep(state: &AppState, installed: &InstalledState) {
@@ -1788,19 +2040,44 @@ mod tests {
         crate::db::migrate(&pool, crate::db::DbKind::Sqlite)
             .await
             .unwrap();
-        let (migration,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _migrations WHERE id = 33")
+        let (migration,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _migrations WHERE id = 34")
             .fetch_one(&pool)
             .await
             .unwrap();
         let (tables,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
-             AND name IN ('workflows', 'workflow_runs', 'workflow_node_runs', 'media_assets')",
+             AND name IN ('workflows', 'workflow_runs', 'workflow_node_runs', 'media_assets', \
+             'workflow_run_logs')",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(migration, 1);
-        assert_eq!(tables, 4);
+        assert_eq!(tables, 5);
+        sqlx::query("INSERT INTO users (username, password_hash) VALUES ('log-test', 'test')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_runs (token, user_id, name, graph_json, status) \
+             VALUES ('log-run', 1, 'test', '{}', 'running')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        append_run_log(
+            &pool,
+            crate::db::DbKind::Sqlite,
+            1,
+            Some("node-a"),
+            "info",
+            "开始执行",
+        )
+        .await;
+        let logs = fetch_run_logs(&pool, crate::db::DbKind::Sqlite, 1).await;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].node_key.as_deref(), Some("node-a"));
+        assert_eq!(logs[0].message, "开始执行");
         pool.close().await;
         let _ = tokio::fs::remove_file(path).await;
     }

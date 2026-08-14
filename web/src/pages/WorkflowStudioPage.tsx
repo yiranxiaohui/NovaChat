@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   Boxes,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clapperboard,
   Crop,
   GitMerge,
@@ -17,6 +19,7 @@ import {
   RotateCcw,
   Save,
   Square,
+  Terminal,
   Trash2,
   X,
 } from "lucide-react"
@@ -48,6 +51,7 @@ import {
   type WorkflowNodeRun,
   type WorkflowNodeType,
   type WorkflowRun,
+  type WorkflowRunLog,
 } from "@/lib/workflows"
 import { cn } from "@/lib/utils"
 
@@ -288,6 +292,33 @@ function runStatusText(status: WorkflowRun["status"]): string {
   }[status]
 }
 
+function formatLogTime(value: string): string {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date)
+}
+
+function logLevelClass(level: WorkflowRunLog["level"]): string {
+  switch (level) {
+    case "success":
+      return "text-emerald-600 dark:text-emerald-400"
+    case "warning":
+      return "text-amber-600 dark:text-amber-400"
+    case "error":
+      return "text-destructive"
+    default:
+      return "text-foreground"
+  }
+}
+
 export default function WorkflowStudioPage() {
   const { confirm } = useConfirm()
   const [workflows, setWorkflows] = useState<Workflow[]>([])
@@ -305,6 +336,8 @@ export default function WorkflowStudioPage() {
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null)
   const [mobilePanel, setMobilePanel] = useState(false)
   const canvasViewportRef = useRef<HTMLElement>(null)
+  const [logsOpen, setLogsOpen] = useState(true)
+  const logScrollRef = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<{
     nodeId: string
     clientX: number
@@ -323,6 +356,13 @@ export default function WorkflowStudioPage() {
   const runNodes = useMemo(
     () => new Map(currentRun?.nodes.map((node) => [node.node_id, node]) ?? []),
     [currentRun]
+  )
+  const nodeNames = useMemo(
+    () =>
+      new Map(
+        graph.nodes.map((node) => [node.id, NODE_META[node.type].label])
+      ),
+    [graph.nodes]
   )
   const currentRunToken = currentRun?.token
   const currentRunStatus = currentRun?.status
@@ -404,6 +444,11 @@ export default function WorkflowStudioPage() {
     return () => window.clearInterval(timer)
     // Poll by token; status changes terminate the interval on the next render.
   }, [currentRunToken, currentRunStatus])
+
+  useEffect(() => {
+    if (!logsOpen || !logScrollRef.current) return
+    logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight
+  }, [currentRun?.logs.length, logsOpen])
 
   useEffect(() => {
     if (!drag) return
@@ -576,6 +621,7 @@ export default function WorkflowStudioPage() {
       const { token } = await workflowApi.start(id)
       const run = await workflowApi.run(token)
       setCurrentRun(run)
+      setLogsOpen(true)
       setRuns((current) => [run, ...current.filter((item) => item.token !== token)])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -628,6 +674,15 @@ export default function WorkflowStudioPage() {
     setName(run.name)
     setWorkflowId(run.workflow_id)
     setMobilePanel(false)
+    setLogsOpen(true)
+    void workflowApi
+      .run(run.token)
+      .then((loaded) => {
+        setCurrentRun((current) =>
+          current?.token === loaded.token ? loaded : current
+        )
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   const panel = (
@@ -926,6 +981,78 @@ export default function WorkflowStudioPage() {
             )}
           </div>
         </main>
+
+        {currentRun && (
+          <section
+            className={cn(
+              "shrink-0 border-t border-border bg-card/95 transition-[height]",
+              logsOpen ? "h-48 sm:h-56" : "h-10"
+            )}
+            aria-label="运行日志"
+          >
+            <button
+              type="button"
+              className="flex h-10 w-full items-center gap-2 px-4 text-left text-xs hover:bg-accent/45"
+              onClick={() => setLogsOpen((open) => !open)}
+              aria-expanded={logsOpen}
+            >
+              <Terminal className="size-3.5 text-primary" />
+              <span className="font-medium">运行日志</span>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {currentRun.logs.length}
+              </span>
+              {currentRun.status === "running" && (
+                <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-primary">
+                  <Loader2 className="size-3 animate-spin" /> 实时刷新
+                </span>
+              )}
+              {currentRun.status !== "running" && <span className="ml-auto" />}
+              {logsOpen ? (
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              ) : (
+                <ChevronUp className="size-3.5 text-muted-foreground" />
+              )}
+            </button>
+            {logsOpen && (
+              <div
+                ref={logScrollRef}
+                className="nc-scroll h-[calc(100%-2.5rem)] overflow-y-auto border-t border-border/60 bg-background/55 px-4 py-2 font-mono text-[11px]"
+              >
+                {currentRun.logs.length === 0 ? (
+                  <p className="py-5 text-center font-sans text-xs text-muted-foreground">
+                    {currentRun.status === "running"
+                      ? "等待运行事件…"
+                      : "这次运行没有可用日志"}
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {currentRun.logs.map((log) => (
+                      <div key={log.id} className="flex min-w-0 items-start gap-2 leading-relaxed">
+                        <time className="shrink-0 tabular-nums text-muted-foreground">
+                          {formatLogTime(log.created_at)}
+                        </time>
+                        <span
+                          className={cn(
+                            "mt-1.5 size-1.5 shrink-0 rounded-full bg-current",
+                            logLevelClass(log.level)
+                          )}
+                        />
+                        <span className="w-16 shrink-0 truncate text-muted-foreground sm:w-20">
+                          {log.node_id
+                            ? nodeNames.get(log.node_id) ?? log.node_id
+                            : "流水线"}
+                        </span>
+                        <span className={cn("min-w-0 break-words", logLevelClass(log.level))}>
+                          {log.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
 
         <footer className="flex h-8 shrink-0 items-center justify-between border-t border-border bg-card/80 px-4 text-[10px] text-muted-foreground">
           <span>{graph.nodes.length} 个节点 · {graph.edges.length} 条连线 · 拖动画布空白处平移 · 点击连线可删除</span>

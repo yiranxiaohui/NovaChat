@@ -53,6 +53,14 @@ export type WorkflowNodeRun = {
   finished_at: string | null
 }
 
+export type WorkflowRunLog = {
+  id: number
+  node_id: string | null
+  level: "info" | "success" | "warning" | "error"
+  message: string
+  created_at: string
+}
+
 export type WorkflowRun = {
   token: string
   workflow_id: number | null
@@ -63,6 +71,7 @@ export type WorkflowRun = {
   created_at: string
   finished_at: string | null
   nodes: WorkflowNodeRun[]
+  logs: WorkflowRunLog[]
 }
 
 async function jsonOrThrow<T>(response: Response): Promise<T> {

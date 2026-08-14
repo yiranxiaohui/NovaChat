@@ -901,6 +901,15 @@ export default function VideoEditorPage() {
     : null
   const currentExport = exports.find((item) => item.token === activeExport)
 
+  function returnToPreviousPage() {
+    const historyIndex = window.history.state?.idx
+    if (typeof historyIndex === "number" && historyIndex > 0) {
+      navigate(-1)
+      return
+    }
+    navigate("/videos", { replace: true })
+  }
+
   if (loading) {
     return (
       <div className="grid min-h-svh place-items-center bg-background">
@@ -914,8 +923,15 @@ export default function VideoEditorPage() {
   return (
     <div className="flex h-svh min-h-0 flex-col overflow-hidden bg-[#090a0d] text-zinc-100">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-white/10 bg-[#111217] px-2.5 md:px-4">
-        <Button asChild size="icon-sm" variant="ghost" className="text-zinc-300 hover:bg-white/10 hover:text-white">
-          <Link to="/videos" title="返回视频工作室"><ArrowLeft /></Link>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className="text-zinc-300 hover:bg-white/10 hover:text-white"
+          onClick={returnToPreviousPage}
+          aria-label="返回进入剪辑页前的页面"
+          title="返回"
+        >
+          <ArrowLeft />
         </Button>
         <div className="hidden items-center gap-2 sm:flex">
           <span className="grid size-8 place-items-center rounded-lg bg-sky-500/15 text-sky-300">

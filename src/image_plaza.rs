@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState, CurrentUser, InstalledState,
     db::{self, DbKind},
+    storage::MediaKind,
 };
 
 pub const MAX_PLAZA_IMAGES_PER_USER: i64 = 200;
@@ -233,10 +234,15 @@ async fn publish_image(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s.len() <= MAX_PROMPT_LEN);
 
-    let disk_path = state.data_dir.join("images").join(&filename);
-    match tokio::fs::metadata(&disk_path).await {
-        Ok(m) if m.is_file() => {}
-        _ => return err(StatusCode::NOT_FOUND, "image file not found on server"),
+    match state.storage.size(MediaKind::Image, &filename).await {
+        Ok(_) => {}
+        Err(error) if error.is_not_found() => {
+            return err(StatusCode::NOT_FOUND, "image file not found on server");
+        }
+        Err(error) => {
+            eprintln!("[storage] inspect plaza image {filename}: {error}");
+            return err(StatusCode::BAD_GATEWAY, "media storage unavailable");
+        }
     }
 
     let (count_sql_str,): (i64,) = match sqlx::query_as(&db::q(

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::{
     AppState, CurrentUser, InstalledState, channels, credits, db,
     net_guard,
+    storage::{MediaKind, MediaStorage, StorageError},
 };
 
 // ---------------------------------------------------------------------------
@@ -50,16 +51,13 @@ fn parse_data_url(s: &str) -> Option<(Vec<u8>, &'static str, &'static str)> {
     Some((bytes, ext, mime))
 }
 
-async fn write_image_to_disk(
-    data_dir: &std::path::Path,
+async fn write_image(
+    storage: &MediaStorage,
     bytes: &[u8],
     ext: &str,
-) -> Result<String, std::io::Error> {
-    let dir = data_dir.join("images");
-    tokio::fs::create_dir_all(&dir).await?;
+) -> Result<String, StorageError> {
     let name = format!("{}.{}", random_hex(16), ext);
-    let path = dir.join(&name);
-    tokio::fs::write(&path, bytes).await?;
+    storage.put(MediaKind::Image, &name, bytes.to_vec()).await?;
     Ok(format!("/api/images/{name}"))
 }
 
@@ -389,7 +387,7 @@ async fn submit_generate(
     for durl in &input_urls {
         match parse_data_url(durl) {
             Some((bytes, ext, mime)) => {
-                match write_image_to_disk(&state.data_dir, &bytes, ext).await {
+                match write_image(&state.storage, &bytes, ext).await {
                     Ok(p) => source_paths.push(p),
                     Err(e) => {
                         return err(
@@ -802,7 +800,7 @@ async fn submit_generate(
             return;
         };
 
-        let stored = match write_image_to_disk(&state_c.data_dir, &bytes, "png").await {
+        let stored = match write_image(&state_c.storage, &bytes, "png").await {
             Ok(p) => p,
             Err(e) => {
                 finalize_failed(&pool, kind, &token_c, &format!("write: {e}")).await;

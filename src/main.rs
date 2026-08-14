@@ -19,6 +19,7 @@ mod setup;
 mod sharing;
 mod skills;
 mod studio;
+mod storage;
 mod videos;
 mod worker;
 
@@ -57,6 +58,9 @@ pub struct AppState {
     pub image_http: reqwest::Client,
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
+    /// Generated images/videos and avatars. The backend is selected once at
+    /// startup from novachat.toml and environment variables.
+    pub storage: storage::MediaStorage,
     /// Per-IP rate limiter for unauthenticated auth endpoints (login /
     /// register / send-code). See [`rate_limit`] for details.
     pub auth_limiter: std::sync::Arc<rate_limit::RateLimiter>,
@@ -1142,6 +1146,15 @@ async fn main() {
     let env_url = std::env::var("NOVACHAT_DATABASE_URL")
         .ok()
         .or_else(|| std::env::var("DATABASE_URL").ok());
+    let stored_config = setup::load_config(&config_path).ok();
+    let media_storage = storage::MediaStorage::from_config(
+        data_dir.clone(),
+        stored_config.as_ref().and_then(|config| config.storage.as_ref()),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("FATAL: invalid media storage configuration ({e})");
+        std::process::exit(1);
+    });
 
     let installed = Arc::new(RwLock::new(None));
     let state = AppState {
@@ -1156,6 +1169,7 @@ async fn main() {
             .expect("image reqwest client"),
         config_path: config_path.clone(),
         data_dir: data_dir.clone(),
+        storage: media_storage,
         auth_limiter: {
             // 20 attempts per 5 minutes per IP, shared across login / register /
             // send-code. Plenty of headroom for legitimate users; brute force
@@ -1180,10 +1194,18 @@ async fn main() {
     let effective_url = match env_url {
         Some(u) => {
             // env wins and also persists to config for cross-restart consistency
-            let _ = setup::save_config(&config_path, &setup::StoredConfig { database_url: u.clone() });
+            let _ = setup::save_config(
+                &config_path,
+                &setup::StoredConfig {
+                    database_url: u.clone(),
+                    storage: stored_config
+                        .as_ref()
+                        .and_then(|config| config.storage.clone()),
+                },
+            );
             Some(u)
         }
-        None => setup::load_config(&config_path).ok().map(|c| c.database_url),
+        None => stored_config.map(|config| config.database_url),
     };
 
     if let Some(url) = effective_url.as_deref() {
@@ -1215,7 +1237,7 @@ async fn main() {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let installed = sweeper_state.installed.read().await.clone();
             if let Some(s) = installed {
-                videos::sweep(&sweeper_state.http, &s.pool, s.kind, &sweeper_state.data_dir).await;
+                videos::sweep(&sweeper_state.http, &s.pool, s.kind, &sweeper_state.storage).await;
             }
         }
     });
@@ -1223,6 +1245,11 @@ async fn main() {
     let addr = std::env::var("NOVACHAT_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     println!("NovaChat listening on http://{addr}");
+    println!(
+        "  media storage: {} ({})",
+        state.storage.backend_name(),
+        state.storage.location()
+    );
     if state.installed.read().await.is_none() {
         println!("  (not yet installed — open http://{addr}/setup to configure)");
     }

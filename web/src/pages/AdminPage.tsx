@@ -825,9 +825,11 @@ function SystemPanel() {
             <InfoRow label="数据库类型" value={info.db_kind} />
             <InfoRow label="监听地址" value={info.bind_addr} />
             <InfoRow
-              label="图片目录占用"
+              label="本地图片目录占用"
               value={formatBytes(info.images_dir_bytes)}
             />
+            <InfoRow label="媒体存储" value={info.storage_backend.toUpperCase()} />
+            <InfoRow label="媒体位置" value={info.storage_location} mono />
             <InfoRow label="数据目录" value={info.data_dir} mono />
             <InfoRow label="配置文件" value={info.config_path} mono />
           </dl>

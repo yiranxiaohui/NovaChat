@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState, CurrentUser, channels, credits, db,
     net_guard,
+    storage::{MediaKind, MediaStorage},
 };
 
 // ---------------------------------------------------------------------------
@@ -228,11 +229,6 @@ async fn decode_openai_body(
         .cloned()
         .unwrap_or_default();
 
-    let images_dir = state.data_dir.join("images");
-    tokio::fs::create_dir_all(&images_dir)
-        .await
-        .map_err(|e| JobError(format!("mkdir: {e}")))?;
-
     let mut out = Vec::new();
     for item in items {
         let revised = item
@@ -268,8 +264,7 @@ async fn decode_openai_body(
         };
 
         let name = format!("{}.png", random_hex(16));
-        let path = images_dir.join(&name);
-        tokio::fs::write(&path, &bytes)
+        state.storage.put(MediaKind::Image, &name, bytes)
             .await
             .map_err(|e| JobError(format!("write: {e}")))?;
         out.push(GeneratedImage {
@@ -326,11 +321,6 @@ async fn decode_gemini_body(
         }
     }
 
-    let images_dir = state.data_dir.join("images");
-    tokio::fs::create_dir_all(&images_dir)
-        .await
-        .map_err(|e| JobError(format!("mkdir: {e}")))?;
-
     let mut out = Vec::new();
     for (b64, mime) in b64_items {
         let bytes = STANDARD
@@ -342,8 +332,7 @@ async fn decode_gemini_body(
             _ => "png",
         };
         let name = format!("{}.{ext}", random_hex(16));
-        let path = images_dir.join(&name);
-        tokio::fs::write(&path, &bytes)
+        state.storage.put(MediaKind::Image, &name, bytes)
             .await
             .map_err(|e| JobError(format!("write: {e}")))?;
         out.push(GeneratedImage {
@@ -949,19 +938,15 @@ struct ResponsesJobReq {
     quality: Option<String>,
 }
 
-/// Load a previously-stored image from disk, return as data: URL.
-async fn stored_image_to_data_url(
-    data_dir: &std::path::Path,
-    web_path: &str,
-) -> Option<String> {
+/// Load a previously-stored image, return as data: URL.
+async fn stored_image_to_data_url(storage: &MediaStorage, web_path: &str) -> Option<String> {
     // Only /api/images/xxx.png paths are valid — we store them ourselves.
     let name = web_path.rsplit('/').next()?;
     if name.is_empty() || name.contains("..") || name.contains('\\') {
         return None;
     }
-    let p = data_dir.join("images").join(name);
-    let bytes = tokio::fs::read(&p).await.ok()?;
-    let mime = match p.extension().and_then(|e| e.to_str()) {
+    let bytes = storage.get(MediaKind::Image, name).await.ok()?;
+    let mime = match std::path::Path::new(name).extension().and_then(|e| e.to_str()) {
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         Some("gif") => "image/gif",
@@ -971,7 +956,7 @@ async fn stored_image_to_data_url(
 }
 
 async fn build_responses_input(
-    data_dir: &std::path::Path,
+    storage: &MediaStorage,
     history: &[ResponsesHistoryTurn],
 ) -> Vec<serde_json::Value> {
     use serde_json::json;
@@ -990,7 +975,7 @@ async fn build_responses_input(
                 // Inline attachment — pass through as-is.
                 Some(p.clone())
             } else {
-                stored_image_to_data_url(data_dir, p).await
+                stored_image_to_data_url(storage, p).await
             };
             if let Some(d) = durl {
                 parts.push(json!({
@@ -1095,7 +1080,7 @@ async fn start_openai_responses_job(
     tokio::spawn(async move {
         mark_running(&state_c, &token_c).await;
 
-        let input = build_responses_input(&state_c.data_dir, &history).await;
+        let input = build_responses_input(&state_c.storage, &history).await;
         if input.is_empty() {
             if used_shared {
                 refund_image_credits(&state_c, user.id, &_client_model, "refund_upstream_error").await;
@@ -1188,15 +1173,6 @@ async fn start_openai_responses_job(
         };
 
         // Walk output[] — collect images + assistant text.
-        let images_dir = state_c.data_dir.join("images");
-        if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
-            if used_shared {
-                refund_image_credits(&state_c, user.id, &_client_model, "refund_upstream_error").await;
-            }
-            mark_failed(&state_c, &token_c, &format!("mkdir: {e}")).await;
-            return;
-        }
-
         let mut out_images: Vec<GeneratedImage> = Vec::new();
         let mut text_out = String::new();
 
@@ -1213,8 +1189,7 @@ async fn start_openai_responses_job(
                             Err(_) => continue,
                         };
                         let name = format!("{}.png", random_hex(16));
-                        let path = images_dir.join(&name);
-                        if tokio::fs::write(&path, &bytes).await.is_err() {
+                        if state_c.storage.put(MediaKind::Image, &name, bytes).await.is_err() {
                             continue;
                         }
                         out_images.push(GeneratedImage {
@@ -1326,13 +1301,8 @@ async fn save_b64_image(
         Some("image/gif") => "gif",
         _ => "png",
     };
-    let images_dir = state.data_dir.join("images");
-    if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
-    }
     let name = format!("{}.{ext}", random_hex(16));
-    let path = images_dir.join(&name);
-    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+    if let Err(e) = state.storage.put(MediaKind::Image, &name, bytes).await {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
     }
     Json(SaveImageResp {
@@ -1459,12 +1429,15 @@ async fn serve_image(
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let path = state.data_dir.join("images").join(&name);
-    let bytes = match tokio::fs::read(&path).await {
+    let bytes = match state.storage.get(MediaKind::Image, &name).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) if e.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("[storage] serve image {name}: {e}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
     };
-    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    let mime = mime_guess::from_path(&name).first_or_octet_stream();
     Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")

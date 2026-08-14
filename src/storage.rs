@@ -1,0 +1,847 @@
+use std::{
+    fmt,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use reqwest::{StatusCode, header};
+use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
+use serde::{Deserialize, Serialize};
+
+const SIGNED_URL_TTL: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+    #[serde(default)]
+    pub session_token: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub path_style: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaKind {
+    Image,
+    Video,
+    Avatar,
+}
+
+impl MediaKind {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Image => "images",
+            Self::Video => "videos",
+            Self::Avatar => "avatars",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum StorageError {
+    NotFound,
+    Backend(String),
+}
+
+impl StorageError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound)
+    }
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("media object not found"),
+            Self::Backend(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for StorageError {}
+
+#[derive(Clone)]
+pub struct MediaStorage {
+    data_dir: PathBuf,
+    backend: Backend,
+}
+
+#[derive(Clone)]
+enum Backend {
+    Local,
+    S3(Arc<S3Backend>),
+}
+
+struct S3Backend {
+    bucket: Bucket,
+    credentials: Credentials,
+    prefix: String,
+    client: reqwest::Client,
+    location: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ResolvedStorage {
+    Local,
+    S3(ResolvedS3),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ResolvedS3 {
+    endpoint: String,
+    region: String,
+    bucket: String,
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+    prefix: String,
+    path_style: bool,
+}
+
+impl MediaStorage {
+    pub fn from_config(data_dir: PathBuf, config: Option<&StorageConfig>) -> Result<Self, String> {
+        let resolved = resolve_storage(config, |name| std::env::var(name).ok())?;
+        Self::from_resolved(data_dir, resolved)
+    }
+
+    fn from_resolved(data_dir: PathBuf, resolved: ResolvedStorage) -> Result<Self, String> {
+        let backend = match resolved {
+            ResolvedStorage::Local => Backend::Local,
+            ResolvedStorage::S3(config) => {
+                let endpoint: reqwest::Url = config
+                    .endpoint
+                    .parse()
+                    .map_err(|e| format!("invalid S3 endpoint: {e}"))?;
+                let style = if config.path_style {
+                    UrlStyle::Path
+                } else {
+                    UrlStyle::VirtualHost
+                };
+                let bucket = Bucket::new(
+                    endpoint,
+                    style,
+                    config.bucket.clone(),
+                    config.region.clone(),
+                )
+                .map_err(|e| format!("invalid S3 bucket configuration: {e:?}"))?;
+                let credentials = match config.session_token {
+                    Some(token) => Credentials::new_with_token(
+                        config.access_key_id,
+                        config.secret_access_key,
+                        token,
+                    ),
+                    None => Credentials::new(config.access_key_id, config.secret_access_key),
+                };
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(600))
+                    .build()
+                    .map_err(|e| format!("create S3 HTTP client: {e}"))?;
+                let location = if config.prefix.is_empty() {
+                    format!("s3://{}", config.bucket)
+                } else {
+                    format!("s3://{}/{}", config.bucket, config.prefix)
+                };
+                Backend::S3(Arc::new(S3Backend {
+                    bucket,
+                    credentials,
+                    prefix: config.prefix,
+                    client,
+                    location,
+                }))
+            }
+        };
+
+        Ok(Self { data_dir, backend })
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        match self.backend {
+            Backend::Local => "local",
+            Backend::S3(_) => "s3",
+        }
+    }
+
+    pub fn location(&self) -> String {
+        match &self.backend {
+            Backend::Local => self.data_dir.display().to_string(),
+            Backend::S3(s3) => s3.location.clone(),
+        }
+    }
+
+    pub async fn put(
+        &self,
+        kind: MediaKind,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), StorageError> {
+        validate_name(name)?;
+        match &self.backend {
+            Backend::Local => local_put(&self.data_dir, kind, name, &bytes).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let url = s3
+                    .bucket
+                    .put_object(Some(&s3.credentials), &key)
+                    .sign(SIGNED_URL_TTL);
+                let response = s3
+                    .client
+                    .put(url)
+                    .header(header::CONTENT_TYPE, content_type(kind, name))
+                    .body(bytes)
+                    .send()
+                    .await
+                    .map_err(|e| request_error("put", &key, e))?;
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    Err(response_error("put", &key, response.status()))
+                }
+            }
+        }
+    }
+
+    pub async fn get(&self, kind: MediaKind, name: &str) -> Result<Vec<u8>, StorageError> {
+        validate_name(name)?;
+        match &self.backend {
+            Backend::Local => local_get(&self.data_dir, kind, name).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = async {
+                    let url = s3
+                        .bucket
+                        .get_object(Some(&s3.credentials), &key)
+                        .sign(SIGNED_URL_TTL);
+                    let response = s3
+                        .client
+                        .get(url)
+                        .send()
+                        .await
+                        .map_err(|e| request_error("get", &key, e))?;
+                    if response.status().is_success() {
+                        response
+                            .bytes()
+                            .await
+                            .map(|bytes| bytes.to_vec())
+                            .map_err(|e| request_error("read", &key, e))
+                    } else {
+                        Err(response_error("get", &key, response.status()))
+                    }
+                }
+                .await;
+                self.with_local_fallback(kind, name, result, |data_dir, kind, name| async move {
+                    local_get(&data_dir, kind, &name).await
+                })
+                .await
+            }
+        }
+    }
+
+    pub async fn size(&self, kind: MediaKind, name: &str) -> Result<u64, StorageError> {
+        validate_name(name)?;
+        match &self.backend {
+            Backend::Local => local_size(&self.data_dir, kind, name).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = async {
+                    let url = s3
+                        .bucket
+                        .head_object(Some(&s3.credentials), &key)
+                        .sign(SIGNED_URL_TTL);
+                    let response = s3
+                        .client
+                        .head(url)
+                        .send()
+                        .await
+                        .map_err(|e| request_error("head", &key, e))?;
+                    if response.status().is_success() {
+                        response
+                            .headers()
+                            .get(header::CONTENT_LENGTH)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or_else(|| {
+                                StorageError::Backend(format!(
+                                    "S3 head {key}: missing Content-Length"
+                                ))
+                            })
+                    } else {
+                        Err(response_error("head", &key, response.status()))
+                    }
+                }
+                .await;
+                self.with_local_fallback(kind, name, result, |data_dir, kind, name| async move {
+                    local_size(&data_dir, kind, &name).await
+                })
+                .await
+            }
+        }
+    }
+
+    pub async fn get_range(
+        &self,
+        kind: MediaKind,
+        name: &str,
+        range: Range<u64>,
+    ) -> Result<Vec<u8>, StorageError> {
+        validate_name(name)?;
+        if range.start >= range.end {
+            return Ok(Vec::new());
+        }
+        match &self.backend {
+            Backend::Local => local_get_range(&self.data_dir, kind, name, range).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = async {
+                    let url = s3
+                        .bucket
+                        .get_object(Some(&s3.credentials), &key)
+                        .sign(SIGNED_URL_TTL);
+                    let response = s3
+                        .client
+                        .get(url)
+                        .header(
+                            header::RANGE,
+                            format!("bytes={}-{}", range.start, range.end - 1),
+                        )
+                        .send()
+                        .await
+                        .map_err(|e| request_error("range get", &key, e))?;
+                    if response.status().is_success() {
+                        let status = response.status();
+                        let bytes = response
+                            .bytes()
+                            .await
+                            .map_err(|e| request_error("range read", &key, e))?
+                            .to_vec();
+                        if status == StatusCode::OK && bytes.len() as u64 >= range.end {
+                            Ok(bytes[range.start as usize..range.end as usize].to_vec())
+                        } else {
+                            Ok(bytes)
+                        }
+                    } else {
+                        Err(response_error("range get", &key, response.status()))
+                    }
+                }
+                .await;
+                self.with_local_fallback(kind, name, result, move |data_dir, kind, name| {
+                    let range = range.clone();
+                    async move { local_get_range(&data_dir, kind, &name, range).await }
+                })
+                .await
+            }
+        }
+    }
+
+    pub async fn delete(&self, kind: MediaKind, name: &str) -> Result<(), StorageError> {
+        validate_name(name)?;
+        match &self.backend {
+            Backend::Local => local_delete(&self.data_dir, kind, name).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = async {
+                    let url = s3
+                        .bucket
+                        .delete_object(Some(&s3.credentials), &key)
+                        .sign(SIGNED_URL_TTL);
+                    let response = s3
+                        .client
+                        .delete(url)
+                        .send()
+                        .await
+                        .map_err(|e| request_error("delete", &key, e))?;
+                    if response.status().is_success() || response.status() == StatusCode::NOT_FOUND
+                    {
+                        Ok(())
+                    } else {
+                        Err(response_error("delete", &key, response.status()))
+                    }
+                }
+                .await;
+
+                // Remove a legacy local copy too. Its failure must not turn a
+                // successful S3 deletion into an error.
+                let _ = local_delete(&self.data_dir, kind, name).await;
+                result
+            }
+        }
+    }
+
+    async fn with_local_fallback<T, F, Fut>(
+        &self,
+        kind: MediaKind,
+        name: &str,
+        primary: Result<T, StorageError>,
+        fallback: F,
+    ) -> Result<T, StorageError>
+    where
+        F: FnOnce(PathBuf, MediaKind, String) -> Fut,
+        Fut: std::future::Future<Output = Result<T, StorageError>>,
+    {
+        match primary {
+            Ok(value) => Ok(value),
+            Err(primary_error) => {
+                match fallback(self.data_dir.clone(), kind, name.to_string()).await {
+                    Ok(value) => Ok(value),
+                    Err(StorageError::NotFound) => Err(primary_error),
+                    Err(local_error) => Err(local_error),
+                }
+            }
+        }
+    }
+}
+
+impl S3Backend {
+    fn key(&self, kind: MediaKind, name: &str) -> String {
+        if self.prefix.is_empty() {
+            format!("{}/{name}", kind.directory())
+        } else {
+            format!("{}/{}/{name}", self.prefix, kind.directory())
+        }
+    }
+}
+
+fn request_error(operation: &str, key: &str, error: reqwest::Error) -> StorageError {
+    StorageError::Backend(format!("S3 {operation} {key}: {}", error.without_url()))
+}
+
+fn response_error(operation: &str, key: &str, status: StatusCode) -> StorageError {
+    if status == StatusCode::NOT_FOUND {
+        return StorageError::NotFound;
+    }
+    StorageError::Backend(format!("S3 {operation} {key}: HTTP {status}"))
+}
+
+fn validate_name(name: &str) -> Result<(), StorageError> {
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(StorageError::Backend("invalid media object name".into()));
+    }
+    Ok(())
+}
+
+fn local_path(data_dir: &Path, kind: MediaKind, name: &str) -> PathBuf {
+    data_dir.join(kind.directory()).join(name)
+}
+
+async fn local_put(
+    data_dir: &Path,
+    kind: MediaKind,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), StorageError> {
+    let path = local_path(data_dir, kind, name);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(map_io_error)?;
+    }
+    tokio::fs::write(path, bytes).await.map_err(map_io_error)
+}
+
+async fn local_get(data_dir: &Path, kind: MediaKind, name: &str) -> Result<Vec<u8>, StorageError> {
+    tokio::fs::read(local_path(data_dir, kind, name))
+        .await
+        .map_err(map_io_error)
+}
+
+async fn local_size(data_dir: &Path, kind: MediaKind, name: &str) -> Result<u64, StorageError> {
+    tokio::fs::metadata(local_path(data_dir, kind, name))
+        .await
+        .map(|metadata| metadata.len())
+        .map_err(map_io_error)
+}
+
+async fn local_get_range(
+    data_dir: &Path,
+    kind: MediaKind,
+    name: &str,
+    range: Range<u64>,
+) -> Result<Vec<u8>, StorageError> {
+    let bytes = local_get(data_dir, kind, name).await?;
+    if range.end > bytes.len() as u64 {
+        return Err(StorageError::Backend(
+            "media range exceeds object size".into(),
+        ));
+    }
+    Ok(bytes[range.start as usize..range.end as usize].to_vec())
+}
+
+async fn local_delete(data_dir: &Path, kind: MediaKind, name: &str) -> Result<(), StorageError> {
+    match tokio::fs::remove_file(local_path(data_dir, kind, name)).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(map_io_error(error)),
+    }
+}
+
+fn map_io_error(error: std::io::Error) -> StorageError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        StorageError::NotFound
+    } else {
+        StorageError::Backend(error.to_string())
+    }
+}
+
+fn content_type(kind: MediaKind, name: &str) -> String {
+    match kind {
+        MediaKind::Video => "video/mp4".into(),
+        MediaKind::Image | MediaKind::Avatar => mime_guess::from_path(name)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_string(),
+    }
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn config_value(value: &Option<String>) -> Option<String> {
+    nonempty(value.clone())
+}
+
+fn env_value<F>(getenv: &mut F, names: &[&str]) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    names.iter().find_map(|name| nonempty(getenv(name)))
+}
+
+fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!("{name} must be true or false")),
+    }
+}
+
+fn normalize_prefix(prefix: String) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for part in prefix.split('/').filter(|part| !part.is_empty()) {
+        if part == "." || part == ".." || part.contains('\\') {
+            return Err("S3 prefix contains an invalid path segment".into());
+        }
+        parts.push(part);
+    }
+    Ok(parts.join("/"))
+}
+
+fn resolve_storage<F>(
+    config: Option<&StorageConfig>,
+    mut getenv: F,
+) -> Result<ResolvedStorage, String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let config = config.cloned().unwrap_or_default();
+    let backend = env_value(&mut getenv, &["NOVACHAT_STORAGE_BACKEND"])
+        .or_else(|| nonempty(Some(config.backend.clone())))
+        .unwrap_or_else(|| "local".into())
+        .to_ascii_lowercase();
+    if backend == "local" {
+        return Ok(ResolvedStorage::Local);
+    }
+    if backend != "s3" {
+        return Err("storage backend must be local or s3".into());
+    }
+
+    let region = env_value(&mut getenv, &["NOVACHAT_S3_REGION"])
+        .or_else(|| config_value(&config.region))
+        .or_else(|| env_value(&mut getenv, &["AWS_REGION", "AWS_DEFAULT_REGION"]))
+        .unwrap_or_else(|| "us-east-1".into());
+    let custom_endpoint = env_value(&mut getenv, &["NOVACHAT_S3_ENDPOINT"])
+        .or_else(|| config_value(&config.endpoint))
+        .or_else(|| env_value(&mut getenv, &["AWS_ENDPOINT_URL_S3"]));
+    let endpoint = custom_endpoint
+        .clone()
+        .unwrap_or_else(|| format!("https://s3.{region}.amazonaws.com"));
+    let bucket = env_value(&mut getenv, &["NOVACHAT_S3_BUCKET"])
+        .or_else(|| config_value(&config.bucket))
+        .ok_or_else(|| "S3 bucket is required".to_string())?;
+    if bucket.contains('/') || bucket.contains('\\') {
+        return Err("S3 bucket must not contain slashes".into());
+    }
+    let access_key_id = env_value(&mut getenv, &["NOVACHAT_S3_ACCESS_KEY_ID"])
+        .or_else(|| config_value(&config.access_key_id))
+        .or_else(|| env_value(&mut getenv, &["AWS_ACCESS_KEY_ID"]))
+        .ok_or_else(|| "S3 access key id is required".to_string())?;
+    let secret_access_key = env_value(&mut getenv, &["NOVACHAT_S3_SECRET_ACCESS_KEY"])
+        .or_else(|| config_value(&config.secret_access_key))
+        .or_else(|| env_value(&mut getenv, &["AWS_SECRET_ACCESS_KEY"]))
+        .ok_or_else(|| "S3 secret access key is required".to_string())?;
+    let session_token = env_value(&mut getenv, &["NOVACHAT_S3_SESSION_TOKEN"])
+        .or_else(|| config_value(&config.session_token))
+        .or_else(|| env_value(&mut getenv, &["AWS_SESSION_TOKEN"]));
+    let prefix = env_value(&mut getenv, &["NOVACHAT_S3_PREFIX"])
+        .or_else(|| config_value(&config.prefix))
+        .unwrap_or_else(|| "novachat".into());
+    let prefix = normalize_prefix(prefix)?;
+    let path_style = match env_value(&mut getenv, &["NOVACHAT_S3_PATH_STYLE"]) {
+        Some(value) => parse_bool("NOVACHAT_S3_PATH_STYLE", &value)?,
+        None => config.path_style.unwrap_or(custom_endpoint.is_some()),
+    };
+
+    Ok(ResolvedStorage::S3(ResolvedS3 {
+        endpoint,
+        region,
+        bucket,
+        access_key_id,
+        secret_access_key,
+        session_token,
+        prefix,
+        path_style,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, time::SystemTime};
+
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        extract::State,
+        http::{Method, Request, Response, StatusCode, header},
+    };
+    use tokio::sync::RwLock;
+
+    use super::*;
+
+    type Objects = Arc<RwLock<HashMap<String, Vec<u8>>>>;
+
+    fn test_data_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "novachat-storage-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    async fn mock_s3(State(objects): State<Objects>, request: Request<Body>) -> Response<Body> {
+        let method = request.method().clone();
+        let key = request
+            .uri()
+            .path()
+            .strip_prefix("/media/")
+            .unwrap_or_default()
+            .to_string();
+        let requested_range = request
+            .headers()
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
+        match method {
+            Method::PUT => {
+                let bytes = to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec();
+                objects.write().await.insert(key, bytes);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::empty())
+                    .unwrap()
+            }
+            Method::GET => {
+                let Some(bytes) = objects.read().await.get(&key).cloned() else {
+                    return Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Body::empty())
+                        .unwrap();
+                };
+                if let Some(range) = requested_range.and_then(|value| {
+                    let value = value.strip_prefix("bytes=")?;
+                    let (start, end) = value.split_once('-')?;
+                    Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                }) {
+                    return Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .body(Body::from(bytes[range.0..=range.1].to_vec()))
+                        .unwrap();
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from(bytes))
+                    .unwrap()
+            }
+            Method::HEAD => {
+                let Some(size) = objects.read().await.get(&key).map(Vec::len) else {
+                    return Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Body::empty())
+                        .unwrap();
+                };
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_LENGTH, size)
+                    .body(Body::empty())
+                    .unwrap()
+            }
+            Method::DELETE => {
+                objects.write().await.remove(&key);
+                Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap()
+            }
+            _ => Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Body::empty())
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn defaults_to_local_storage() {
+        assert_eq!(
+            resolve_storage(None, |_| None).unwrap(),
+            ResolvedStorage::Local
+        );
+    }
+
+    #[test]
+    fn resolves_s3_config_and_normalizes_prefix() {
+        let config = StorageConfig {
+            backend: "s3".into(),
+            endpoint: Some("https://objects.example.com".into()),
+            region: Some("auto".into()),
+            bucket: Some("media".into()),
+            access_key_id: Some("key".into()),
+            secret_access_key: Some("secret".into()),
+            prefix: Some("/tenant//novachat/".into()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_storage(Some(&config), |_| None).unwrap();
+        let ResolvedStorage::S3(resolved) = resolved else {
+            panic!("expected S3 storage");
+        };
+        assert_eq!(resolved.prefix, "tenant/novachat");
+        assert!(resolved.path_style);
+    }
+
+    #[tokio::test]
+    async fn local_storage_round_trip_range_and_delete() {
+        let data_dir = test_data_dir("local");
+        let storage =
+            MediaStorage::from_resolved(data_dir.clone(), ResolvedStorage::Local).unwrap();
+        storage
+            .put(MediaKind::Video, "sample.mp4", b"0123456789".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.size(MediaKind::Video, "sample.mp4").await.unwrap(),
+            10
+        );
+        assert_eq!(
+            storage
+                .get_range(MediaKind::Video, "sample.mp4", 2..6)
+                .await
+                .unwrap(),
+            b"2345"
+        );
+        storage
+            .delete(MediaKind::Video, "sample.mp4")
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get(MediaKind::Video, "sample.mp4")
+                .await
+                .unwrap_err()
+                .is_not_found()
+        );
+        let _ = tokio::fs::remove_dir_all(data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn s3_storage_round_trip_range_and_delete() {
+        let objects: Objects = Default::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new().fallback(mock_s3).with_state(objects.clone()),
+            )
+            .into_future(),
+        );
+        let config = StorageConfig {
+            backend: "s3".into(),
+            endpoint: Some(format!("http://{address}")),
+            region: Some("test".into()),
+            bucket: Some("media".into()),
+            access_key_id: Some("key".into()),
+            secret_access_key: Some("secret".into()),
+            prefix: Some("novachat".into()),
+            path_style: Some(true),
+            ..Default::default()
+        };
+        let resolved = resolve_storage(Some(&config), |_| None).unwrap();
+        let data_dir = test_data_dir("s3");
+        let storage = MediaStorage::from_resolved(data_dir.clone(), resolved).unwrap();
+
+        local_put(&data_dir, MediaKind::Image, "legacy.png", b"legacy")
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get(MediaKind::Image, "legacy.png").await.unwrap(),
+            b"legacy"
+        );
+
+        storage
+            .put(MediaKind::Video, "sample.mp4", b"0123456789".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            objects
+                .read()
+                .await
+                .get("novachat/videos/sample.mp4")
+                .unwrap(),
+            b"0123456789"
+        );
+        assert_eq!(
+            storage.size(MediaKind::Video, "sample.mp4").await.unwrap(),
+            10
+        );
+        assert_eq!(
+            storage
+                .get_range(MediaKind::Video, "sample.mp4", 3..7)
+                .await
+                .unwrap(),
+            b"3456"
+        );
+        assert_eq!(
+            storage.get(MediaKind::Video, "sample.mp4").await.unwrap(),
+            b"0123456789"
+        );
+        storage
+            .delete(MediaKind::Video, "sample.mp4")
+            .await
+            .unwrap();
+        assert!(objects.read().await.is_empty());
+
+        server.abort();
+        let _ = tokio::fs::remove_dir_all(data_dir).await;
+    }
+}

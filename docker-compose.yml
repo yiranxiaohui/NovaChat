@@ -24,6 +24,15 @@ services:
     environment:
       NOVACHAT_BIND: 0.0.0.0:3000
       NOVACHAT_DATA_DIR: /data
+      # Optional S3-compatible media storage (images, videos, avatars):
+      # NOVACHAT_STORAGE_BACKEND: s3
+      # NOVACHAT_S3_ENDPOINT: https://<account-id>.r2.cloudflarestorage.com
+      # NOVACHAT_S3_REGION: auto
+      # NOVACHAT_S3_BUCKET: novachat-media
+      # NOVACHAT_S3_ACCESS_KEY_ID: change-me
+      # NOVACHAT_S3_SECRET_ACCESS_KEY: change-me
+      # NOVACHAT_S3_PREFIX: novachat
+      # NOVACHAT_S3_PATH_STYLE: "true"
       # Uncomment for MySQL profile:
       # NOVACHAT_DATABASE_URL: mysql://novachat:novachat@mysql:3306/novachat
       # Uncomment for Postgres profile:

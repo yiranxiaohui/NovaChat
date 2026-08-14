@@ -55,6 +55,8 @@ export type AdminSystemInfo = {
   config_path: string
   bind_addr: string
   images_dir_bytes: number
+  storage_backend: "local" | "s3"
+  storage_location: string
 }
 
 export type AdminUserUpdate = {

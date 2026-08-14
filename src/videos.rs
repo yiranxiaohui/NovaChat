@@ -23,6 +23,7 @@ use crate::{
     credits,
     credits::LedgerMeta,
     db::{self, DbKind, Pool},
+    storage::{MediaKind, MediaStorage},
 };
 
 /// None when seconds/size are not in the model's configured rules.
@@ -248,10 +249,9 @@ async fn create_job(
         if name.is_empty() || name.contains("..") || name.contains('/') {
             return err(StatusCode::BAD_REQUEST, "参考图不存在");
         }
-        let file_path = state.data_dir.join("images").join(name);
-        match tokio::fs::read(&file_path).await {
+        match state.storage.get(MediaKind::Image, name).await {
             Ok(bytes) => {
-                image_mime = mime_guess::from_path(&file_path)
+                image_mime = mime_guess::from_path(name)
                     .first_or_octet_stream()
                     .essence_str()
                     .to_string();
@@ -640,7 +640,7 @@ pub async fn advance_job(
     http: &reqwest::Client,
     pool: &Pool,
     kind: DbKind,
-    data_dir: &std::path::Path,
+    storage: &MediaStorage,
     token: &str,
 ) {
     let Some(job) = fetch_job(pool, kind, token).await else { return };
@@ -675,7 +675,7 @@ pub async fn advance_job(
     // and orphan the previous mp4 / miscount download_retries.
     match fetch_job(pool, kind, token).await {
         Some(job) if job.status != "completed" && job.status != "failed" => {
-            poll_upstream_once(http, pool, kind, data_dir, &job).await;
+            poll_upstream_once(http, pool, kind, storage, &job).await;
         }
         _ => {}
     }
@@ -685,7 +685,7 @@ pub async fn advance_job(
 /// Runs every ~60s from main. Three duties, cheap when idle:
 /// 1) repair hung polling locks, 2) time out + refund stale jobs (>2h),
 /// 3) advance orphaned jobs nobody is actively polling.
-pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, data_dir: &std::path::Path) {
+pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, storage: &MediaStorage) {
     let bt = db::bool_true(kind);
     let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) { "0" } else { "FALSE" };
 
@@ -754,7 +754,7 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, data_dir: 
         sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
     };
     for (token,) in orphans {
-        advance_job(http, pool, kind, data_dir, &token).await;
+        advance_job(http, pool, kind, storage, &token).await;
     }
 }
 
@@ -762,7 +762,7 @@ async fn poll_upstream_once(
     http: &reqwest::Client,
     pool: &Pool,
     kind: DbKind,
-    data_dir: &std::path::Path,
+    storage: &MediaStorage,
     job: &JobRow,
 ) {
     let Some(upstream_video_id) = job.upstream_video_id.as_deref() else {
@@ -831,7 +831,7 @@ async fn poll_upstream_once(
             refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
         }
         "completed" => {
-            download_completed_video(http, pool, kind, data_dir, job, base, upstream_video_id, &key).await;
+            download_completed_video(http, pool, kind, storage, job, base, upstream_video_id, &key).await;
         }
         _ => {
             mark_error_only(pool, kind, job.id, &format!("未知上游状态: {status}")).await;
@@ -850,7 +850,7 @@ async fn download_completed_video(
     http: &reqwest::Client,
     pool: &Pool,
     kind: DbKind,
-    data_dir: &std::path::Path,
+    storage: &MediaStorage,
     job: &JobRow,
     base: &str,
     upstream_video_id: &str,
@@ -878,15 +878,9 @@ async fn download_completed_video(
         }
     };
 
-    let dir = data_dir.join("videos");
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        handle_download_failure(pool, kind, job, &format!("创建目录失败: {e}")).await;
-        return;
-    }
     let name = format!("{}.mp4", random_hex(16));
-    let path = dir.join(&name);
-    if let Err(e) = tokio::fs::write(&path, &bytes).await {
-        handle_download_failure(pool, kind, job, &format!("写盘失败: {e}")).await;
+    if let Err(e) = storage.put(MediaKind::Video, &name, bytes).await {
+        handle_download_failure(pool, kind, job, &format!("写入媒体存储失败: {e}")).await;
         return;
     }
 
@@ -911,7 +905,7 @@ async fn download_completed_video(
         // Job was already marked failed (e.g. by the 2h-timeout sweeper)
         // while the download was in flight — don't resurrect it, and don't
         // leave an orphan file behind.
-        let _ = tokio::fs::remove_file(&path).await;
+        let _ = storage.delete(MediaKind::Video, &name).await;
     }
 }
 
@@ -957,7 +951,7 @@ async fn get_job(
         _ => return err(StatusCode::NOT_FOUND, "任务不存在"),
     }
 
-    advance_job(&state.http, pool, kind, &state.data_dir, &token).await;
+    advance_job(&state.http, pool, kind, &state.storage, &token).await;
 
     match fetch_job(pool, kind, &token).await {
         Some(j) if j.user_id == user.id => Json(JobView::from(&j)).into_response(),
@@ -1025,7 +1019,7 @@ async fn delete_job(
 
     if let Some(video_path) = job.video_path.as_deref() {
         if let Some(name) = video_path.rsplit('/').next() {
-            let _ = tokio::fs::remove_file(state.data_dir.join("videos").join(name)).await;
+            let _ = state.storage.delete(MediaKind::Video, name).await;
         }
     }
 
@@ -1039,6 +1033,32 @@ async fn delete_job(
 // MP4 static serving (with Range support)
 // ---------------------------------------------------------------------------
 
+fn parse_video_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    if total == 0 || value.contains(',') {
+        return None;
+    }
+    let (start, end) = value.trim().split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        let length = suffix.min(total);
+        return Some((total - length, total - 1));
+    }
+
+    let start = start.parse::<u64>().ok()?;
+    if start >= total {
+        return None;
+    }
+    let end = if end.is_empty() {
+        total - 1
+    } else {
+        end.parse::<u64>().ok()?.min(total - 1)
+    };
+    (start <= end).then_some((start, end))
+}
+
 async fn serve_video(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -1047,38 +1067,34 @@ async fn serve_video(
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let path = state.data_dir.join("videos").join(&name);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let total = bytes.len() as u64;
-    // Guard the `total - 1` arithmetic below: an empty file has no satisfiable
-    // byte range (and would underflow u64 in debug builds).
-    if total == 0 {
-        return Response::builder()
-            .header(header::CONTENT_TYPE, "video/mp4")
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
-            .body(Body::empty())
-            .unwrap();
-    }
     if let Some(r) = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("bytes="))
     {
-        let mut it = r.splitn(2, '-');
-        let start: u64 = it.next().unwrap_or("").parse().unwrap_or(0);
-        let end: u64 = it.next().unwrap_or("").parse().unwrap_or(total - 1).min(total - 1);
-        if start > end || start >= total {
+        let total = match state.storage.size(MediaKind::Video, &name).await {
+            Ok(size) => size,
+            Err(error) if error.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+            Err(error) => {
+                eprintln!("[storage] inspect video {name}: {error}");
+                return StatusCode::BAD_GATEWAY.into_response();
+            }
+        };
+        let Some((start, end)) = parse_video_range(r, total) else {
             return Response::builder()
                 .status(StatusCode::RANGE_NOT_SATISFIABLE)
                 .header(header::CONTENT_RANGE, format!("bytes */{total}"))
                 .body(Body::empty())
                 .unwrap();
-        }
-        let chunk = bytes[start as usize..=(end as usize)].to_vec();
+        };
+        let chunk = match state.storage.get_range(MediaKind::Video, &name, start..end + 1).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+            Err(error) => {
+                eprintln!("[storage] serve video range {name}: {error}");
+                return StatusCode::BAD_GATEWAY.into_response();
+            }
+        };
         return Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
             .header(header::CONTENT_TYPE, "video/mp4")
@@ -1088,6 +1104,14 @@ async fn serve_video(
             .body(Body::from(chunk))
             .unwrap();
     }
+    let bytes = match state.storage.get(MediaKind::Video, &name).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            eprintln!("[storage] serve video {name}: {error}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, "video/mp4")
         .header(header::ACCEPT_RANGES, "bytes")
@@ -1105,4 +1129,21 @@ pub fn routes() -> Router<AppState> {
         .route("/videos/models", get(user_list_models))
         .route("/videos/jobs", post(create_job).get(list_jobs))
         .route("/videos/jobs/{token}", get(get_job).delete(delete_job))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_video_range;
+
+    #[test]
+    fn parses_http_byte_ranges() {
+        assert_eq!(parse_video_range("0-99", 1000), Some((0, 99)));
+        assert_eq!(parse_video_range("900-", 1000), Some((900, 999)));
+        assert_eq!(parse_video_range("-100", 1000), Some((900, 999)));
+        assert_eq!(parse_video_range("0-9999", 1000), Some((0, 999)));
+        assert_eq!(parse_video_range("1000-", 1000), None);
+        assert_eq!(parse_video_range("0-1,4-5", 1000), None);
+        assert_eq!(parse_video_range("-0", 1000), None);
+        assert_eq!(parse_video_range("0-", 0), None);
+    }
 }

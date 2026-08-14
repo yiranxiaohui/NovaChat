@@ -54,10 +54,19 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 
 ## 部署
 
-镜像 tag：`docker.yunnet.top/github/yiranxiaohui/novachat:sha-XXX`。
+正式版本镜像 tag：`docker.yunnet.top/github/yiranxiaohui/novachat:X.Y.Z`。
 
-- push `main` → GHA self-hosted 构建并推 registry
-- prod 机器：`docker compose pull && docker compose up -d`（**禁本地 build**）
+- push `main` → GitHub Actions 构建开发镜像
+- push `vX.Y.Z` → GitHub Actions 构建正式镜像与 Worker 多平台附件
+- 两个发布工作流成功后，由 Codex 所在可信服务器 SSH 部署生产环境
 - migration 在容器启动时自动跑
+- 默认版本策略只递增最后一位：`vX.Y.Z` → `vX.Y.(Z+1)`
 
-详见 `docs/plans/2026-05-18-multi-channel-pricing.md` 阶段 5 部署 checklist。
+一键发布并部署：
+
+```bash
+scripts/release-and-deploy.sh
+```
+
+完整流程、备份与回滚说明见
+[`docs/release-and-deploy.md`](docs/release-and-deploy.md)。

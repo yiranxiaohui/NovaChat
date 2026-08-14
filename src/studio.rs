@@ -85,7 +85,7 @@ async fn resolve_openai_image_upstream(
     }
     let installed = state.require_installed().await?;
     // Pick highest-priority enabled OpenAI image channel that serves `model`.
-    let choice = channels::select_chain(&installed.pool, installed.kind, model, "image")
+    let choice = channels::select_chain(&installed.pool, installed.kind, model)
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("channels query: {e}")))?
         .into_iter()
@@ -957,7 +957,6 @@ async fn list_models(
                     &installed.pool,
                     installed.kind,
                     "openai",
-                    "image",
                 )
                 .await
                 .ok()

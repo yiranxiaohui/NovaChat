@@ -61,7 +61,7 @@ async fn user_list_models(Extension(s): Extension<InstalledState>) -> Response {
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
-    match channels::any_enabled_channel(&s.pool, s.kind, "openai", "video").await {
+    match channels::any_enabled_channel(&s.pool, s.kind, "openai").await {
         Ok(Some(_)) => {}
         Ok(None) => return Json(Vec::<UserVideoModel>::new()).into_response(),
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -289,7 +289,6 @@ async fn create_job(
         pool,
         kind,
         &model,
-        "video",
     )
     .await
     {

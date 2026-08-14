@@ -29,7 +29,6 @@ export type Channel = {
   id: number
   name: string
   protocol: ChannelProtocol
-  kind: ChannelKind
   base_url: string
   api_key: string
   enabled: boolean
@@ -39,7 +38,6 @@ export type Channel = {
 export type ChannelInput = {
   name: string
   protocol: ChannelProtocol
-  kind: ChannelKind
   base_url: string
   api_key: string
   enabled?: boolean
@@ -49,7 +47,6 @@ export type ChannelInput = {
 export type ChannelPatch = Partial<{
   name: string
   protocol: ChannelProtocol
-  kind: ChannelKind
   base_url: string
   api_key: string
   enabled: boolean
@@ -92,6 +89,8 @@ export type ModelPrice = {
 export type PricingInput = {
   model: string
   kind: ChannelKind
+  /** Replace model-to-channel bindings when present; omit to preserve them. */
+  channel_ids?: number[]
   cost_credits: number
   display_name?: string | null
   enabled?: boolean
@@ -105,9 +104,8 @@ export type PricingInput = {
 
 export type AllChannelModel = {
   model: string
-  kind: ChannelKind
-  /** channel names that advertise this model — UI hint */
-  channels: string[]
+  /** channels that advertise this model — function is chosen in model pricing */
+  channels: { id: number; name: string; protocol: ChannelProtocol }[]
 }
 
 export type AllChannelModelsResponse = {
@@ -180,12 +178,9 @@ export const channelsAdminApi = {
 
   // aggregated model list across all enabled channels, by live-probing each
   // upstream's /models endpoint (no DB whitelist required).
-  async listAllChannelModels(
-    flavor?: ChannelKind
-  ): Promise<AllChannelModelsResponse> {
-    const qs = flavor ? `?flavor=${flavor}` : ""
+  async listAllChannelModels(): Promise<AllChannelModelsResponse> {
     return jsonOrThrow(
-      await fetch(`/api/admin/channels/all-models${qs}`, {
+      await fetch("/api/admin/channels/all-models", {
         credentials: "same-origin",
       })
     )
@@ -216,4 +211,3 @@ export const channelsAdminApi = {
     )
   },
 }
-

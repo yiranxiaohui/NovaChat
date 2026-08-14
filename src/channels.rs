@@ -1,7 +1,7 @@
 //! Multi-channel upstream + per-model pricing.
 //!
 //! Tables (see migrations/{sqlite,postgres,mysql}/0019_channels_pricing.sql):
-//!   * `upstream_channels`  — admin-managed providers (protocol/kind/base_url/api_key/enabled/priority)
+//!   * `upstream_channels`  — admin-managed providers (protocol/base_url/api_key/enabled/priority)
 //!   * `model_pricing`      — whitelist of callable models + credit cost per call
 //!   * `channel_models`     — which channels serve which model (optional upstream id alias)
 //!
@@ -31,7 +31,6 @@ pub struct Channel {
     pub id: i64,
     pub name: String,
     pub protocol: String,   // 'openai' | 'claude' | 'gemini'
-    pub kind: String,       // 'chat' | 'image'
     pub base_url: String,
     pub api_key: String,
     pub enabled: bool,
@@ -80,20 +79,19 @@ pub async fn list_channels(pool: &Pool, kind: DbKind) -> Result<Vec<Channel>, sq
     let sql = db::q(
         kind,
         &format!(
-            "SELECT id, name, protocol, kind, base_url, api_key, \
+            "SELECT id, name, protocol, base_url, api_key, \
              {enabled_col}, priority \
              FROM upstream_channels ORDER BY priority ASC, id ASC"
         ),
     );
-    let rows: Vec<(i64, String, String, String, String, String, i64, i64)> =
+    let rows: Vec<(i64, String, String, String, String, i64, i64)> =
         sqlx::query_as(&sql).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority)| Channel {
+        .map(|(id, name, protocol, base_url, api_key, enabled, priority)| Channel {
             id,
             name,
             protocol,
-            kind: kind_,
             base_url,
             api_key,
             enabled: enabled != 0,
@@ -102,14 +100,13 @@ pub async fn list_channels(pool: &Pool, kind: DbKind) -> Result<Vec<Channel>, sq
         .collect())
 }
 
-/// All enabled channels that can serve `model`, matching `kind` ('chat'|'image'),
-/// sorted by priority ascending.
+/// All enabled channels that can serve `model`, sorted by priority ascending.
 ///
 /// Routing first looks for explicit `channel_models` bindings for the model:
 /// those act as routing restrictions and optional upstream aliases. When the
-/// model has NO binding (the common case — there is no binding UI), we fall
-/// back to every enabled channel of the right `kind`. `resolve_route` then
-/// narrows that set to the channels whose protocol matches the wire protocol
+/// model has no binding (for example, a legacy or custom model), we fall back
+/// to every enabled channel. `resolve_route` then narrows that set to the
+/// channels whose protocol matches the wire protocol
 /// the client declared (derived from `model_pricing.protocol` via the picker),
 /// so auto-routing lands on the correct provider without manual binding.
 #[allow(dead_code)] // consumed by Task 2.1 select_channel_for_model
@@ -117,38 +114,35 @@ pub async fn channels_for_model(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<Vec<(Channel, Option<String>)>, sqlx::Error> {
     let enabled_c = db::bool_as_int(kind, "c.enabled");
     let bool_true = db::bool_true(kind);
     let explicit_sql = db::q(
         kind,
         &format!(
-            "SELECT c.id, c.name, c.protocol, c.kind, c.base_url, c.api_key, \
+            "SELECT c.id, c.name, c.protocol, c.base_url, c.api_key, \
              {enabled_c}, c.priority, cm.upstream_id \
              FROM upstream_channels c \
              INNER JOIN channel_models cm ON cm.channel_id = c.id \
-             WHERE cm.model = ? AND c.kind = ? AND c.enabled = {bool_true} \
+             WHERE cm.model = ? AND c.enabled = {bool_true} \
              ORDER BY c.priority ASC, c.id ASC"
         ),
     );
-    let rows: Vec<(i64, String, String, String, String, String, i64, i64, Option<String>)> =
+    let rows: Vec<(i64, String, String, String, String, i64, i64, Option<String>)> =
         sqlx::query_as(&explicit_sql)
             .bind(model)
-            .bind(flavor)
             .fetch_all(pool)
             .await?;
 
     if !rows.is_empty() {
         return Ok(rows
             .into_iter()
-            .map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority, upstream_id)| {
+            .map(|(id, name, protocol, base_url, api_key, enabled, priority, upstream_id)| {
                 (
                     Channel {
                         id,
                         name,
                         protocol,
-                        kind: kind_,
                         base_url,
                         api_key,
                         enabled: enabled != 0,
@@ -163,34 +157,33 @@ pub async fn channels_for_model(
     // A binding remains a routing restriction even when every bound channel
     // is disabled. Do not silently fall back to an unrelated channel in that
     // case.
-    if model_has_explicit_binding(pool, kind, model, flavor).await? {
+    if model_has_explicit_binding(pool, kind, model).await? {
         return Ok(Vec::new());
     }
 
-    // No explicit binding → auto-route to all enabled channels of this kind.
+    // No explicit binding → auto-route to all enabled channels.
     // upstream_id is None (send the model name as-is); resolve_route narrows
     // this set to the matching protocol afterwards.
     let fallback_sql = db::q(
         kind,
         &format!(
-            "SELECT c.id, c.name, c.protocol, c.kind, c.base_url, c.api_key, \
+            "SELECT c.id, c.name, c.protocol, c.base_url, c.api_key, \
              {enabled_c}, c.priority \
              FROM upstream_channels c \
-             WHERE c.kind = ? AND c.enabled = {bool_true} \
+             WHERE c.enabled = {bool_true} \
              ORDER BY c.priority ASC, c.id ASC"
         ),
     );
-    let fb: Vec<(i64, String, String, String, String, String, i64, i64)> =
-        sqlx::query_as(&fallback_sql).bind(flavor).fetch_all(pool).await?;
+    let fb: Vec<(i64, String, String, String, String, i64, i64)> =
+        sqlx::query_as(&fallback_sql).fetch_all(pool).await?;
     Ok(fb
         .into_iter()
-        .map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority)| {
+        .map(|(id, name, protocol, base_url, api_key, enabled, priority)| {
             (
                 Channel {
                     id,
                     name,
                     protocol,
-                    kind: kind_,
                     base_url,
                     api_key,
                     enabled: enabled != 0,
@@ -206,17 +199,13 @@ async fn model_has_explicit_binding(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<bool, sqlx::Error> {
     let sql = db::q(
         kind,
-        "SELECT COUNT(*) FROM channel_models cm \
-         INNER JOIN upstream_channels c ON c.id = cm.channel_id \
-         WHERE cm.model = ? AND c.kind = ?",
+        "SELECT COUNT(*) FROM channel_models WHERE model = ?",
     );
     let (count,): (i64,) = sqlx::query_as(&sql)
         .bind(model)
-        .bind(flavor)
         .fetch_one(pool)
         .await?;
     Ok(count > 0)
@@ -231,17 +220,16 @@ pub struct ChannelChoice {
     pub upstream_model: String,
 }
 
-/// Priority-sorted list of channels that can serve (model, flavor).
+/// Priority-sorted list of channels that can serve a model.
 ///
 /// Caller iterates the list; on 5xx / network error, falls back to the next.
-/// Returns empty vec when the model has no channel binding (caller should 404 / "no upstream available").
+/// Returns an empty vec when explicit bindings exist but none are enabled.
 pub async fn select_chain(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<Vec<ChannelChoice>, sqlx::Error> {
-    let rows = channels_for_model(pool, kind, model, flavor).await?;
+    let rows = channels_for_model(pool, kind, model).await?;
     Ok(rows
         .into_iter()
         .map(|(channel, upstream_id)| ChannelChoice {
@@ -259,10 +247,9 @@ pub async fn select_chain_by_advertised_model(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<Vec<ChannelChoice>, sqlx::Error> {
-    let explicitly_bound = model_has_explicit_binding(pool, kind, model, flavor).await?;
-    let candidates = select_chain(pool, kind, model, flavor).await?;
+    let explicitly_bound = model_has_explicit_binding(pool, kind, model).await?;
+    let candidates = select_chain(pool, kind, model).await?;
     if explicitly_bound || candidates.is_empty() {
         return Ok(candidates);
     }
@@ -281,9 +268,8 @@ pub async fn select_one_by_advertised_model(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<Option<ChannelChoice>, sqlx::Error> {
-    Ok(select_chain_by_advertised_model(http, pool, kind, model, flavor)
+    Ok(select_chain_by_advertised_model(http, pool, kind, model)
         .await?
         .into_iter()
         .next())
@@ -310,16 +296,14 @@ pub async fn select_one(
     pool: &Pool,
     kind: DbKind,
     model: &str,
-    flavor: &str,
 ) -> Result<Option<ChannelChoice>, sqlx::Error> {
-    Ok(select_chain(pool, kind, model, flavor).await?.into_iter().next())
+    Ok(select_chain(pool, kind, model).await?.into_iter().next())
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelInput {
     pub name: String,
     pub protocol: String,
-    pub kind: String,
     pub base_url: String,
     pub api_key: String,
     #[serde(default = "default_true")]
@@ -339,8 +323,8 @@ pub async fn create_channel(
     let sql = db::q(
         kind,
         &format!(
-            "INSERT INTO upstream_channels (name, protocol, kind, base_url, api_key, enabled, priority) \
-             VALUES (?, ?, ?, ?, ?, ?, ?){returning}"
+            "INSERT INTO upstream_channels (name, protocol, base_url, api_key, enabled, priority) \
+             VALUES (?, ?, ?, ?, ?, ?){returning}"
         ),
     );
     let enabled_v: i64 = if input.enabled { 1 } else { 0 };
@@ -349,7 +333,6 @@ pub async fn create_channel(
             let row: (i64,) = sqlx::query_as(&sql)
                 .bind(&input.name)
                 .bind(&input.protocol)
-                .bind(&input.kind)
                 .bind(&input.base_url)
                 .bind(&input.api_key)
                 .bind(input.enabled)
@@ -362,7 +345,6 @@ pub async fn create_channel(
             let row: (i64,) = sqlx::query_as(&sql)
                 .bind(&input.name)
                 .bind(&input.protocol)
-                .bind(&input.kind)
                 .bind(&input.base_url)
                 .bind(&input.api_key)
                 .bind(enabled_v)
@@ -375,7 +357,6 @@ pub async fn create_channel(
             let r = sqlx::query(&sql)
                 .bind(&input.name)
                 .bind(&input.protocol)
-                .bind(&input.kind)
                 .bind(&input.base_url)
                 .bind(&input.api_key)
                 .bind(enabled_v)
@@ -391,7 +372,6 @@ pub async fn create_channel(
 pub struct ChannelPatch {
     pub name: Option<String>,
     pub protocol: Option<String>,
-    pub kind: Option<String>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub enabled: Option<bool>,
@@ -408,7 +388,6 @@ pub async fn update_channel(
     let mut sets: Vec<&str> = Vec::new();
     if patch.name.is_some()     { sets.push("name = ?"); }
     if patch.protocol.is_some() { sets.push("protocol = ?"); }
-    if patch.kind.is_some()     { sets.push("kind = ?"); }
     if patch.base_url.is_some() { sets.push("base_url = ?"); }
     if patch.api_key.is_some()  { sets.push("api_key = ?"); }
     if patch.enabled.is_some()  { sets.push("enabled = ?"); }
@@ -427,7 +406,6 @@ pub async fn update_channel(
     let mut q = sqlx::query(&sql);
     if let Some(v) = &patch.name     { q = q.bind(v); }
     if let Some(v) = &patch.protocol { q = q.bind(v); }
-    if let Some(v) = &patch.kind     { q = q.bind(v); }
     if let Some(v) = &patch.base_url { q = q.bind(v); }
     if let Some(v) = &patch.api_key  { q = q.bind(v); }
     if let Some(v) = patch.enabled   {
@@ -555,6 +533,10 @@ pub async fn get_price(
 pub struct PricingInput {
     pub model: String,
     pub kind: String,
+    /// When present, replace this model's channel bindings with these IDs.
+    /// Omitted by lightweight edits (for example enable/disable) to preserve bindings.
+    #[serde(default)]
+    pub channel_ids: Option<Vec<i64>>,
     #[serde(default)]
     pub cost_credits: i64,
     #[serde(default)]
@@ -686,7 +668,49 @@ pub async fn upsert_price(
         .bind(if is_video { input.per_second } else { 0 })
         .bind(allowed_seconds)
         .bind(size_rules);
-    q.execute(pool).await.map(|_| ())
+
+    let mut tx = pool.begin().await?;
+    q.execute(&mut *tx).await?;
+    if let Some(channel_ids) = &input.channel_ids {
+        let del = db::q(kind, "DELETE FROM channel_models WHERE model = ?");
+        sqlx::query(&del).bind(&input.model).execute(&mut *tx).await?;
+        let ins = db::q(
+            kind,
+            "INSERT INTO channel_models (channel_id, model, upstream_id) VALUES (?, ?, NULL)",
+        );
+        let unique_ids: std::collections::BTreeSet<i64> = channel_ids.iter().copied().collect();
+        for channel_id in unique_ids {
+            sqlx::query(&ins)
+                .bind(channel_id)
+                .bind(&input.model)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    tx.commit().await
+}
+
+async fn channel_ids_match_protocol(
+    pool: &Pool,
+    kind: DbKind,
+    channel_ids: &[i64],
+    protocol: &str,
+) -> Result<bool, sqlx::Error> {
+    let sql = db::q(
+        kind,
+        "SELECT COUNT(*) FROM upstream_channels WHERE id = ? AND protocol = ?",
+    );
+    for channel_id in channel_ids.iter().copied().collect::<std::collections::BTreeSet<_>>() {
+        let (count,): (i64,) = sqlx::query_as(&sql)
+            .bind(channel_id)
+            .bind(protocol)
+            .fetch_one(pool)
+            .await?;
+        if count == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub async fn delete_price(pool: &Pool, kind: DbKind, model: &str) -> Result<(), sqlx::Error> {
@@ -694,7 +718,7 @@ pub async fn delete_price(pool: &Pool, kind: DbKind, model: &str) -> Result<(), 
     sqlx::query(&sql).bind(model).execute(pool).await.map(|_| ())
 }
 
-/// Convenience: top-priority enabled channel matching (protocol, flavor),
+/// Convenience: top-priority enabled channel matching a protocol,
 /// regardless of any specific model binding. Used by GET /v1/models to
 /// surface an upstream catalog when in shared mode.
 #[allow(dead_code)] // consumed by main.rs proxy_get_forward
@@ -702,31 +726,28 @@ pub async fn any_enabled_channel(
     pool: &Pool,
     kind: DbKind,
     protocol: &str,
-    flavor: &str,
 ) -> Result<Option<Channel>, sqlx::Error> {
     let enabled_col = db::bool_as_int(kind, "enabled");
     let bool_true = db::bool_true(kind);
     let sql = db::q(
         kind,
         &format!(
-            "SELECT id, name, protocol, kind, base_url, api_key, \
+            "SELECT id, name, protocol, base_url, api_key, \
              {enabled_col}, priority \
              FROM upstream_channels \
-             WHERE protocol = ? AND kind = ? AND enabled = {bool_true} \
+             WHERE protocol = ? AND enabled = {bool_true} \
              ORDER BY priority ASC, id ASC LIMIT 1"
         ),
     );
-    let row: Option<(i64, String, String, String, String, String, i64, i64)> =
+    let row: Option<(i64, String, String, String, String, i64, i64)> =
         sqlx::query_as(&sql)
             .bind(protocol)
-            .bind(flavor)
             .fetch_optional(pool)
             .await?;
-    Ok(row.map(|(id, name, protocol, kind_, base_url, api_key, enabled, priority)| Channel {
+    Ok(row.map(|(id, name, protocol, base_url, api_key, enabled, priority)| Channel {
         id,
         name,
         protocol,
-        kind: kind_,
         base_url,
         api_key,
         enabled: enabled != 0,
@@ -753,7 +774,7 @@ async fn admin_create_channel(
     Extension(s): Extension<InstalledState>,
     Json(input): Json<ChannelInput>,
 ) -> Response {
-    if let Err(e) = validate_protocol_kind(&input.protocol, &input.kind) {
+    if let Err(e) = validate_protocol(&input.protocol) {
         return err(StatusCode::BAD_REQUEST, e);
     }
     match create_channel(&s.pool, s.kind, &input).await {
@@ -767,8 +788,8 @@ async fn admin_patch_channel(
     Path(id): Path<i64>,
     Json(patch): Json<ChannelPatch>,
 ) -> Response {
-    if let (Some(p), Some(k)) = (&patch.protocol, &patch.kind) {
-        if let Err(e) = validate_protocol_kind(p, k) {
+    if let Some(p) = &patch.protocol {
+        if let Err(e) = validate_protocol(p) {
             return err(StatusCode::BAD_REQUEST, e);
         }
     }
@@ -809,16 +830,20 @@ async fn admin_put_channel_models(
     }
 }
 
-/// Aggregate model list across all enabled channels' whitelists.
-/// `?flavor=chat|image` filters by channel kind. Used by the pricing
-/// panel's "new model" picker so admins don't have to type model ids
-/// they've already entered in some channel.
+/// Aggregate the models advertised by every enabled channel. Functional type
+/// is deliberately absent: the admin assigns chat/image/video when saving the
+/// model pricing rule.
 #[derive(Serialize)]
 struct AllChannelModel {
     model: String,
-    kind: String,
-    /// channel names that have this model in their whitelist (for UI hint)
-    channels: Vec<String>,
+    channels: Vec<AllChannelModelChannel>,
+}
+
+#[derive(Serialize)]
+struct AllChannelModelChannel {
+    id: i64,
+    name: String,
+    protocol: String,
 }
 
 /// Probe a single channel's upstream `/models` endpoint and return the list of
@@ -890,7 +915,6 @@ mod tests {
                 id,
                 name: format!("channel-{id}"),
                 protocol: "openai".to_string(),
-                kind: "video".to_string(),
                 base_url: format!("https://channel-{id}.example"),
                 api_key: "test-key".to_string(),
                 enabled: true,
@@ -926,9 +950,7 @@ mod tests {
 async fn admin_list_all_channel_models(
     axum::extract::State(state): axum::extract::State<AppState>,
     Extension(s): Extension<InstalledState>,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let flavor = q.get("flavor").cloned();
     let channels = match list_channels(&s.pool, s.kind).await {
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -936,10 +958,6 @@ async fn admin_list_all_channel_models(
     let channels: Vec<Channel> = channels
         .into_iter()
         .filter(|c| c.enabled)
-        .filter(|c| match flavor.as_deref() {
-            Some(f) if matches!(f, "chat" | "image" | "video") => c.kind == f,
-            _ => true,
-        })
         .collect();
 
     // Probe all channels concurrently.
@@ -955,16 +973,20 @@ async fn admin_list_all_channel_models(
     }
     let results = futures_util::future::join_all(futs).await;
 
-    let mut map: std::collections::BTreeMap<(String, String), Vec<String>> =
+    let mut map: std::collections::BTreeMap<String, Vec<AllChannelModelChannel>> =
         std::collections::BTreeMap::new();
     let mut errors: Vec<serde_json::Value> = Vec::new();
     for (ch, res) in results {
         match res {
             Ok(models) => {
                 for model in models {
-                    map.entry((model, ch.kind.clone()))
+                    map.entry(model)
                         .or_default()
-                        .push(ch.name.clone());
+                        .push(AllChannelModelChannel {
+                            id: ch.id,
+                            name: ch.name.clone(),
+                            protocol: ch.protocol.clone(),
+                        });
                 }
             }
             Err(e) => {
@@ -977,7 +999,7 @@ async fn admin_list_all_channel_models(
     }
     let models: Vec<AllChannelModel> = map
         .into_iter()
-        .map(|((model, kind), channels)| AllChannelModel { model, kind, channels })
+        .map(|(model, channels)| AllChannelModel { model, channels })
         .collect();
     Json(serde_json::json!({
         "models": models,
@@ -1003,6 +1025,15 @@ async fn admin_upsert_pricing(
     if let Err(e) = validate_pricing_input(&input) {
         return err(StatusCode::BAD_REQUEST, e);
     }
+    if let Some(channel_ids) = &input.channel_ids {
+        match channel_ids_match_protocol(&s.pool, s.kind, channel_ids, &input.protocol).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return err(StatusCode::BAD_REQUEST, "所选渠道不存在或协议与模型不一致");
+            }
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        }
+    }
     match upsert_price(&s.pool, s.kind, &input).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -1019,10 +1050,15 @@ async fn admin_delete_pricing(
     }
 }
 
-fn validate_protocol_kind(protocol: &str, kind: &str) -> Result<(), String> {
+fn validate_protocol(protocol: &str) -> Result<(), String> {
     if !matches!(protocol, "openai" | "claude" | "gemini") {
         return Err("protocol must be openai/claude/gemini".into());
     }
+    Ok(())
+}
+
+fn validate_protocol_kind(protocol: &str, kind: &str) -> Result<(), String> {
+    validate_protocol(protocol)?;
     if !matches!(kind, "chat" | "image" | "video") {
         return Err("kind must be chat/image/video".into());
     }
@@ -1083,9 +1119,9 @@ async fn user_list_platform_models(
             if &p.kind != f { continue; }
         }
         // Auto-routing: a priced model declares its protocol in model_pricing.
-        // Show it only when at least one enabled channel of that protocol+kind
+        // Show it only when at least one enabled channel of that protocol
         // exists, so the picker never lists a model the client can't route.
-        match any_enabled_channel(&s.pool, s.kind, &p.protocol, &p.kind).await {
+        match any_enabled_channel(&s.pool, s.kind, &p.protocol).await {
             Ok(Some(_)) => {}
             Ok(None) => continue,
             Err(_) => continue,
@@ -1113,7 +1149,7 @@ pub fn user_routes() -> Router<AppState> {
 // Two-tier resolution:
 //   1. BYOK — client supplies X-Upstream-Url/Key headers and didn't set
 //      X-Use-Shared=1: no credits deducted, no routing.
-//   2. Channels — admin-configured upstream_channels matching (model, kind),
+//   2. Channels — admin-configured upstream_channels matching the model,
 //      sorted by priority ASC. Caller iterates the chain on transient errors.
 
 fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -1137,7 +1173,7 @@ pub struct ByokRoute {
 pub enum Route {
     /// Client supplied X-Upstream-Url/Key and didn't ask for shared.
     Byok(ByokRoute),
-    /// Server-side channels matching (model, kind). Empty Vec means
+    /// Server-side channels matching the model and request protocol. Empty Vec means
     /// "no upstream available" — caller should return 400.
     Channels {
         model: String,
@@ -1234,7 +1270,7 @@ pub async fn resolve_route(
         )
             .into_response());
     }
-    let chain = select_chain(pool, kind, model, flavor).await.map_err(|e| {
+    let chain = select_chain(pool, kind, model).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("channel lookup failed: {e}"),

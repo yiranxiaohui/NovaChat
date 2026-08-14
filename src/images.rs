@@ -87,7 +87,7 @@ async fn resolve_image_upstream(
     // Pick highest-priority enabled channel that serves (model, "image").
     // Chain fallback is deferred to a follow-up task — image generation
     // already has retry/refund semantics that complicate mid-flight failover.
-    let chain = channels::select_chain(&installed.pool, installed.kind, &client_model, "image")
+    let chain = channels::select_chain(&installed.pool, installed.kind, &client_model)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("channels query: {e}")).into_response())?;
     let choice = chain

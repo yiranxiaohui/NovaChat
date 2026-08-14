@@ -117,7 +117,7 @@ export function PricingPanel() {
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索模型名 / 显示名 / 类型…"
+          placeholder="搜索模型名 / 显示名 / 功能…"
           className="max-w-xs"
         />
         <Button variant="outline" size="sm" onClick={() => void load()}>
@@ -144,7 +144,7 @@ export function PricingPanel() {
             <TableRow>
               <TableHead>模型</TableHead>
               <TableHead>显示名</TableHead>
-              <TableHead>类型</TableHead>
+              <TableHead>功能</TableHead>
               <TableHead>协议</TableHead>
               <TableHead className="text-right">积分/次</TableHead>
               <TableHead className="text-right">上下文</TableHead>
@@ -296,9 +296,8 @@ function PricingDialog({
   >([])
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
 
-  // Load aggregated channel model list for the "new model" picker.
+  // Probe channel catalogs for model selection and binding refresh.
   useEffect(() => {
-    if (mode.kind !== "create") return
     channelsAdminApi
       .listAllChannelModels()
       .then((res) => {
@@ -311,18 +310,20 @@ function PricingDialog({
       })
   }, [mode.kind])
 
-  // Suggestions filtered by current kind and current input; selecting one fills the form.
-  const suggestions = allModels.filter((m) => m.kind === form.kind)
+  // A model's function is selected below; channel discovery is function-agnostic.
+  const suggestions = allModels
   const modelQuery = form.model.trim().toLowerCase()
   const filteredSuggestions = suggestions
     .filter(
       (m) =>
         !modelQuery ||
         m.model.toLowerCase().includes(modelQuery) ||
-        m.channels.some((c) => c.toLowerCase().includes(modelQuery))
+        m.channels.some((c) => c.name.toLowerCase().includes(modelQuery))
     )
     .slice(0, 80)
   const currentMatch = suggestions.find((m) => m.model === form.model)
+  const compatibleChannels =
+    currentMatch?.channels.filter((c) => c.protocol === form.protocol) ?? []
 
   const isVideo = form.kind === "video"
   const sizeRules = form.size_rules ?? []
@@ -348,6 +349,10 @@ function PricingDialog({
 
   async function submit() {
     setErr(null)
+    if (currentMatch && compatibleChannels.length === 0) {
+      setErr(`该模型没有 ${form.protocol} 协议的可用渠道`)
+      return
+    }
     let allowedSeconds: number[] | null = null
     if (isVideo) {
       allowedSeconds = parseAllowedSeconds()
@@ -380,6 +385,9 @@ function PricingDialog({
       void _text
       await channelsAdminApi.upsertPricing({
         ...input,
+        channel_ids: currentMatch
+          ? compatibleChannels.map((c) => c.id)
+          : undefined,
         display_name: form.display_name?.toString().trim() || null,
         allowed_seconds: isVideo ? allowedSeconds : null,
         size_rules: isVideo
@@ -450,7 +458,9 @@ function PricingDialog({
                         >
                           <span className="font-mono text-sm font-medium">{m.model}</span>
                           <span className="text-xs text-muted-foreground">
-                            {m.channels.join("、")}
+                            {m.channels
+                              .map((c) => `${c.name} (${c.protocol})`)
+                              .join("、")}
                           </span>
                         </button>
                       ))}
@@ -459,7 +469,9 @@ function PricingDialog({
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {currentMatch
-                    ? `可用渠道：${currentMatch.channels.join("、")}`
+                    ? compatibleChannels.length > 0
+                      ? `将绑定渠道：${compatibleChannels.map((c) => c.name).join("、")}`
+                      : `该模型没有 ${form.protocol} 协议的可用渠道`
                     : form.model.trim()
                     ? "⚠️ 未在实时候选中找到；仍可保存为自定义模型 ID，请确认上游渠道实际支持。"
                     : suggestions.length > 0
@@ -478,13 +490,17 @@ function PricingDialog({
               <>
                 <Input value={form.model} disabled />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  模型 ID 不可改；如需改名请先删除再新建。
+                  {currentMatch
+                    ? compatibleChannels.length > 0
+                      ? `保存后绑定渠道：${compatibleChannels.map((c) => c.name).join("、")}`
+                      : `当前没有 ${form.protocol} 协议的可用渠道`
+                    : "模型 ID 不可改；未探测到时保存会保留原渠道绑定。"}
                 </p>
               </>
             )}
           </div>
           <div>
-            <Label>类型</Label>
+            <Label>功能</Label>
             <Select
               value={form.kind}
               onValueChange={(v) =>
@@ -529,7 +545,7 @@ function PricingDialog({
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              自动路由到该协议的启用渠道，无需手动绑定。
+              保存时会绑定到上方实时探测到的同协议渠道。
             </p>
           </div>
           {!isVideo && (

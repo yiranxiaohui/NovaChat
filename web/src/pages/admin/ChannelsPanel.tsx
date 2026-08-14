@@ -29,18 +29,11 @@ import {
   channelsAdminApi,
   type Channel,
   type ChannelInput,
-  type ChannelKind,
   type ChannelPatch,
   type ChannelProtocol,
 } from "@/lib/channels"
 
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
-const KINDS: ChannelKind[] = ["chat", "image", "video"]
-const KIND_LABELS: Record<ChannelKind, string> = {
-  chat: "对话",
-  image: "生图",
-  video: "视频",
-}
 
 type DialogMode =
   | { kind: "create" }
@@ -75,8 +68,7 @@ export function ChannelsPanel() {
         (r) =>
           r.name.toLowerCase().includes(q) ||
           r.base_url.toLowerCase().includes(q) ||
-          r.protocol.includes(q) ||
-          r.kind.includes(q)
+          r.protocol.includes(q)
       )
     : rows
 
@@ -102,7 +94,7 @@ export function ChannelsPanel() {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        多上游渠道：同一 kind 下按 priority 升序作为 fallback 路由。优先级数字越小越先尝试。
+        渠道只配置上游连接；模型所属功能在「模型计费」中设置。优先级数字越小越先尝试。
       </p>
 
       <div className="flex items-center gap-2">
@@ -131,13 +123,12 @@ export function ChannelsPanel() {
 
       <div className="rounded-lg border border-border">
         {/* 表头/单元格的间距在父级统一设置，省得每个 Head/Cell 都写一遍 */}
-        <Table className="min-w-[48rem]">
+        <Table className="min-w-[44rem]">
           <TableHeader className="bg-muted/40 text-xs uppercase [&_th]:h-9 [&_th]:px-3 [&_th]:text-muted-foreground">
             <TableRow>
               <TableHead>ID</TableHead>
               <TableHead>名称</TableHead>
               <TableHead>协议</TableHead>
-              <TableHead>类型</TableHead>
               <TableHead>Base URL</TableHead>
               <TableHead>API Key</TableHead>
               <TableHead>优先级</TableHead>
@@ -148,14 +139,14 @@ export function ChannelsPanel() {
           <TableBody className="[&_td]:px-3 [&_td]:py-2">
             {loading && (
               <TableRow>
-                <TableCell colSpan={9} className="py-6 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                   加载中…
                 </TableCell>
               </TableRow>
             )}
             {!loading && filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="py-6 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                   暂无渠道。点击「新建渠道」添加第一个上游。
                 </TableCell>
               </TableRow>
@@ -169,11 +160,6 @@ export function ChannelsPanel() {
                 <TableCell>
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                     {c.protocol}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                    {c.kind}
                   </span>
                 </TableCell>
                 <TableCell className="max-w-[18rem] truncate font-mono text-xs text-muted-foreground">
@@ -248,7 +234,6 @@ function ChannelDialog({
       ? {
           name: mode.channel.name,
           protocol: mode.channel.protocol,
-          kind: mode.channel.kind,
           base_url: mode.channel.base_url,
           api_key: mode.channel.api_key,
           enabled: mode.channel.enabled,
@@ -257,7 +242,6 @@ function ChannelDialog({
       : {
           name: "",
           protocol: "openai",
-          kind: "chat",
           base_url: "",
           api_key: "",
           enabled: true,
@@ -277,7 +261,6 @@ function ChannelDialog({
         const patch: ChannelPatch = {
           name: form.name,
           protocol: form.protocol,
-          kind: form.kind,
           base_url: form.base_url,
           enabled: form.enabled,
           priority: form.priority,
@@ -314,11 +297,10 @@ function ChannelDialog({
               placeholder="e.g. OpenAI 主线 / Anthropic 备线"
             />
           </div>
-          <div>
+          <div className="col-span-2">
             <Label>协议</Label>
             <Select
               value={form.protocol}
-              disabled={form.kind === "video"}
               onValueChange={(v) =>
                 setForm({ ...form, protocol: v as ChannelProtocol })
               }
@@ -334,37 +316,9 @@ function ChannelDialog({
                 ))}
               </SelectContent>
             </Select>
-            {form.kind === "video" && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                视频渠道仅支持 OpenAI 兼容协议。
-              </p>
-            )}
-          </div>
-          <div>
-            <Label>类型</Label>
-            <Select
-              value={form.kind}
-              onValueChange={(v) => {
-                const kind = v as ChannelKind
-                setForm({
-                  ...form,
-                  kind,
-                  // 视频渠道目前只接 OpenAI 兼容协议，后端也会校验兜底。
-                  protocol: kind === "video" ? "openai" : form.protocol,
-                })
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {KINDS.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {KIND_LABELS[k]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              功能类型由绑定模型的计费规则决定，一个渠道可同时承载多种功能。
+            </p>
           </div>
           <div className="col-span-2">
             <Label>Base URL</Label>

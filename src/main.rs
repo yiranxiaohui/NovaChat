@@ -917,21 +917,12 @@ async fn proxy_get_forward(
 
     // Client-supplied URL wins (it already points at /v1/models etc.).
     // Otherwise — when the client sent empty X-Upstream-Url/Key headers —
-    // fall back to any admin-configured channel for this protocol+flavor.
+    // fall back to any admin-configured channel for this protocol.
     let hdr_url = headers.get("x-upstream-url").and_then(|v| v.to_str().ok());
     let hdr_key = headers.get("x-upstream-key").and_then(|v| v.to_str().ok());
 
     let use_client_headers =
         matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
-
-    let flavor = match headers
-        .get("x-upstream-flavor")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-    {
-        Some("image") => "image",
-        _ => "chat",
-    };
 
     let (url, key, used_shared) = if use_client_headers {
         (
@@ -944,7 +935,6 @@ async fn proxy_get_forward(
             &installed.pool,
             installed.kind,
             protocol.name(),
-            flavor,
         )
         .await
         .ok()

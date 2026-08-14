@@ -160,6 +160,13 @@ pub async fn channels_for_model(
             .collect());
     }
 
+    // A binding remains a routing restriction even when every bound channel
+    // is disabled. Do not silently fall back to an unrelated channel in that
+    // case.
+    if model_has_explicit_binding(pool, kind, model, flavor).await? {
+        return Ok(Vec::new());
+    }
+
     // No explicit binding → auto-route to all enabled channels of this kind.
     // upstream_id is None (send the model name as-is); resolve_route narrows
     // this set to the matching protocol afterwards.
@@ -195,6 +202,26 @@ pub async fn channels_for_model(
         .collect())
 }
 
+async fn model_has_explicit_binding(
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Result<bool, sqlx::Error> {
+    let sql = db::q(
+        kind,
+        "SELECT COUNT(*) FROM channel_models cm \
+         INNER JOIN upstream_channels c ON c.id = cm.channel_id \
+         WHERE cm.model = ? AND c.kind = ?",
+    );
+    let (count,): (i64,) = sqlx::query_as(&sql)
+        .bind(model)
+        .bind(flavor)
+        .fetch_one(pool)
+        .await?;
+    Ok(count > 0)
+}
+
 /// Resolved channel + the model id to send upstream (alias or original).
 #[allow(dead_code)] // consumed by Task 2.2 chat/image callers
 #[derive(Debug, Clone)]
@@ -222,6 +249,59 @@ pub async fn select_chain(
             channel,
         })
         .collect())
+}
+
+/// Resolve a model against the catalogs advertised by otherwise eligible
+/// channels. Explicit `channel_models` bindings remain authoritative; live
+/// probing is only used for the automatic-routing fallback.
+pub async fn select_chain_by_advertised_model(
+    http: &reqwest::Client,
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Result<Vec<ChannelChoice>, sqlx::Error> {
+    let explicitly_bound = model_has_explicit_binding(pool, kind, model, flavor).await?;
+    let candidates = select_chain(pool, kind, model, flavor).await?;
+    if explicitly_bound || candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    let probes = candidates.into_iter().map(|choice| async move {
+        let advertised = probe_channel_models(http, &choice.channel).await;
+        (choice, advertised)
+    });
+    let results = futures_util::future::join_all(probes).await;
+    Ok(filter_advertised_choices(results))
+}
+
+/// Convenience: pick the top-priority channel that advertises `model`.
+pub async fn select_one_by_advertised_model(
+    http: &reqwest::Client,
+    pool: &Pool,
+    kind: DbKind,
+    model: &str,
+    flavor: &str,
+) -> Result<Option<ChannelChoice>, sqlx::Error> {
+    Ok(select_chain_by_advertised_model(http, pool, kind, model, flavor)
+        .await?
+        .into_iter()
+        .next())
+}
+
+fn filter_advertised_choices(
+    results: Vec<(ChannelChoice, Result<Vec<String>, String>)>,
+) -> Vec<ChannelChoice> {
+    results
+        .into_iter()
+        .filter_map(|(choice, advertised)| {
+            let models = advertised.ok()?;
+            models
+                .iter()
+                .any(|m| m == &choice.upstream_model)
+                .then_some(choice)
+        })
+        .collect()
 }
 
 /// Convenience: just the top-priority enabled channel, or None.
@@ -798,6 +878,49 @@ async fn probe_channel_models(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choice(id: i64, model: &str) -> ChannelChoice {
+        ChannelChoice {
+            channel: Channel {
+                id,
+                name: format!("channel-{id}"),
+                protocol: "openai".to_string(),
+                kind: "video".to_string(),
+                base_url: format!("https://channel-{id}.example"),
+                api_key: "test-key".to_string(),
+                enabled: true,
+                priority: id,
+            },
+            upstream_model: model.to_string(),
+        }
+    }
+
+    #[test]
+    fn advertised_model_filter_skips_higher_priority_channel_without_model() {
+        let selected = filter_advertised_choices(vec![
+            (choice(1, "video-b"), Ok(vec!["video-a".to_string()])),
+            (choice(2, "video-b"), Ok(vec!["video-b".to_string()])),
+        ]);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].channel.id, 2);
+    }
+
+    #[test]
+    fn advertised_model_filter_ignores_failed_catalog_probes() {
+        let selected = filter_advertised_choices(vec![
+            (choice(1, "video-b"), Err("timeout".to_string())),
+            (choice(2, "video-b"), Ok(vec!["video-b".to_string()])),
+        ]);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].channel.id, 2);
+    }
 }
 
 async fn admin_list_all_channel_models(

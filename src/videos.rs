@@ -284,7 +284,15 @@ async fn create_job(
         }
     };
 
-    let choice = match channels::select_one(pool, kind, &model, "video").await {
+    let choice = match channels::select_one_by_advertised_model(
+        &state.http,
+        pool,
+        kind,
+        &model,
+        "video",
+    )
+    .await
+    {
         Ok(Some(c)) => c,
         Ok(None) => {
             let _ = credits::grant(
@@ -296,7 +304,10 @@ async fn create_job(
                 &LedgerMeta::refund_video(&model),
             )
             .await;
-            return err(StatusCode::BAD_REQUEST, "暂无可用视频渠道，请联系管理员");
+            return err(
+                StatusCode::BAD_REQUEST,
+                "暂无支持该模型的可用视频渠道，请联系管理员",
+            );
         }
         Err(e) => {
             let _ = credits::grant(

@@ -53,7 +53,10 @@ import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -93,6 +96,55 @@ const MIN_ZOOM = 24
 const MAX_ZOOM = 240
 const AUTOSAVE_MS = 1400
 const TRACK_DRAG_TYPE = "application/x-novachat-editor-track"
+
+type SequenceFormat = {
+  width: number
+  height: number
+  label: string
+}
+
+type SequenceFormatGroup = {
+  label: string
+  formats: readonly SequenceFormat[]
+}
+
+const SEQUENCE_FORMAT_GROUPS: readonly SequenceFormatGroup[] = [
+  {
+    label: "横屏 · 16:9",
+    formats: [
+      { width: 1280, height: 720, label: "HD 720p" },
+      { width: 1920, height: 1080, label: "Full HD 1080p" },
+      { width: 2560, height: 1440, label: "QHD 1440p" },
+      { width: 3840, height: 2160, label: "Ultra HD 4K" },
+    ],
+  },
+  {
+    label: "竖屏 · 9:16",
+    formats: [
+      { width: 720, height: 1280, label: "HD 720p" },
+      { width: 1080, height: 1920, label: "Full HD 1080p" },
+      { width: 1440, height: 2560, label: "QHD 1440p" },
+      { width: 2160, height: 3840, label: "Ultra HD 4K" },
+    ],
+  },
+  {
+    label: "方形 · 1:1",
+    formats: [
+      { width: 720, height: 720, label: "HD" },
+      { width: 1080, height: 1080, label: "Full HD" },
+      { width: 1440, height: 1440, label: "QHD" },
+      { width: 2160, height: 2160, label: "Ultra HD" },
+    ],
+  },
+]
+
+const STANDARD_SEQUENCE_FORMATS = SEQUENCE_FORMAT_GROUPS.flatMap(
+  (group) => group.formats
+)
+
+function sequenceFormatValue(width: number, height: number): string {
+  return `${width}x${height}`
+}
 
 function cloneTimeline(value: EditorTimeline): EditorTimeline {
   return structuredClone(value)
@@ -1862,6 +1914,11 @@ function InspectorPanel({
   onClip: (patch: Partial<EditorClip>) => void
   onClose: () => void
 }) {
+  const sequenceFormat = sequenceFormatValue(timeline.width, timeline.height)
+  const standardSequenceFormat = STANDARD_SEQUENCE_FORMATS.find(
+    (format) => sequenceFormatValue(format.width, format.height) === sequenceFormat
+  )
+
   return (
     <aside className={cn("flex min-h-0 shrink-0 flex-col border-l border-white/10 bg-[#111217]", className)}>
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/10 px-3">
@@ -1911,19 +1968,54 @@ function InspectorPanel({
         ) : (
           <div className="space-y-5">
             <InspectorSection title="序列设置">
+              <DarkField label="输出规格">
+                <Select
+                  value={sequenceFormat}
+                  onValueChange={(value) => {
+                    const format = STANDARD_SEQUENCE_FORMATS.find(
+                      (item) => sequenceFormatValue(item.width, item.height) === value
+                    )
+                    if (format) onProject({ width: format.width, height: format.height })
+                  }}
+                >
+                  <SelectTrigger size="sm" className="w-full border-white/10 bg-black/20 text-xs text-zinc-200">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-white/10 bg-[#1b1c22] text-zinc-200">
+                    {!standardSequenceFormat && (
+                      <>
+                        <SelectGroup>
+                          <SelectLabel>旧项目规格</SelectLabel>
+                          <SelectItem value={sequenceFormat} className="text-xs">
+                            当前自定义 · {timeline.width} × {timeline.height}
+                          </SelectItem>
+                        </SelectGroup>
+                        <SelectSeparator className="bg-white/10" />
+                      </>
+                    )}
+                    {SEQUENCE_FORMAT_GROUPS.map((group) => (
+                      <SelectGroup key={group.label}>
+                        <SelectLabel>{group.label}</SelectLabel>
+                        {group.formats.map((format) => (
+                          <SelectItem
+                            key={sequenceFormatValue(format.width, format.height)}
+                            value={sequenceFormatValue(format.width, format.height)}
+                            className="text-xs focus:bg-white/10 focus:text-zinc-100"
+                          >
+                            {format.label} · {format.width} × {format.height}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </DarkField>
+              <p className="text-[9px] leading-relaxed text-zinc-600">
+                导出使用所选标准规格；切换横竖屏会同步调整画布。
+              </p>
               <div className="grid grid-cols-2 gap-2">
-                <NumberField label="宽度" value={timeline.width} step={2} min={320} max={7680} suffix="px" onChange={(width) => onProject({ width: Math.round(width / 2) * 2 })} />
-                <NumberField label="高度" value={timeline.height} step={2} min={240} max={4320} suffix="px" onChange={(height) => onProject({ height: Math.round(height / 2) * 2 })} />
                 <NumberField label="帧率" value={timeline.fps} step={1} min={1} max={120} suffix="fps" onChange={(fps) => onProject({ fps })} />
-              </div>
-              <DarkField label="背景颜色"><input type="color" value={timeline.background} onChange={(event) => onProject({ background: event.target.value })} className="h-8 w-full rounded-lg border border-white/10 bg-black/20 p-1" /></DarkField>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  [1920, 1080, "1080p 横屏"],
-                  [1080, 1920, "1080p 竖屏"],
-                  [1080, 1080, "方形"],
-                  [3840, 2160, "4K 横屏"],
-                ].map(([width, height, label]) => <button key={String(label)} type="button" className="rounded-md border border-white/10 bg-white/[.03] px-2 py-1.5 text-[9px] text-zinc-500 hover:border-sky-400/30 hover:text-zinc-300" onClick={() => onProject({ width: Number(width), height: Number(height) })}>{label}</button>)}
+                <DarkField label="背景颜色"><input type="color" value={timeline.background} onChange={(event) => onProject({ background: event.target.value })} className="h-8 w-full rounded-lg border border-white/10 bg-black/20 p-1" /></DarkField>
               </div>
             </InspectorSection>
 

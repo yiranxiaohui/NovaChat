@@ -9,15 +9,22 @@ export function BrandMark({
 }) {
   return (
     <div className={cn("flex items-center gap-3", className)}>
-      <img
-        src="/logo.png"
-        alt="NovaChat"
-        className="size-10 rounded-xl shadow-panel"
-      />
+      <div className="relative shrink-0">
+        <div className="absolute inset-1 rounded-xl bg-primary/40 blur-md" />
+        <img
+          src="/logo.png"
+          alt="NovaChat"
+          className="relative size-10 rounded-xl ring-1 ring-white/15 shadow-panel"
+        />
+      </div>
       <div className="flex flex-col leading-tight">
-        <span className="text-xl font-semibold tracking-tight">NovaChat</span>
+        <span className="bg-gradient-to-r from-foreground to-foreground/65 bg-clip-text text-xl font-semibold tracking-[-0.035em] text-transparent">
+          NovaChat
+        </span>
         {subtitle && (
-          <span className="text-xs text-muted-foreground">{subtitle}</span>
+          <span className="mt-0.5 text-[11px] tracking-wide text-muted-foreground">
+            {subtitle}
+          </span>
         )}
       </div>
     </div>

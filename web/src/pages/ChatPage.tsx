@@ -2,19 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
   ArrowUp,
+  ArrowUpRight,
   ArrowDown,
   BookMarked,
   Bot,
   Check,
   ClipboardCheck,
   Copy,
+  Code2,
   Download,
   FileText,
   Globe,
   Images,
+  Lightbulb,
   Menu,
   MessageSquareText,
   Paperclip,
+  PenLine,
   Pencil,
   Plus,
   RefreshCcw,
@@ -194,7 +198,7 @@ function ModelPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex min-w-0 max-w-[7.5rem] items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:border-primary/60 hover:bg-primary/10 sm:max-w-[11rem] md:max-w-none"
+        className="inline-flex min-w-0 max-w-[8rem] items-center gap-1.5 rounded-xl border border-border/70 bg-card/70 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur transition-all hover:border-primary/30 hover:bg-card sm:max-w-[11rem] md:max-w-none"
         title="点击切换模型"
       >
         <span
@@ -212,7 +216,7 @@ function ModelPicker({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-lg border border-border bg-popover p-2 shadow-panel">
+        <div className="absolute left-0 top-full z-40 mt-2 w-72 rounded-2xl border border-border bg-popover/95 p-2.5 shadow-panel backdrop-blur-xl">
           <div className="mb-2 flex items-center gap-1">
             <Input
               value={query}
@@ -526,7 +530,7 @@ function Bubble({
   const toolbar = (
     <div
       className={cn(
-        "flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100",
+        "flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100",
         isUser ? "justify-end" : "justify-start"
       )}
     >
@@ -554,8 +558,8 @@ function Bubble({
     const segments = splitUserContent(message.content)
     return (
       <div className="group flex flex-col items-end gap-1">
-        <div className="flex max-w-[92%] items-end gap-2 sm:max-w-[82%]">
-          <div className="rounded-2xl rounded-tr-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
+        <div className="flex max-w-[94%] items-end gap-2.5 sm:max-w-[82%]">
+          <div className="rounded-[1.25rem] rounded-br-md bg-gradient-to-br from-primary to-violet-600 px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-md shadow-primary/15">
             {segments.map((seg, i) =>
               seg.type === "text" ? (
                 <p key={i} className="whitespace-pre-wrap">
@@ -591,15 +595,15 @@ function Bubble({
               alt=""
               loading="lazy"
               onError={() => setAvatarBroken(true)}
-              className="size-7 shrink-0 rounded-full border border-border object-cover"
+              className="size-8 shrink-0 rounded-xl border border-border object-cover shadow-sm"
             />
           ) : (
-            <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
+            <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground shadow-sm">
               {(userInitial || "?").toUpperCase()}
             </div>
           )}
         </div>
-        <div className="pr-9">{toolbar}</div>
+        <div className="pr-10">{toolbar}</div>
         {preview && (
           <ImagePreview
             src={preview.src}
@@ -614,15 +618,17 @@ function Bubble({
 
   return (
     <div className="group flex flex-col items-start gap-1">
-      <div className="flex max-w-[94%] items-start gap-2.5 sm:max-w-[88%]">
-        <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-primary-foreground shadow-sm">
-          <Sparkles className="size-3.5" />
-        </div>
+      <div className="flex max-w-[96%] items-start gap-2.5 sm:max-w-[90%]">
+        <img
+          src="/logo.png"
+          alt=""
+          className="size-8 shrink-0 rounded-xl ring-1 ring-border/70 shadow-sm"
+        />
         <div
           className={cn(
             "prose prose-sm dark:prose-invert min-w-0 max-w-none",
-            "rounded-2xl rounded-tl-md bg-card px-4 py-2.5 text-sm leading-relaxed",
-            "border border-border/70 shadow-sm",
+            "rounded-[1.25rem] rounded-tl-md bg-card/80 px-4 py-3 text-sm leading-relaxed backdrop-blur-sm",
+            "border border-border/60 shadow-[0_8px_28px_-22px_rgba(32,22,55,0.45)]",
             "[&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:whitespace-pre",
             "[&_*]:break-words [&_a]:break-all",
             "prose-pre:bg-muted prose-pre:text-foreground prose-pre:border prose-pre:border-border",
@@ -723,7 +729,7 @@ function Bubble({
           </ReactMarkdown>
         </div>
       </div>
-      <div className="pl-9">{toolbar}</div>
+      <div className="pl-10">{toolbar}</div>
       {preview && (
         <ImagePreview
           src={preview.src}
@@ -737,10 +743,10 @@ function Bubble({
 }
 
 const SAMPLE_PROMPTS = [
-  { title: "解释概念", body: "用通俗比喻解释「向量数据库」是什么。" },
-  { title: "写代码", body: "用 Rust 写一个简单的 HTTP 客户端示例。" },
-  { title: "头脑风暴", body: "帮我想 5 个给副业独立开发者的产品点子。" },
-  { title: "改写润色", body: "把这段话改得更简洁、更专业：" },
+  { title: "解释概念", body: "用通俗比喻解释「向量数据库」是什么。", icon: Lightbulb },
+  { title: "写代码", body: "用 Rust 写一个简单的 HTTP 客户端示例。", icon: Code2 },
+  { title: "头脑风暴", body: "帮我想 5 个给副业独立开发者的产品点子。", icon: Sparkles },
+  { title: "改写润色", body: "把这段话改得更简洁、更专业：", icon: PenLine },
 ]
 
 export default function ChatPage() {
@@ -1761,13 +1767,13 @@ export default function ChatPage() {
   const lastIdx = messages.length - 1
 
   return (
-    <div className="flex h-svh bg-background text-foreground">
+    <div className="app-shell flex h-svh bg-background text-foreground">
       {mobileNavOpen && (
         <button
           type="button"
           aria-label="关闭侧栏"
           onClick={() => setMobileNavOpen(false)}
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          className="fixed inset-0 z-30 bg-slate-950/45 backdrop-blur-[2px] md:hidden"
         />
       )}
       <div
@@ -1784,8 +1790,8 @@ export default function ChatPage() {
         />
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="relative z-30 flex items-center justify-between gap-2 border-b border-border bg-background/70 px-2 py-3 backdrop-blur md:gap-3 md:px-5">
+      <div className="flex min-w-0 flex-1 flex-col bg-background/25">
+        <header className="relative z-30 flex min-h-16 items-center justify-between gap-2 border-b border-border/60 bg-background/65 px-2.5 py-2.5 backdrop-blur-xl md:gap-3 md:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 md:gap-3">
             <Button
               variant="ghost"
@@ -1796,9 +1802,12 @@ export default function ChatPage() {
             >
               <Menu />
             </Button>
-            <h1 className="hidden truncate text-base font-semibold tracking-tight md:block">
-              {conversationId ? `会话 #${conversationId}` : "新对话"}
-            </h1>
+            <div className="hidden min-w-0 md:block">
+              <h1 className="truncate text-sm font-semibold tracking-tight">
+                {conversationId ? `会话 #${conversationId}` : "新对话"}
+              </h1>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">AI 智能对话</p>
+            </div>
             <ModelPicker
               protocol={settings.protocol}
               model={settings.model}
@@ -1821,11 +1830,11 @@ export default function ChatPage() {
           </div>
           <div className="flex shrink-0 items-center">
             {creditsMe && (
-              <div className="mr-1 inline-flex items-center overflow-hidden rounded-full border border-border bg-muted/40 text-xs tabular-nums transition-colors hover:border-primary/60">
+              <div className="mr-1 inline-flex items-center overflow-hidden rounded-xl border border-border/70 bg-card/65 text-xs tabular-nums shadow-sm backdrop-blur transition-colors hover:border-primary/30">
                 <button
                   type="button"
                   onClick={() => setLedgerOpen(true)}
-                  className="inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/10 md:px-2.5"
+                  className="inline-flex items-center gap-1 px-2 py-1.5 hover:bg-primary/10 md:px-2.5"
                   title={`剩余积分 ${creditsMe.balance}｜点击查看积分明细`}
                 >
                   <span className="hidden text-muted-foreground md:inline">积分</span>
@@ -1917,7 +1926,7 @@ export default function ChatPage() {
           onScroll={handleScroll}
           className="nc-scroll relative flex-1 overflow-y-auto"
         >
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 md:px-5 md:py-6">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-3 py-5 md:px-6 md:py-8">
             {banner}
             {loadingMessages && (
               <p className="text-center text-sm text-muted-foreground">加载中…</p>
@@ -1927,35 +1936,56 @@ export default function ChatPage() {
             ) : (
               <>
                 {!loadingMessages && messages.length === 0 && configured && (
-              <div className="mt-16 flex flex-col items-center gap-6 text-center">
-                <div className="grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-chart-5 text-primary-foreground shadow-panel">
-                  <Sparkles className="size-6" />
+              <div className="fade-up mx-auto mt-8 flex w-full max-w-2xl flex-col items-center gap-7 text-center md:mt-14">
+                <div className="relative">
+                  <div className="absolute inset-2 rounded-3xl bg-primary/30 blur-2xl" />
+                  <img
+                    src="/logo.png"
+                    alt=""
+                    className="relative size-16 rounded-[1.35rem] ring-1 ring-white/15 shadow-panel md:size-[4.5rem]"
+                  />
                 </div>
                 <div>
-                  <p className="text-lg font-semibold tracking-tight">
-                    开始一段对话
+                  <div className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-primary/5 px-3 py-1 text-[11px] font-medium text-primary">
+                    <Sparkles className="size-3" /> Nova AI 助手
+                  </div>
+                  <p className="text-2xl font-semibold tracking-[-0.035em] md:text-3xl">
+                    {user?.display_name?.trim() || user?.username
+                      ? `你好，${user?.display_name?.trim() || user?.username}`
+                      : "开始一段对话"}
                   </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    回车发送，Shift + 回车换行。
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                    今天想一起完成什么？你可以直接提问、上传文件，或从下面的灵感开始。
                     {settings.protocol === "openai"
-                      ? "直接用文字描述就能让 AI 生图（如「画一只柯基」）；想多轮编辑或调参数请到侧栏「图像工作室」。"
-                      : "想生图请切到 OpenAI 协议，或到侧栏「图像工作室」。"}
+                      ? " 当前模型还支持直接用文字描述生成图片。"
+                      : ""}
                   </p>
                 </div>
-                <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-                  {SAMPLE_PROMPTS.map((p) => (
-                    <button
-                      key={p.title}
-                      type="button"
-                      onClick={() => fillSample(p.body)}
-                      className="group flex flex-col items-start gap-1 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-accent"
-                    >
-                      <span className="text-xs font-semibold text-muted-foreground group-hover:text-accent-foreground">
-                        {p.title}
-                      </span>
-                      <span className="line-clamp-2 text-sm">{p.body}</span>
-                    </button>
-                  ))}
+                <div className="grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  {SAMPLE_PROMPTS.map((p) => {
+                    const Icon = p.icon
+                    return (
+                      <button
+                        key={p.title}
+                        type="button"
+                        onClick={() => fillSample(p.body)}
+                        className="group glass-surface flex min-h-24 items-start gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-lg"
+                      >
+                        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/8 text-primary transition-colors group-hover:bg-primary/12">
+                          <Icon className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between text-xs font-semibold text-foreground">
+                            {p.title}
+                            <ArrowUpRight className="size-3.5 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" />
+                          </span>
+                          <span className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                            {p.body}
+                          </span>
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             )}
@@ -2029,10 +2059,10 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="bg-background px-3 pb-3 pt-2 md:px-5 md:pb-4">
-          <div className="mx-auto max-w-3xl">
-            <div className="mb-2 flex flex-wrap items-center gap-3 px-1 text-sm">
-              <label className="flex cursor-pointer items-center gap-1.5">
+        <div className="border-t border-border/40 bg-background/70 px-3 pb-3 pt-2.5 backdrop-blur-xl md:px-6 md:pb-4">
+          <div className="mx-auto max-w-4xl">
+            <div className="mb-2 flex flex-wrap items-center gap-2.5 px-1 text-sm">
+              <label className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border/70 bg-card/55 px-2.5 py-1 text-xs shadow-sm transition-colors hover:border-primary/20">
                 <input
                   type="checkbox"
                   className="size-4 accent-primary"
@@ -2196,7 +2226,7 @@ export default function ChatPage() {
                 </div>
               )
             })()}
-            <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-panel focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring">
+            <div className="glass-surface flex items-end gap-1.5 rounded-[1.35rem] p-2.5 transition-all focus-within:border-primary/35 focus-within:shadow-[0_18px_48px_-24px_color-mix(in_oklch,var(--primary)_45%,transparent)] focus-within:ring-2 focus-within:ring-ring">
               <Button
                 type="button"
                 variant="ghost"
@@ -2270,17 +2300,17 @@ export default function ChatPage() {
                   }
                 }}
                 placeholder={
-                  !configured ? "先在设置中配置 API…" : "问点什么…"
+                  !configured ? "先在设置中配置 API…" : "输入消息，或粘贴图片…"
                 }
                 rows={1}
-                className="max-h-60 min-h-[40px] flex-1 resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                className="max-h-60 min-h-[42px] flex-1 resize-none border-0 bg-transparent px-2.5 py-2.5 shadow-none focus-visible:ring-0"
               />
               {streaming ? (
                 <Button
                   onClick={stop}
                   variant="secondary"
                   size="icon"
-                  className="shrink-0"
+                  className="size-10 shrink-0 rounded-xl"
                   aria-label="停止"
                 >
                   <Square />
@@ -2294,7 +2324,7 @@ export default function ChatPage() {
                       : !canSend
                   }
                   size="icon"
-                  className="shrink-0"
+                  className="size-10 shrink-0 rounded-xl shadow-md shadow-primary/20"
                   aria-label="发送"
                   title="发送"
                 >
@@ -2302,8 +2332,8 @@ export default function ChatPage() {
                 </Button>
               )}
             </div>
-            <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-              消息经过你选的协议发送；API key 仅保留在本机浏览器。
+            <p className="mt-2 text-center text-[10px] tracking-wide text-muted-foreground/80">
+              NovaChat 可能会生成不准确的信息，请核对重要内容
             </p>
           </div>
         </div>

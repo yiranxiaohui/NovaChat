@@ -236,43 +236,70 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center justify-between px-4 pb-3 pt-4">
-        <BrandMark />
+    <aside className="flex h-full w-[18rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar/95 text-sidebar-foreground shadow-[12px_0_40px_-32px_rgba(37,24,70,0.45)] backdrop-blur-xl">
+      <div className="flex items-center justify-between px-4 pb-4 pt-5">
+        <BrandMark subtitle="智能创作空间" />
       </div>
 
-      <div className="flex flex-col gap-2 px-3 pb-2">
-        <Button onClick={createNew} className="w-full justify-start gap-2" size="sm">
-          <Plus className="size-4" /> 新建会话
-        </Button>
+      <div className="flex flex-col gap-3 px-3 pb-3">
         <Button
-          asChild
-          variant="outline"
-          size="sm"
-          className="w-full justify-start gap-2"
+          onClick={createNew}
+          className="h-11 w-full justify-start gap-2.5 rounded-xl bg-gradient-to-r from-primary to-chart-5 px-3.5 shadow-md shadow-primary/20 hover:shadow-lg hover:shadow-primary/25"
         >
-          <Link to="/studio" onClick={() => onNavigate?.()} title="多轮对话式生图（Responses API）">
-            <ImageIcon className="size-4" /> 图像工作室
-          </Link>
-        </Button>
-        <Button asChild variant="outline" size="sm" className="w-full justify-start gap-2">
-          <Link to="/videos" onClick={() => onNavigate?.()} title="文生视频 / 图生视频">
-            <Clapperboard className="size-4" /> 视频工作室
-          </Link>
+          <span className="grid size-6 place-items-center rounded-md bg-white/15">
+            <Plus className="size-4" />
+          </span>
+          <span className="font-semibold">开启新对话</span>
         </Button>
 
+        <div className="grid grid-cols-2 gap-2">
+          <Link
+            to="/studio"
+            onClick={() => onNavigate?.()}
+            title="多轮对话式生图（Responses API）"
+            className="group flex min-h-20 flex-col justify-between rounded-xl border border-sidebar-border bg-background/45 p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-background/80 hover:shadow-md"
+          >
+            <span className="grid size-8 place-items-center rounded-lg bg-violet-500/10 text-violet-600 transition-colors group-hover:bg-violet-500/15 dark:text-violet-300">
+              <ImageIcon className="size-4" />
+            </span>
+            <span className="text-xs font-medium">图像工作室</span>
+          </Link>
+          <Link
+            to="/videos"
+            onClick={() => onNavigate?.()}
+            title="文生视频 / 图生视频"
+            className="group flex min-h-20 flex-col justify-between rounded-xl border border-sidebar-border bg-background/45 p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-background/80 hover:shadow-md"
+          >
+            <span className="grid size-8 place-items-center rounded-lg bg-sky-500/10 text-sky-600 transition-colors group-hover:bg-sky-500/15 dark:text-sky-300">
+              <Clapperboard className="size-4" />
+            </span>
+            <span className="text-xs font-medium">视频工作室</span>
+          </Link>
+        </div>
+
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索会话…"
-            className="h-8 pl-8 text-sm"
+            className="h-9 rounded-xl border-sidebar-border bg-background/45 pl-9 text-sm shadow-none"
           />
         </div>
       </div>
 
-      <div className="nc-scroll flex-1 overflow-y-auto px-2 pb-2">
+      <div className="flex items-center justify-between px-4 pb-1 pt-1">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          最近对话
+        </span>
+        {items.length > 0 && !trimmedQuery && (
+          <span className="rounded-full bg-sidebar-accent/60 px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+            {items.length}
+          </span>
+        )}
+      </div>
+
+      <div className="nc-scroll flex-1 overflow-y-auto px-2.5 pb-2">
         {isApiSearch ? (
           <SearchResultsView
             query={trimmedQuery}
@@ -299,7 +326,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             {error}
           </p>
         )}
-        <ul className="flex flex-col gap-0.5">
+        <ul className="flex flex-col gap-1">
           {filtered.map((c) => {
             const active = activeWorker
               ? c.kind === "worker" && activeId === c.id
@@ -309,31 +336,31 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
               <li key={itemKey} className="relative">
                 <div
                   className={cn(
-                    "group relative flex items-center rounded-lg transition-colors",
+                    "group relative flex items-center rounded-xl border border-transparent transition-all",
                     active
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "hover:bg-sidebar-accent/50"
+                      ? "border-primary/10 bg-sidebar-accent/80 text-sidebar-accent-foreground shadow-sm"
+                      : "hover:border-sidebar-border hover:bg-background/45"
                   )}
                 >
                   {active && (
-                    <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-sidebar-primary" />
+                    <span className="absolute left-1 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-sidebar-primary" />
                   )}
                   <Link
                     to={c.kind === "worker" ? `/w/${c.id}` : `/c/${c.id}`}
-                    className="min-w-0 flex-1 px-3 py-2"
+                    className="min-w-0 flex-1 px-3 py-2.5"
                     title={c.title}
                     onClick={() => {
                       setMenuFor(null)
                       onNavigate?.()
                     }}
                   >
-                    <div className="flex items-center gap-1 truncate text-sm font-medium">
+                    <div className="flex items-center gap-1.5 truncate text-[13px] font-medium">
                       {c.kind === "worker" && (
                         <Bot className="size-3.5 shrink-0 text-primary" />
                       )}
                       <span className="truncate">{c.title}</span>
                     </div>
-                    <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    <div className="mt-1 truncate text-[10px] text-muted-foreground">
                       {relativeTime(c.updated_at)}
                     </div>
                   </Link>
@@ -393,11 +420,11 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         )}
       </div>
 
-      <div className="flex flex-col gap-1 border-t border-sidebar-border px-2 py-2">
+      <div className="flex flex-col gap-1 border-t border-sidebar-border bg-background/20 px-2.5 py-2.5">
         <Link
           to="/plaza"
           onClick={() => onNavigate?.()}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+          className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           title="浏览公开发布的生成图"
         >
           <Images className="size-4" /> 图片广场
@@ -406,7 +433,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
           <Link
             to="/admin"
             onClick={() => onNavigate?.()}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
             title="进入管理控制台"
           >
             <Shield className="size-4" /> 管理控制台
@@ -419,16 +446,16 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
               onOpenLibrary()
               onNavigate?.()
             }}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
           >
             <BookMarked className="size-4" /> 提示词库
           </button>
         )}
-        <div className="mt-1 flex items-center justify-between gap-2 rounded-md bg-sidebar-accent/40 px-1 py-1">
+        <div className="mt-1 flex items-center justify-between gap-2 rounded-xl border border-sidebar-border bg-background/45 p-1.5 shadow-sm">
           <button
             type="button"
             onClick={() => setProfileOpen(true)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-sidebar-accent/70"
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-sidebar-accent/70"
             title="个人资料"
           >
             {user?.avatar_url && !avatarBroken ? (

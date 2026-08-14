@@ -15,8 +15,14 @@ import { Toaster } from "@/components/ui/sonner"
 
 function Loading() {
   return (
-    <div className="grid min-h-svh place-items-center text-muted-foreground">
-      加载中…
+    <div className="app-shell grid min-h-svh place-items-center text-muted-foreground">
+      <div className="fade-up flex flex-col items-center gap-3">
+        <div className="relative">
+          <div className="absolute inset-1 rounded-2xl bg-primary/25 blur-lg" />
+          <img src="/logo.png" alt="" className="relative size-12 rounded-2xl shadow-panel" />
+        </div>
+        <span className="text-xs tracking-[0.15em]">正在载入 NOVACHAT</span>
+      </div>
     </div>
   )
 }

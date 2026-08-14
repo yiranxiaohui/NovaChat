@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
-import { BrandMark } from "@/components/app/BrandMark"
+import { AuthShell } from "@/components/app/AuthShell"
 
 export default function LoginPage() {
   const auth = useAuth()
@@ -29,15 +29,23 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="bg-auth-grid grid min-h-svh place-items-center p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-panel sm:p-8">
-        <BrandMark subtitle="多协议对话 · 自托管" className="mb-6" />
-        <h1 className="text-2xl font-semibold tracking-tight">欢迎回来</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          用你的账号进入 NovaChat。
+    <AuthShell
+      eyebrow="欢迎回来"
+      title="继续你的创作"
+      description="登录 NovaChat，回到你的对话与工作空间。"
+      footer={
+        <p>
+          还没有账号？{" "}
+          <Link
+            to="/register"
+            className="font-semibold text-primary underline-offset-4 hover:underline"
+          >
+            免费注册
+          </Link>
         </p>
-
-        <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
+      }
+    >
+        <form onSubmit={submit} className="mt-8 flex flex-col gap-4.5">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="username">用户名</Label>
             <Input
@@ -61,25 +69,14 @@ export default function LoginPage() {
             />
           </div>
           {error && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <div className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2.5 text-sm text-destructive">
               {error}
             </div>
           )}
-          <Button type="submit" disabled={busy} className="w-full" size="lg">
+          <Button type="submit" disabled={busy} className="mt-1 w-full bg-gradient-to-r from-primary to-violet-600" size="lg">
             {busy ? "登录中…" : "登录"}
           </Button>
         </form>
-
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          还没有账号？{" "}
-          <Link
-            to="/register"
-            className="font-medium text-foreground underline-offset-4 hover:underline"
-          >
-            注册
-          </Link>
-        </p>
-      </div>
-    </div>
+    </AuthShell>
   )
 }

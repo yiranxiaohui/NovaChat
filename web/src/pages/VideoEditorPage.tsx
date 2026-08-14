@@ -222,6 +222,7 @@ export default function VideoEditorPage() {
   const [exports, setExports] = useState<EditorExport[]>([])
   const [exportSubmitting, setExportSubmitting] = useState(false)
   const [exportQueueOpen, setExportQueueOpen] = useState(false)
+  const [deletingExportToken, setDeletingExportToken] = useState<string | null>(null)
   const exportStatusesRef = useRef(new Map<string, EditorExport["status"]>())
   const exportPollErrorShownRef = useRef(false)
 
@@ -898,6 +899,31 @@ export default function VideoEditorPage() {
     }
   }
 
+  async function removeExport(item: EditorExport) {
+    const ok = await confirm({
+      title: "删除这条导出记录？",
+      description:
+        item.status === "completed"
+          ? "导出记录及对应的 MP4 文件都将被永久删除。"
+          : "失败的导出记录将被永久删除。",
+      confirmText: "删除",
+      destructive: true,
+    })
+    if (!ok) return
+
+    setDeletingExportToken(item.token)
+    try {
+      await videoEditorApi.removeExport(item.token)
+      exportStatusesRef.current.delete(item.token)
+      setExports((items) => items.filter((entry) => entry.token !== item.token))
+      toast.success("导出记录已删除")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeletingExportToken(null)
+    }
+  }
+
   const activeExportKey = exports
     .filter((item) => item.status === "pending" || item.status === "running")
     .map((item) => item.token)
@@ -1193,6 +1219,8 @@ export default function VideoEditorPage() {
         onOpenChange={setExportQueueOpen}
         exports={exports}
         projects={projects}
+        deletingToken={deletingExportToken}
+        onDelete={(item) => void removeExport(item)}
       />
     </div>
   )
@@ -1919,11 +1947,15 @@ function ExportQueueSheet({
   onOpenChange,
   exports,
   projects,
+  deletingToken,
+  onDelete,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   exports: EditorExport[]
   projects: EditorProject[]
+  deletingToken: string | null
+  onDelete: (item: EditorExport) => void
 }) {
   const activeCount = exports.filter(
     (item) => item.status === "pending" || item.status === "running"
@@ -1963,38 +1995,61 @@ function ExportQueueSheet({
 
                 if (item.status === "completed" && item.video_path) {
                   return (
-                    <a
+                    <div
                       key={item.token}
-                      href={item.video_path}
-                      download={filename}
                       className="group block overflow-hidden rounded-xl border border-white/10 bg-black/20 transition-colors hover:border-emerald-400/35 hover:bg-white/[.04]"
-                      title={`下载 ${filename}`}
                     >
-                      <div className="relative aspect-video overflow-hidden bg-black">
-                        <video
-                          src={item.video_path}
-                          preload="metadata"
-                          muted
-                          playsInline
-                          className="pointer-events-none size-full object-contain"
-                        />
-                        <div className="absolute inset-0 grid place-items-center bg-black/15 opacity-0 transition-opacity group-hover:opacity-100">
-                          <span className="flex items-center gap-1.5 rounded-full bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-sm">
-                            <Download className="size-3.5" /> 下载 MP4
+                      <a href={item.video_path} download={filename} title={`下载 ${filename}`}>
+                        <div className="relative aspect-video overflow-hidden bg-black">
+                          <video
+                            src={item.video_path}
+                            preload="metadata"
+                            muted
+                            playsInline
+                            className="pointer-events-none size-full object-contain"
+                          />
+                          <div className="absolute inset-0 grid place-items-center bg-black/15 opacity-0 transition-opacity group-hover:opacity-100">
+                            <span className="flex items-center gap-1.5 rounded-full bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-sm">
+                              <Download className="size-3.5" /> 下载 MP4
+                            </span>
+                          </div>
+                          <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-emerald-500/90 px-2 py-1 text-[9px] font-medium text-white shadow">
+                            <Check className="size-3" /> 已完成
                           </span>
                         </div>
-                        <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-emerald-500/90 px-2 py-1 text-[9px] font-medium text-white shadow">
-                          <Check className="size-3" /> 已完成
-                        </span>
-                      </div>
+                      </a>
                       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
                         <div className="min-w-0">
                           <p className="truncate text-xs font-medium text-zinc-200">{projectLabel}</p>
                           <p className="mt-0.5 text-[9px] text-zinc-600">{formatExportTime(item.finished_at || item.created_at)}</p>
                         </div>
-                        <Download className="size-4 shrink-0 text-zinc-500 transition-colors group-hover:text-emerald-400" />
+                        <div className="flex shrink-0 items-center gap-1">
+                          <a
+                            href={item.video_path}
+                            download={filename}
+                            className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+                            title={`下载 ${filename}`}
+                            aria-label={`下载 ${filename}`}
+                          >
+                            <Download className="size-4" />
+                          </a>
+                          <button
+                            type="button"
+                            className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:pointer-events-none disabled:opacity-50"
+                            onClick={() => onDelete(item)}
+                            disabled={deletingToken === item.token}
+                            title="删除导出记录"
+                            aria-label="删除导出记录"
+                          >
+                            {deletingToken === item.token ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="size-4" />
+                            )}
+                          </button>
+                        </div>
                       </div>
-                    </a>
+                    </div>
                   )
                 }
 
@@ -2016,12 +2071,30 @@ function ExportQueueSheet({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-3">
                           <p className="truncate text-xs font-medium text-zinc-200">{projectLabel}</p>
-                          <span className={cn(
-                            "shrink-0 text-[9px] font-medium",
-                            item.status === "failed" ? "text-red-400" : "text-sky-400"
-                          )}>
-                            {item.status === "failed" ? "导出失败" : pending ? "排队中" : `处理中 ${item.progress}%`}
-                          </span>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <span className={cn(
+                              "text-[9px] font-medium",
+                              item.status === "failed" ? "text-red-400" : "text-sky-400"
+                            )}>
+                              {item.status === "failed" ? "导出失败" : pending ? "排队中" : `处理中 ${item.progress}%`}
+                            </span>
+                            {item.status === "failed" && (
+                              <button
+                                type="button"
+                                className="rounded p-1 text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:pointer-events-none disabled:opacity-50"
+                                onClick={() => onDelete(item)}
+                                disabled={deletingToken === item.token}
+                                title="删除导出记录"
+                                aria-label="删除导出记录"
+                              >
+                                {deletingToken === item.token ? (
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="size-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <p className="mt-1 text-[9px] text-zinc-600">{formatExportTime(item.created_at)} · {item.token.slice(0, 8)}</p>
                         {item.status === "failed" ? (

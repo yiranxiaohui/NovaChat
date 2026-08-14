@@ -278,6 +278,27 @@ export const videoEditorApi = {
       await fetch("/api/video-editor/exports", { credentials: "same-origin" })
     )
   },
+
+  async removeExport(token: string): Promise<void> {
+    const response = await fetch(
+      `/api/video-editor/exports/${encodeURIComponent(token)}`,
+      {
+        method: "DELETE",
+        credentials: "same-origin",
+      }
+    )
+    if (!response.ok) {
+      const body = await response.text().catch(() => response.statusText)
+      let message = body
+      try {
+        const parsed = JSON.parse(body) as { error?: string }
+        message = parsed.error || body
+      } catch {
+        // Some existing endpoints return plain text errors.
+      }
+      throw new Error(message || `HTTP ${response.status}`)
+    }
+  },
 }
 
 function fileToBase64(file: File): Promise<string> {

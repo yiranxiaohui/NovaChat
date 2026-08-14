@@ -1138,6 +1138,61 @@ async fn list_exports(
     }
 }
 
+fn export_video_name(path: &str) -> Option<&str> {
+    let name = path.strip_prefix("/api/videos/")?;
+    (!name.is_empty() && !name.contains('/')).then_some(name)
+}
+
+async fn delete_export(
+    State(state): State<AppState>,
+    Extension(installed): Extension<InstalledState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(token): Path<String>,
+) -> Response {
+    let select = db::q(
+        installed.kind,
+        "SELECT status, video_path FROM video_editor_exports WHERE token = ? AND user_id = ?",
+    );
+    let export = match sqlx::query_as::<_, (String, Option<String>)>(&select)
+        .bind(&token)
+        .bind(user.id)
+        .fetch_optional(&installed.pool)
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return err(StatusCode::NOT_FOUND, "导出记录不存在"),
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+
+    if export.0 == "pending" || export.0 == "running" {
+        return err(StatusCode::CONFLICT, "导出任务进行中，暂不能删除");
+    }
+
+    if let Some(name) = export.1.as_deref().and_then(export_video_name)
+        && let Err(error) = state.storage.delete(MediaKind::Video, name).await
+    {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("删除导出视频失败: {error}"),
+        );
+    }
+
+    let delete = db::q(
+        installed.kind,
+        "DELETE FROM video_editor_exports WHERE token = ? AND user_id = ?",
+    );
+    match sqlx::query(&delete)
+        .bind(&token)
+        .bind(user.id)
+        .execute(&installed.pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => err(StatusCode::NOT_FOUND, "导出记录不存在"),
+        Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
 async fn update_export(
     installed: &InstalledState,
     token: &str,
@@ -1701,7 +1756,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/video-editor/projects/{id}/exports", post(create_export))
         .route("/video-editor/exports", get(list_exports))
-        .route("/video-editor/exports/{token}", get(get_export))
+        .route(
+            "/video-editor/exports/{token}",
+            get(get_export).delete(delete_export),
+        )
         .route("/video-editor/assets", get(list_assets))
         .route("/video-editor/assets/upload", post(upload_asset))
         .route("/video-editor/assets/import", post(import_asset))
@@ -1780,5 +1838,16 @@ mod tests {
         assert_eq!(parse_size("1920x1080"), (Some(1920), Some(1080)));
         assert!(atempo_chain(0.25).contains("atempo=0.5"));
         assert!(atempo_chain(4.0).contains("atempo=2.0"));
+    }
+
+    #[test]
+    fn extracts_only_direct_export_video_names() {
+        assert_eq!(
+            export_video_name("/api/videos/export-123.mp4"),
+            Some("export-123.mp4")
+        );
+        assert_eq!(export_video_name("/api/images/export-123.mp4"), None);
+        assert_eq!(export_video_name("/api/videos/nested/export.mp4"), None);
+        assert_eq!(export_video_name("/api/videos/"), None);
     }
 }

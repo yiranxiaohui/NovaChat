@@ -18,6 +18,7 @@ export type WorkflowEdge = {
   id: string
   source: string
   target: string
+  priority?: number
 }
 
 export type WorkflowGraph = {

@@ -55,6 +55,8 @@ const NODE_WIDTH = 304
 const PORT_Y = 51
 const CANVAS_WIDTH = 2200
 const CANVAS_HEIGHT = 1500
+const DEFAULT_EDGE_PRIORITY = 100
+const MAX_EDGE_PRIORITY = 9999
 
 const NODE_META: Record<
   WorkflowNodeType,
@@ -128,6 +130,39 @@ function defaultNodeData(
 
 function outputKind(type: WorkflowNodeType): "image" | "video" {
   return type === "image_generation" ? "image" : "video"
+}
+
+type MergeInput = {
+  edge: WorkflowEdge
+  source: WorkflowNode
+  connectionIndex: number
+}
+
+function mergeInputsFor(graph: WorkflowGraph, targetId: string): MergeInput[] {
+  return graph.edges
+    .map((edge, connectionIndex) => ({
+      edge,
+      connectionIndex,
+      source: graph.nodes.find((node) => node.id === edge.source),
+    }))
+    .filter(
+      (input): input is MergeInput =>
+        input.edge.target === targetId && input.source !== undefined
+    )
+    .sort(
+      (left, right) =>
+        (left.edge.priority ?? DEFAULT_EDGE_PRIORITY) -
+          (right.edge.priority ?? DEFAULT_EDGE_PRIORITY) ||
+        left.connectionIndex - right.connectionIndex
+    )
+}
+
+function nextMergeInputPriority(edges: WorkflowEdge[], targetId: string): number {
+  const priorities = edges
+    .filter((edge) => edge.target === targetId)
+    .map((edge) => edge.priority ?? DEFAULT_EDGE_PRIORITY)
+  if (priorities.length === 0) return DEFAULT_EDGE_PRIORITY
+  return Math.min(MAX_EDGE_PRIORITY, Math.max(...priorities) + 100)
 }
 
 function canConnect(
@@ -217,8 +252,8 @@ function starterGraph(
     edges: [
       { id: makeId("edge"), source: imageId, target: videoAId },
       { id: makeId("edge"), source: imageId, target: videoBId },
-      { id: makeId("edge"), source: videoAId, target: mergeId },
-      { id: makeId("edge"), source: videoBId, target: mergeId },
+      { id: makeId("edge"), source: videoAId, target: mergeId, priority: 100 },
+      { id: makeId("edge"), source: videoBId, target: mergeId, priority: 200 },
     ],
   }
 }
@@ -434,6 +469,20 @@ export default function WorkflowStudioPage() {
     }))
   }
 
+  function updateEdgePriority(id: string, priority: number) {
+    if (!Number.isFinite(priority)) return
+    const nextPriority = Math.max(
+      0,
+      Math.min(MAX_EDGE_PRIORITY, Math.trunc(priority))
+    )
+    setGraph((current) => ({
+      ...current,
+      edges: current.edges.map((edge) =>
+        edge.id === id ? { ...edge, priority: nextPriority } : edge
+      ),
+    }))
+  }
+
   function connectTo(targetId: string) {
     if (!connectingFrom) return
     const source = graph.nodes.find((node) => node.id === connectingFrom)
@@ -448,7 +497,14 @@ export default function WorkflowStudioPage() {
       ...current,
       edges: [
         ...current.edges,
-        { id: makeId("edge"), source: source.id, target: target.id },
+        {
+          id: makeId("edge"),
+          source: source.id,
+          target: target.id,
+          ...(target.type === "video_merge"
+            ? { priority: nextMergeInputPriority(current.edges, target.id) }
+            : {}),
+        },
       ],
     }))
     setConnectingFrom(null)
@@ -775,6 +831,9 @@ export default function WorkflowStudioPage() {
                 node={node}
                 run={runNodes.get(node.id)}
                 incomingCount={graph.edges.filter((edge) => edge.target === node.id).length}
+                mergeInputs={
+                  node.type === "video_merge" ? mergeInputsFor(graph, node.id) : []
+                }
                 imageModels={imageModels}
                 videoModels={videoModels}
                 connecting={connectingFrom === node.id}
@@ -795,6 +854,7 @@ export default function WorkflowStudioPage() {
                 onConnectTo={() => connectTo(node.id)}
                 onRemove={() => removeNode(node.id)}
                 onChange={(patch) => updateNodeData(node.id, patch)}
+                onEdgePriorityChange={updateEdgePriority}
                 onRetry={() => void retryNode(node.id)}
               />
             ))}
@@ -831,6 +891,7 @@ function CanvasNodeCard({
   node,
   run,
   incomingCount,
+  mergeInputs,
   imageModels,
   videoModels,
   connecting,
@@ -839,11 +900,13 @@ function CanvasNodeCard({
   onConnectTo,
   onRemove,
   onChange,
+  onEdgePriorityChange,
   onRetry,
 }: {
   node: WorkflowNode
   run?: WorkflowNodeRun
   incomingCount: number
+  mergeInputs: MergeInput[]
   imageModels: PlatformModel[]
   videoModels: VideoModel[]
   connecting: boolean
@@ -852,6 +915,7 @@ function CanvasNodeCard({
   onConnectTo: () => void
   onRemove: () => void
   onChange: (patch: WorkflowNodeData) => void
+  onEdgePriorityChange: (edgeId: string, priority: number) => void
   onRetry: () => void
 }) {
   const meta = NODE_META[node.type]
@@ -1032,7 +1096,50 @@ function CanvasNodeCard({
 
         {node.type === "video_merge" && (
           <>
-            <p className="rounded-lg bg-muted/60 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground">已连接 {incomingCount} 个视频。按连线创建顺序拼接，并统一画幅、帧率和音频。</p>
+            <p className="rounded-lg bg-muted/60 px-2.5 py-2 text-[10px] leading-relaxed text-muted-foreground">
+              已连接 {incomingCount} 个视频。优先级数字越小越先拼接，相同时按连线创建顺序。
+            </p>
+            {mergeInputs.length > 0 && (
+              <Field label="拼接顺序">
+                <div className="nc-scroll max-h-40 space-y-1.5 overflow-y-auto rounded-lg border border-border bg-background/50 p-1.5">
+                  {mergeInputs.map(({ edge, source }, index) => {
+                    const prompt = String(source.data.prompt ?? "").trim()
+                    const sourceLabel = prompt || source.id
+                    return (
+                      <div
+                        key={edge.id}
+                        className="flex items-center gap-2 rounded-md bg-muted/55 px-2 py-1.5"
+                      >
+                        <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0 flex-1" title={sourceLabel}>
+                          <p className="text-[10px] font-medium">
+                            {NODE_META[source.type].label}
+                          </p>
+                          <p className="truncate text-[9px] text-muted-foreground">
+                            {sourceLabel}
+                          </p>
+                        </div>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={MAX_EDGE_PRIORITY}
+                          step={1}
+                          value={edge.priority ?? DEFAULT_EDGE_PRIORITY}
+                          onChange={(event) =>
+                            onEdgePriorityChange(edge.id, event.target.valueAsNumber)
+                          }
+                          className="h-7 w-[4.5rem] px-2 text-right text-xs"
+                          aria-label={`${NODE_META[source.type].label}优先级`}
+                          title="优先级，数字越小越靠前"
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </Field>
+            )}
             <Field label="输出画幅">
               <Select
                 value={`${node.data.width ?? 1280}x${node.data.height ?? 720}`}

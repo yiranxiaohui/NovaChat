@@ -32,6 +32,8 @@ const MAX_MERGE_INPUTS: usize = 12;
 const MAX_VIDEO_INPUT_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_GRAPH_BYTES: usize = 512 * 1024;
 const MAX_NODE_DATA_BYTES: usize = 64 * 1024;
+const DEFAULT_EDGE_PRIORITY: i64 = 100;
+const MAX_EDGE_PRIORITY: i64 = 9999;
 
 fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
@@ -72,6 +74,12 @@ struct WorkflowEdge {
     id: String,
     source: String,
     target: String,
+    #[serde(default = "default_edge_priority")]
+    priority: i64,
+}
+
+fn default_edge_priority() -> i64 {
+    DEFAULT_EDGE_PRIORITY
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,6 +147,12 @@ fn validate_graph(graph: &WorkflowGraph, runnable: bool) -> Result<(), String> {
     for edge in &graph.edges {
         if edge.id.is_empty() || !edge_ids.insert(edge.id.as_str()) {
             return Err("连线 ID 为空或重复".into());
+        }
+        if !(0..=MAX_EDGE_PRIORITY).contains(&edge.priority) {
+            return Err(format!(
+                "连线 {} 的优先级需要在 0～{MAX_EDGE_PRIORITY} 之间",
+                edge.id
+            ));
         }
         let Some(&source) = node_index.get(edge.source.as_str()) else {
             return Err(format!("连线来源节点不存在：{}", edge.source));
@@ -505,6 +519,23 @@ fn paths_of(row: &NodeRunRow) -> Vec<String> {
         .as_deref()
         .and_then(|value| serde_json::from_str(value).ok())
         .unwrap_or_default()
+}
+
+fn input_edges<'a>(
+    graph: &'a WorkflowGraph,
+    target: &str,
+    sort_by_priority: bool,
+) -> Vec<&'a WorkflowEdge> {
+    let mut edges: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target == target)
+        .collect();
+    if sort_by_priority {
+        // `sort_by_key` is stable, so equal priorities retain connection order.
+        edges.sort_by_key(|edge| edge.priority);
+    }
+    edges
 }
 
 async fn fetch_run(pool: &db::Pool, kind: db::DbKind, run_id: i64) -> Option<RunRow> {
@@ -990,13 +1021,15 @@ async fn drive_run_once(state: &AppState, installed: &InstalledState, run_id: i6
             .await;
             continue;
         };
-        let inputs: Vec<String> = graph
-            .edges
-            .iter()
-            .filter(|edge| edge.target == node_run.node_key)
-            .filter_map(|edge| rows_by_key.get(edge.source.as_str()).copied())
-            .flat_map(paths_of)
-            .collect();
+        let inputs: Vec<String> = input_edges(
+            &graph,
+            &node_run.node_key,
+            graph_node.node_type == "video_merge",
+        )
+        .into_iter()
+        .filter_map(|edge| rows_by_key.get(edge.source.as_str()).copied())
+        .flat_map(paths_of)
+        .collect();
         let state_clone = state.clone();
         let installed_clone = installed.clone();
         let run_clone = run.clone();
@@ -1628,6 +1661,14 @@ mod tests {
             id: id.into(),
             source: source.into(),
             target: target.into(),
+            priority: DEFAULT_EDGE_PRIORITY,
+        }
+    }
+
+    fn prioritized_edge(id: &str, source: &str, target: &str, priority: i64) -> WorkflowEdge {
+        WorkflowEdge {
+            priority,
+            ..edge(id, source, target)
         }
     }
 
@@ -1651,6 +1692,41 @@ mod tests {
             ],
         };
         assert_eq!(validate_graph(&graph, true), Ok(()));
+    }
+
+    #[test]
+    fn orders_merge_inputs_by_priority_then_connection_order() {
+        let graph = WorkflowGraph {
+            version: 1,
+            nodes: vec![
+                node("video-a", "video_generation"),
+                node("video-b", "video_generation"),
+                node("video-c", "video_generation"),
+                node("merge", "video_merge"),
+            ],
+            edges: vec![
+                prioritized_edge("e1", "video-a", "merge", 20),
+                prioritized_edge("e2", "video-b", "merge", 10),
+                prioritized_edge("e3", "video-c", "merge", 10),
+            ],
+        };
+
+        let sources: Vec<_> = input_edges(&graph, "merge", true)
+            .into_iter()
+            .map(|edge| edge.source.as_str())
+            .collect();
+        assert_eq!(sources, vec!["video-b", "video-c", "video-a"]);
+    }
+
+    #[test]
+    fn defaults_legacy_edge_priority_without_changing_order() {
+        let edge: WorkflowEdge = serde_json::from_value(json!({
+            "id": "legacy-edge",
+            "source": "video-a",
+            "target": "merge"
+        }))
+        .unwrap();
+        assert_eq!(edge.priority, DEFAULT_EDGE_PRIORITY);
     }
 
     #[test]

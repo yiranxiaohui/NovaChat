@@ -2,7 +2,9 @@
 //!
 //! Pricing lives in `model_pricing` (kind='video') owned by [`crate::channels`]:
 //! per-model base/per-second credit cost plus JSON-encoded allowed durations
-//! and size multipliers. This module owns job lifecycle and the public
+//! and size multipliers. Grok video models expose their upstream-supported
+//! continuous 1–15 second range even when an older row stores discrete presets.
+//! This module owns job lifecycle and the public
 //! `GET /videos/models` listing consumed by the frontend to compute price
 //! locally before submitting a job.
 
@@ -25,14 +27,87 @@ use crate::{
     db::{self, DbKind, Pool},
 };
 
-/// None when seconds/size are not in the model's configured rules.
+const GROK_VIDEO_MAX_SECONDS: i64 = 15;
+
+fn is_grok_video_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    normalized == "grok-imagine-video" || normalized.starts_with("grok-imagine-video-")
+}
+
+fn effective_allowed_seconds(p: &ModelPrice) -> Vec<i64> {
+    if is_grok_video_model(&p.model) {
+        return (1..=GROK_VIDEO_MAX_SECONDS).collect();
+    }
+    let mut seconds = p.allowed_seconds.clone().unwrap_or_default();
+    seconds.sort_unstable();
+    seconds.dedup();
+    seconds
+}
+
+fn supports_seconds(p: &ModelPrice, seconds: i64) -> bool {
+    if is_grok_video_model(&p.model) {
+        return (1..=GROK_VIDEO_MAX_SECONDS).contains(&seconds);
+    }
+    p.allowed_seconds
+        .as_deref()
+        .is_some_and(|allowed| allowed.contains(&seconds))
+}
+
+/// None when seconds/size are not in the model's effective rules.
 pub fn compute_cost(p: &ModelPrice, seconds: i64, size: &str) -> Option<i64> {
-    if !p.allowed_seconds.as_deref().is_some_and(|a| a.contains(&seconds)) {
+    if !supports_seconds(p, seconds) {
         return None;
     }
     let mult = p.size_rules.as_deref()?.iter().find(|r| r.size == size)?.multiplier;
     let raw = (p.base_credits + p.per_second * seconds) * mult;
     Some((raw + 50) / 100) // round half up on the percent multiplier
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::*;
+
+    fn video_price(model: &str, allowed_seconds: Vec<i64>) -> ModelPrice {
+        ModelPrice {
+            id: 1,
+            model: model.to_string(),
+            kind: "video".to_string(),
+            cost_credits: 0,
+            display_name: None,
+            enabled: true,
+            protocol: "openai".to_string(),
+            context_limit: None,
+            base_credits: 5,
+            per_second: 5,
+            allowed_seconds: Some(allowed_seconds),
+            size_rules: Some(vec![SizeRule {
+                size: "1280x720".to_string(),
+                multiplier: 100,
+            }]),
+        }
+    }
+
+    #[test]
+    fn grok_accepts_every_whole_second_from_one_through_fifteen() {
+        let price = video_price("grok-imagine-video", vec![4, 8, 12]);
+
+        for seconds in 1..=15 {
+            assert_eq!(
+                compute_cost(&price, seconds, "1280x720"),
+                Some(5 + 5 * seconds)
+            );
+        }
+        assert_eq!(compute_cost(&price, 0, "1280x720"), None);
+        assert_eq!(compute_cost(&price, 16, "1280x720"), None);
+    }
+
+    #[test]
+    fn other_models_keep_their_configured_discrete_durations() {
+        let price = video_price("veo3.1-fast", vec![4, 8]);
+
+        assert_eq!(compute_cost(&price, 4, "1280x720"), Some(25));
+        assert_eq!(compute_cost(&price, 6, "1280x720"), None);
+    }
 }
 
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -69,13 +144,16 @@ async fn user_list_models(Extension(s): Extension<InstalledState>) -> Response {
     let out: Vec<UserVideoModel> = pricing
         .into_iter()
         .filter(|p| p.enabled && p.kind == "video")
-        .map(|p| UserVideoModel {
-            model: p.model,
-            display_name: p.display_name,
-            base_credits: p.base_credits,
-            per_second: p.per_second,
-            allowed_seconds: p.allowed_seconds.unwrap_or_default(),
-            size_rules: p.size_rules.unwrap_or_default(),
+        .map(|p| {
+            let allowed_seconds = effective_allowed_seconds(&p);
+            UserVideoModel {
+                model: p.model,
+                display_name: p.display_name,
+                base_credits: p.base_credits,
+                per_second: p.per_second,
+                allowed_seconds,
+                size_rules: p.size_rules.unwrap_or_default(),
+            }
         })
         .collect();
     Json(out).into_response()

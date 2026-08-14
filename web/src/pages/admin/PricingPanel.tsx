@@ -46,6 +46,13 @@ import {
   type PricingInput,
   type VideoSizeRule,
 } from "@/lib/channels"
+import {
+  defaultVideoSize,
+  displayVideoSize,
+  effectiveAllowedSeconds,
+  isGrokVideoModel,
+  videoSizeOptions,
+} from "@/lib/video-capabilities"
 
 const KINDS: ChannelKind[] = ["chat", "image", "video"]
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
@@ -59,21 +66,6 @@ const PROTOCOL_LABELS: Record<ChannelProtocol, string> = {
   openai: "OpenAI",
   claude: "Claude",
   gemini: "Gemini",
-}
-
-function parseAllowedSecondsText(text: string): number[] | null {
-  if (!text.trim()) return []
-  const nums: number[] = []
-  for (const part of text.split(",").map((value) => value.trim()).filter(Boolean)) {
-    const seconds = Number(part)
-    if (!Number.isInteger(seconds) || seconds <= 0) return null
-    nums.push(seconds)
-  }
-  return nums
-}
-
-function displaySize(size: string): string {
-  return size.replace("x", "×")
 }
 
 type DialogMode =
@@ -299,7 +291,7 @@ export function PricingPanel() {
   )
 }
 
-type FormState = PricingInput & { allowedSecondsText: string }
+type FormState = PricingInput
 
 function PricingDialog({
   mode,
@@ -322,7 +314,7 @@ function PricingDialog({
           context_limit: mode.row.context_limit,
           base_credits: mode.row.base_credits,
           per_second: mode.row.per_second,
-          allowedSecondsText: (mode.row.allowed_seconds ?? []).join(", "),
+          allowed_seconds: mode.row.allowed_seconds ?? [],
           size_rules: mode.row.size_rules ?? [],
         }
       : {
@@ -335,7 +327,7 @@ function PricingDialog({
           context_limit: null,
           base_credits: 0,
           per_second: 0,
-          allowedSecondsText: "",
+          allowed_seconds: [],
           size_rules: [],
         }
   const [form, setForm] = useState<FormState>(initial)
@@ -381,12 +373,35 @@ function PricingDialog({
 
   const isVideo = form.kind === "video"
   const sizeRules = form.size_rules ?? []
+  const isGrokVideo = isGrokVideoModel(form.model)
+  const allowedSeconds = effectiveAllowedSeconds(
+    form.model,
+    form.allowed_seconds ?? []
+  )
+  const sizeOptions = videoSizeOptions(
+    form.model,
+    sizeRules.map((rule) => rule.size)
+  )
+  const nextSizeOption = sizeOptions.find(
+    (option) => !sizeRules.some((rule) => rule.size === option.value)
+  )
 
   function selectModel(model: AllChannelModel) {
     setForm({
       ...form,
       model: model.model,
       display_name: form.display_name || model.model,
+      ...(form.kind === "video"
+        ? {
+            allowed_seconds: effectiveAllowedSeconds(model.model, [4]),
+            size_rules: [
+              {
+                size: defaultVideoSize(model.model),
+                multiplier: 100,
+              },
+            ],
+          }
+        : {}),
     })
     setModelPickerOpen(false)
   }
@@ -398,8 +413,20 @@ function PricingDialog({
     })
   }
 
-  const allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
-  const previewSeconds = allowedSeconds?.[0]
+  function updateAllowedSecond(idx: number, seconds: number) {
+    setForm({
+      ...form,
+      allowed_seconds: allowedSeconds.map((value, index) =>
+        index === idx ? seconds : value
+      ),
+    })
+  }
+
+  const sortedAllowedSeconds = [...allowedSeconds].sort((a, b) => a - b)
+  const previewSeconds =
+    isGrokVideo && sortedAllowedSeconds.includes(8)
+      ? 8
+      : sortedAllowedSeconds[0]
   const previewRule = sizeRules.find(
     (rule) => SIZE_RE.test(rule.size.trim()) && rule.multiplier > 0
   )
@@ -419,15 +446,22 @@ function PricingDialog({
       setErr(`该模型没有 ${form.protocol} 协议的可用渠道`)
       return
     }
-    let allowedSeconds: number[] | null = null
+    const submittedSeconds = [...allowedSeconds]
     if (isVideo) {
-      allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
-      if (allowedSeconds === null) {
-        setErr("时长必须为正整数，多个用逗号分隔，如 4,8,12")
+      if (
+        submittedSeconds.some(
+          (seconds) => !Number.isInteger(seconds) || seconds <= 0
+        )
+      ) {
+        setErr("支持时长必须全部为正整数")
         return
       }
-      if (allowedSeconds.length === 0) {
+      if (submittedSeconds.length === 0) {
         setErr("允许时长不能为空")
+        return
+      }
+      if (new Set(submittedSeconds).size !== submittedSeconds.length) {
+        setErr("支持时长不能重复")
         return
       }
       if (sizeRules.length === 0) {
@@ -447,15 +481,15 @@ function PricingDialog({
     }
     setSaving(true)
     try {
-      const { allowedSecondsText: _text, ...input } = form
-      void _text
       await channelsAdminApi.upsertPricing({
-        ...input,
+        ...form,
         channel_ids: currentMatch
           ? compatibleChannels.map((c) => c.id)
           : undefined,
         display_name: form.display_name?.toString().trim() || null,
-        allowed_seconds: isVideo ? allowedSeconds : null,
+        allowed_seconds: isVideo
+          ? submittedSeconds.sort((a, b) => a - b)
+          : null,
         size_rules: isVideo
           ? sizeRules.map((r) => ({ size: r.size.trim(), multiplier: r.multiplier }))
           : null,
@@ -599,7 +633,6 @@ function PricingDialog({
                           <span>仅显示前 {filteredSuggestions.length} 个</span>
                         )}
                       </div>
-
                       {loadingModels ? (
                         <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground">
                           <LoaderCircle className="size-4 animate-spin" />
@@ -715,15 +748,32 @@ function PricingDialog({
                     <Label>功能</Label>
                     <Select
                       value={form.kind}
-                      onValueChange={(value) =>
+                      onValueChange={(value) => {
+                        const nextKind = value as ChannelKind
                         setForm({
                           ...form,
-                          kind: value as ChannelKind,
-                          ...(value === "video"
-                            ? { protocol: "openai" as ChannelProtocol }
+                          kind: nextKind,
+                          ...(nextKind === "video"
+                            ? {
+                                protocol: "openai" as ChannelProtocol,
+                                allowed_seconds: effectiveAllowedSeconds(
+                                  form.model,
+                                  form.allowed_seconds?.length
+                                    ? form.allowed_seconds
+                                    : [4]
+                                ),
+                                size_rules: sizeRules.length
+                                  ? sizeRules
+                                  : [
+                                      {
+                                        size: defaultVideoSize(form.model),
+                                        multiplier: 100,
+                                      },
+                                    ],
+                              }
                             : {}),
                         })
-                      }
+                      }}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue />
@@ -866,7 +916,7 @@ function PricingDialog({
                     <span className="text-xs text-muted-foreground">价格示例</span>
                     {previewCost !== null && previewSeconds && previewRule ? (
                       <span className="text-sm font-semibold tabular-nums text-foreground">
-                        {previewSeconds} 秒 · {displaySize(previewRule.size)} = {previewCost} 积分
+                        {previewSeconds} 秒 · {displayVideoSize(previewRule.size)} = {previewCost} 积分
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -880,26 +930,84 @@ function PricingDialog({
                   <div>
                     <Label>支持时长</Label>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      多个秒数用逗号分隔。
+                      决定用户生成视频时可以选择的秒数。
                     </p>
                   </div>
-                  <Input
-                    value={form.allowedSecondsText}
-                    onChange={(e) =>
-                      setForm({ ...form, allowedSecondsText: e.target.value })
-                    }
-                    placeholder="4, 8, 12"
-                  />
-                  {allowedSeconds && allowedSeconds.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {allowedSeconds.map((seconds, index) => (
-                        <span
-                          key={`${seconds}-${index}`}
-                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                        >
-                          {seconds} 秒
+                  {isGrokVideo ? (
+                    <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium">连续时长</span>
+                        <span className="text-sm font-semibold tabular-nums text-primary">
+                          1–15 秒
                         </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Grok 支持用户按 1 秒步长自由选择，保存时自动应用完整范围。
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {allowedSeconds.map((seconds, index) => (
+                        <div
+                          key={index}
+                          className="grid grid-cols-[minmax(0,1fr)_2rem] items-center gap-2"
+                        >
+                          <div className="relative">
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={seconds || ""}
+                              onChange={(e) =>
+                                updateAllowedSecond(index, Number(e.target.value))
+                              }
+                              className="pr-9"
+                              aria-label={`第 ${index + 1} 个支持时长`}
+                            />
+                            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                              秒
+                            </span>
+                          </div>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            type="button"
+                            aria-label={`删除 ${seconds} 秒`}
+                            onClick={() =>
+                              setForm({
+                                ...form,
+                                allowed_seconds: allowedSeconds.filter(
+                                  (_, itemIndex) => itemIndex !== index
+                                ),
+                              })
+                            }
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
                       ))}
+                      {allowedSeconds.length === 0 && (
+                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+                          还没有支持时长，添加一个即可开始计价。
+                        </div>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            allowed_seconds: [
+                              ...allowedSeconds,
+                              Math.max(3, ...allowedSeconds) + 1,
+                            ],
+                          })
+                        }
+                        className="w-full border-dashed text-muted-foreground"
+                      >
+                        <Plus /> 添加时长
+                      </Button>
                     </div>
                   )}
                 </section>
@@ -922,13 +1030,30 @@ function PricingDialog({
                         key={idx}
                         className="grid grid-cols-[minmax(0,1fr)_7rem_2rem] items-center gap-2"
                       >
-                        <Input
+                        <Select
                           value={r.size}
-                          onChange={(e) =>
-                            updateSizeRule(idx, { size: e.target.value })
+                          onValueChange={(value) =>
+                            updateSizeRule(idx, { size: value })
                           }
-                          placeholder="1280x720"
-                        />
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="选择分辨率" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {sizeOptions.map((option) => (
+                              <SelectItem
+                                key={option.value}
+                                value={option.value}
+                                disabled={sizeRules.some(
+                                  (rule, ruleIndex) =>
+                                    ruleIndex !== idx && rule.size === option.value
+                                )}
+                              >
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <div className="relative">
                           <Input
                             type="number"
@@ -971,12 +1096,18 @@ function PricingDialog({
                       size="sm"
                       variant="outline"
                       type="button"
+                      disabled={!nextSizeOption}
                       onClick={() =>
                         setForm({
                           ...form,
                           size_rules: [
                             ...sizeRules,
-                            { size: "", multiplier: 100 },
+                            {
+                              size:
+                                nextSizeOption?.value ??
+                                defaultVideoSize(form.model),
+                              multiplier: 100,
+                            },
                           ],
                         })
                       }

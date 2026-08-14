@@ -18,6 +18,7 @@ import {
   EyeOff,
   Film,
   FolderOpen,
+  GripVertical,
   ImageIcon,
   Layers3,
   Library,
@@ -91,6 +92,7 @@ const DEFAULT_ZOOM = 64
 const MIN_ZOOM = 24
 const MAX_ZOOM = 240
 const AUTOSAVE_MS = 1400
+const TRACK_DRAG_TYPE = "application/x-novachat-editor-track"
 
 function cloneTimeline(value: EditorTimeline): EditorTimeline {
   return structuredClone(value)
@@ -686,6 +688,30 @@ export default function VideoEditorPage() {
     })
   }
 
+  function reorderTrack(
+    sourceId: string,
+    targetId: string,
+    edge: "before" | "after"
+  ) {
+    const tracks = timelineRef.current.tracks
+    const sourceIndex = tracks.findIndex((track) => track.id === sourceId)
+    const targetIndex = tracks.findIndex((track) => track.id === targetId)
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
+
+    let insertIndex = targetIndex + (edge === "after" ? 1 : 0)
+    if (sourceIndex < insertIndex) insertIndex -= 1
+    if (sourceIndex === insertIndex) return
+
+    commitTimeline((next) => {
+      const nextSourceIndex = next.tracks.findIndex((track) => track.id === sourceId)
+      if (nextSourceIndex < 0) return next
+      const [track] = next.tracks.splice(nextSourceIndex, 1)
+      next.tracks.splice(insertIndex, 0, track)
+      return next
+    })
+    setSelectedTrackId(sourceId)
+  }
+
   async function deleteCurrentProject() {
     if (!projectId) return
     const ok = await confirm({
@@ -1119,6 +1145,7 @@ export default function VideoEditorPage() {
             onAddText={addTextClip}
             onAddTrack={addTrack}
             onUpdateTrack={updateTrack}
+            onReorderTrack={reorderTrack}
           />
         </main>
 
@@ -1441,6 +1468,7 @@ function TimelinePanel({
   onAddText,
   onAddTrack,
   onUpdateTrack,
+  onReorderTrack,
 }: {
   timeline: EditorTimeline
   selectedClipId: string | null
@@ -1464,7 +1492,17 @@ function TimelinePanel({
   onAddText: () => void
   onAddTrack: (kind: EditorTrackKind) => void
   onUpdateTrack: (id: string, patch: Partial<EditorTrack>) => void
+  onReorderTrack: (
+    sourceId: string,
+    targetId: string,
+    edge: "before" | "after"
+  ) => void
 }) {
+  const [draggingTrackId, setDraggingTrackId] = useState<string | null>(null)
+  const [trackDropTarget, setTrackDropTarget] = useState<{
+    id: string
+    edge: "before" | "after"
+  } | null>(null)
   const duration = Math.max(30, Math.ceil(timelineDuration(timeline) + 10))
   const contentWidth = Math.max(900, duration * zoom)
   const rulerStep = zoom >= 160 ? 0.5 : zoom >= 80 ? 1 : zoom >= 40 ? 2 : 5
@@ -1486,6 +1524,50 @@ function TimelinePanel({
   function timeFromEvent(event: React.MouseEvent<HTMLElement>) {
     const rect = event.currentTarget.getBoundingClientRect()
     return Math.max(0, Math.min(duration, (event.clientX - rect.left) / zoom))
+  }
+
+  function hasTrackDrag(event: React.DragEvent<HTMLElement>) {
+    return event.dataTransfer.types.includes(TRACK_DRAG_TYPE)
+  }
+
+  function updateTrackDropTarget(
+    event: React.DragEvent<HTMLElement>,
+    targetId: string
+  ) {
+    if (!hasTrackDrag(event) || draggingTrackId === targetId) return false
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    const rect = event.currentTarget.getBoundingClientRect()
+    const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after"
+    if (trackDropTarget?.id !== targetId || trackDropTarget.edge !== edge) {
+      setTrackDropTarget({ id: targetId, edge })
+    }
+    return true
+  }
+
+  function dropTrack(event: React.DragEvent<HTMLElement>, targetId: string) {
+    if (!hasTrackDrag(event)) return false
+    event.preventDefault()
+    event.stopPropagation()
+    const sourceId = event.dataTransfer.getData(TRACK_DRAG_TYPE)
+    const rect = event.currentTarget.getBoundingClientRect()
+    const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after"
+    setDraggingTrackId(null)
+    setTrackDropTarget(null)
+    if (sourceId && sourceId !== targetId) onReorderTrack(sourceId, targetId, edge)
+    return true
+  }
+
+  function trackDropIndicator(trackId: string) {
+    if (trackDropTarget?.id !== trackId) return null
+    return (
+      <span
+        className={cn(
+          "pointer-events-none absolute inset-x-0 z-20 h-0.5 bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,.9)]",
+          trackDropTarget.edge === "before" ? "top-0" : "bottom-0"
+        )}
+      />
+    )
   }
 
   return (
@@ -1523,14 +1605,40 @@ function TimelinePanel({
               <button
                 key={track.id}
                 type="button"
-                className={cn("flex h-12 w-full items-center gap-1 border-b border-white/5 px-2 text-left", selectedTrackId === track.id ? "bg-sky-500/10" : "hover:bg-white/[.03]")}
+                draggable
+                className={cn(
+                  "relative flex h-12 w-full cursor-grab items-center gap-1 border-b border-white/5 px-1.5 text-left active:cursor-grabbing",
+                  selectedTrackId === track.id ? "bg-sky-500/10" : "hover:bg-white/[.03]",
+                  draggingTrackId === track.id && "opacity-45"
+                )}
                 onClick={() => onSelectTrack(track.id)}
+                onDragStart={(event) => {
+                  const target = event.target as HTMLElement
+                  if (target.closest("[data-track-action]")) {
+                    event.preventDefault()
+                    return
+                  }
+                  event.dataTransfer.setData(TRACK_DRAG_TYPE, track.id)
+                  event.dataTransfer.effectAllowed = "move"
+                  setDraggingTrackId(track.id)
+                  setTrackDropTarget(null)
+                  onSelectTrack(track.id)
+                }}
+                onDragOver={(event) => updateTrackDropTarget(event, track.id)}
+                onDrop={(event) => dropTrack(event, track.id)}
+                onDragEnd={() => {
+                  setDraggingTrackId(null)
+                  setTrackDropTarget(null)
+                }}
+                title="拖动调整轨道顺序"
               >
+                {trackDropIndicator(track.id)}
+                <GripVertical className="size-3 shrink-0 text-zinc-700" />
                 <Icon className={cn("size-3.5", track.kind === "video" ? "text-sky-400" : track.kind === "audio" ? "text-fuchsia-400" : "text-amber-400")} />
                 <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-zinc-400">{track.name}</span>
-                {track.kind !== "audio" && <span role="button" tabIndex={0} className={cn("rounded p-1", track.hidden ? "text-red-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { hidden: !track.hidden }) }} onKeyDown={() => {}}>{track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}</span>}
-                {track.kind !== "text" && <span role="button" tabIndex={0} className={cn("rounded p-1", track.muted ? "text-red-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { muted: !track.muted }) }} onKeyDown={() => {}}>{track.muted ? <VolumeX className="size-3" /> : <Volume2 className="size-3" />}</span>}
-                <span role="button" tabIndex={0} className={cn("rounded p-1", track.locked ? "text-amber-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { locked: !track.locked }) }} onKeyDown={() => {}}>{track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}</span>
+                {track.kind !== "audio" && <span role="button" tabIndex={0} data-track-action className={cn("rounded p-1", track.hidden ? "text-red-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { hidden: !track.hidden }) }} onKeyDown={() => {}}>{track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}</span>}
+                {track.kind !== "text" && <span role="button" tabIndex={0} data-track-action className={cn("rounded p-1", track.muted ? "text-red-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { muted: !track.muted }) }} onKeyDown={() => {}}>{track.muted ? <VolumeX className="size-3" /> : <Volume2 className="size-3" />}</span>}
+                <span role="button" tabIndex={0} data-track-action className={cn("rounded p-1", track.locked ? "text-amber-400" : "text-zinc-600 hover:text-zinc-300")} onClick={(event) => { event.stopPropagation(); onUpdateTrack(track.id, { locked: !track.locked }) }} onKeyDown={() => {}}>{track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}</span>
               </button>
             )
           })}
@@ -1558,16 +1666,19 @@ function TimelinePanel({
                   }
                 }}
                 onDragOver={(event) => {
+                  if (updateTrackDropTarget(event, track.id)) return
                   event.preventDefault()
                   event.dataTransfer.dropEffect = "copy"
                 }}
                 onDrop={(event) => {
+                  if (dropTrack(event, track.id)) return
                   event.preventDefault()
                   const assetId = event.dataTransfer.getData("application/x-novachat-asset")
                   const asset = assets.find((item) => item.id === assetId)
                   if (asset && !track.locked) onAddAsset(asset, track.id, timeFromEvent(event))
                 }}
               >
+                {trackDropIndicator(track.id)}
                 {track.clips.map((clip) => (
                   <TimelineClip
                     key={clip.id}

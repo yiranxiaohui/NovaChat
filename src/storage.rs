@@ -228,6 +228,7 @@ impl MediaStorage {
             .client
             .put(put_url)
             .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header(header::CONTENT_LENGTH, 0)
             .body(Vec::new())
             .send()
             .await
@@ -742,9 +743,22 @@ mod tests {
             .get(header::RANGE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let content_length = request
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
 
         match method {
             Method::PUT => {
+                if key.contains(".novachat-storage-test-")
+                    && content_length.as_deref() != Some("0")
+                {
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::empty())
+                        .unwrap();
+                }
                 let bytes = to_bytes(request.into_body(), usize::MAX)
                     .await
                     .unwrap()

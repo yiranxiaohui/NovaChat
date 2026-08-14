@@ -3,6 +3,7 @@ import { Link, Navigate } from "react-router-dom"
 import {
   ArrowLeft,
   BarChart3,
+  Cloud,
   Coins,
   CreditCard,
   Database,
@@ -68,6 +69,7 @@ import {
 } from "@/lib/credits"
 import { ChannelsPanel } from "./admin/ChannelsPanel"
 import { PricingPanel } from "./admin/PricingPanel"
+import { StoragePanel } from "./admin/StoragePanel"
 import { StatsView } from "@/components/app/StatsView"
 import {
   adminPaymentsApi,
@@ -86,6 +88,7 @@ type Section =
   | "pricing"
   | "shared"
   | "email"
+  | "storage"
   | "system"
 
 const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -97,6 +100,7 @@ const NAV: { key: Section; label: string; icon: React.ComponentType<{ className?
   { key: "channels", label: "上游渠道", icon: Route },
   { key: "pricing", label: "模型计费", icon: Tag },
   { key: "email", label: "邮箱 / SMTP", icon: Mail },
+  { key: "storage", label: "媒体存储", icon: Cloud },
   { key: "system", label: "系统信息", icon: Server },
 ]
 
@@ -221,6 +225,7 @@ export default function AdminPage() {
           {section === "channels" && <ChannelsPanel />}
           {section === "pricing" && <PricingPanel />}
           {section === "email" && <EmailPanel />}
+          {section === "storage" && <StoragePanel />}
           {section === "system" && <SystemPanel />}
         </main>
       </div>

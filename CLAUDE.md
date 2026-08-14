@@ -11,7 +11,7 @@ NovaChat is a self-hosted, multi-protocol AI chat app: a Rust/Axum backend that 
 Backend (repo root):
 - `cargo run` — starts the server on `127.0.0.1:3000` (override with `NOVACHAT_BIND`). On first run without a configured DB, the app exposes `/setup` and the frontend's SetupPage walks the user through picking SQLite/MySQL/Postgres.
 - `cargo check` — fast type-check; the first run still invokes `bun install && bun run build` in `web/` via [build.rs](build.rs).
-- Environment: `NOVACHAT_DATA_DIR` (default `./data` — SQLite DB, local media, `novachat.toml` live here), `NOVACHAT_DATABASE_URL` / `DATABASE_URL` (skips the install wizard), `NOVACHAT_CONFIG` (path for the TOML config). Optional S3-compatible media storage is selected by `[storage]` in `novachat.toml` or `NOVACHAT_STORAGE_BACKEND=s3` plus the `NOVACHAT_S3_*` variables.
+- Environment: `NOVACHAT_DATA_DIR` (default `./data` — SQLite DB, local media, `novachat.toml` live here), `NOVACHAT_DATABASE_URL` / `DATABASE_URL` (skips the install wizard), `NOVACHAT_CONFIG` (path for the TOML config). Configure optional S3-compatible media storage in the admin UI; it persists to `[storage]` in `novachat.toml` and applies at runtime. Legacy `NOVACHAT_STORAGE_BACKEND=s3` plus `NOVACHAT_S3_*` variables remain fallback-only.
 
 Frontend (in `web/`):
 - `bun run dev` — Vite dev server (expects the Rust backend on :3000 for `/api` calls; configure proxy in `vite.config.ts` if needed).
@@ -26,7 +26,7 @@ Docker:
 ## Architecture
 
 ### Boot flow
-[src/main.rs](src/main.rs) holds `AppState { installed: Arc<RwLock<Option<InstalledState>>>, http, config_path, data_dir, storage }`. `storage` is the startup-selected local/S3 media backend; S3 reads fall back to legacy local objects. `InstalledState { pool, kind }` is `None` until the setup wizard (or `NOVACHAT_DATABASE_URL`) supplies a connection string. All protected routes go through `require_auth` middleware which loads `InstalledState` into request extensions alongside `CurrentUser { id }` — downstream handlers take `Extension<InstalledState>` and `Extension<CurrentUser>` rather than re-reading `AppState`.
+[src/main.rs](src/main.rs) holds `AppState { installed: Arc<RwLock<Option<InstalledState>>>, http, config_path, data_dir, storage, config_lock }`. `storage` is a hot-swappable local/S3 media backend managed by the admin storage API; S3 reads fall back to legacy local objects. `config_lock` serializes admin writes to `novachat.toml`. `InstalledState { pool, kind }` is `None` until the setup wizard (or `NOVACHAT_DATABASE_URL`) supplies a connection string. All protected routes go through `require_auth` middleware which loads `InstalledState` into request extensions alongside `CurrentUser { id }` — downstream handlers take `Extension<InstalledState>` and `Extension<CurrentUser>` rather than re-reading `AppState`.
 
 ### Database layer
 Three dialects share one schema. Conventions in [src/db.rs](src/db.rs):

@@ -59,6 +59,34 @@ export type AdminSystemInfo = {
   storage_location: string
 }
 
+export type AdminStorageSettings = {
+  backend: "local" | "s3"
+  endpoint: string
+  region: string
+  bucket: string
+  prefix: string
+  path_style: boolean
+  access_key_id_set: boolean
+  access_key_id_hint: string | null
+  secret_access_key_set: boolean
+  session_token_set: boolean
+  active_backend: "local" | "s3"
+  active_location: string
+}
+
+export type AdminStorageSettingsUpdate = {
+  backend: "local" | "s3"
+  endpoint: string
+  region: string
+  bucket: string
+  prefix: string
+  path_style: boolean
+  access_key_id?: string
+  secret_access_key?: string
+  session_token?: string
+  clear_session_token?: boolean
+}
+
 export type AdminUserUpdate = {
   is_admin?: boolean
   display_name?: string
@@ -73,6 +101,32 @@ export const adminApi = {
   async system(): Promise<AdminSystemInfo> {
     const res = await fetch("/api/admin/system", { credentials: "same-origin" })
     return jsonOrThrow<AdminSystemInfo>(res)
+  },
+  async storage(): Promise<AdminStorageSettings> {
+    const res = await fetch("/api/admin/storage", {
+      credentials: "same-origin",
+    })
+    return jsonOrThrow<AdminStorageSettings>(res)
+  },
+  async testStorage(updates: AdminStorageSettingsUpdate): Promise<void> {
+    const res = await fetch("/api/admin/storage/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+      credentials: "same-origin",
+    })
+    await jsonOrThrow<{ ok: boolean }>(res)
+  },
+  async updateStorage(
+    updates: AdminStorageSettingsUpdate
+  ): Promise<AdminStorageSettings> {
+    const res = await fetch("/api/admin/storage", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+      credentials: "same-origin",
+    })
+    return jsonOrThrow<AdminStorageSettings>(res)
   },
   async listUsers(): Promise<AdminUser[]> {
     const res = await fetch("/api/admin/users", { credentials: "same-origin" })

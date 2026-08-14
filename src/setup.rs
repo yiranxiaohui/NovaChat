@@ -6,7 +6,11 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{
+    io::Write,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::{AppState, InstalledState, auth, db};
 
@@ -33,7 +37,36 @@ pub fn save_config(path: &Path, cfg: &StoredConfig) -> Result<(), String> {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(path, body).map_err(|e| e.to_string())
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("novachat.toml");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{nonce}",
+        std::process::id()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let write_result = (|| -> Result<(), String> {
+        let mut file = options.open(&temp_path).map_err(|e| e.to_string())?;
+        file.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&temp_path, path).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +385,9 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::StoredConfig;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{StoredConfig, load_config, save_config};
 
     #[test]
     fn legacy_config_without_storage_still_loads() {
@@ -375,5 +410,47 @@ mod tests {
         let storage = config.storage.unwrap();
         assert_eq!(storage.backend, "s3");
         assert_eq!(storage.bucket.as_deref(), Some("media"));
+    }
+
+    #[test]
+    fn saved_config_round_trips_and_uses_private_permissions() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "novachat-config-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = dir.join("novachat.toml");
+        let config = StoredConfig {
+            database_url: "sqlite:///data/novachat.db".into(),
+            storage: Some(crate::storage::StorageConfig {
+                backend: "s3".into(),
+                secret_access_key: Some("secret".into()),
+                ..Default::default()
+            }),
+        };
+
+        save_config(&path, &config).unwrap();
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.database_url, config.database_url);
+        assert_eq!(
+            loaded
+                .storage
+                .and_then(|storage| storage.secret_access_key)
+                .as_deref(),
+            Some("secret")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

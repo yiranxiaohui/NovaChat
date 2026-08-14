@@ -58,9 +58,11 @@ pub struct AppState {
     pub image_http: reqwest::Client,
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
-    /// Generated images/videos and avatars. The backend is selected once at
-    /// startup from novachat.toml and environment variables.
+    /// Generated images/videos and avatars. The backend can be replaced at
+    /// runtime by the admin storage settings API.
     pub storage: storage::MediaStorage,
+    /// Serializes config-file updates from administrator settings pages.
+    pub config_lock: Arc<tokio::sync::Mutex<()>>,
     /// Per-IP rate limiter for unauthenticated auth endpoints (login /
     /// register / send-code). See [`rate_limit`] for details.
     pub auth_limiter: std::sync::Arc<rate_limit::RateLimiter>,
@@ -1274,6 +1276,7 @@ async fn main() {
         config_path: config_path.clone(),
         data_dir: data_dir.clone(),
         storage: media_storage,
+        config_lock: Default::default(),
         auth_limiter: {
             // 20 attempts per 5 minutes per IP, shared across login / register /
             // send-code. Plenty of headroom for legitimate users; brute force

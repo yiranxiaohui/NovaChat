@@ -2,8 +2,8 @@ use std::{
     fmt,
     ops::Range,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, RwLock},
+    time::{Duration, SystemTime},
 };
 
 use reqwest::{StatusCode, header};
@@ -77,7 +77,7 @@ impl std::error::Error for StorageError {}
 #[derive(Clone)]
 pub struct MediaStorage {
     data_dir: PathBuf,
-    backend: Backend,
+    backend: Arc<RwLock<Backend>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +115,17 @@ struct ResolvedS3 {
 impl MediaStorage {
     pub fn from_config(data_dir: PathBuf, config: Option<&StorageConfig>) -> Result<Self, String> {
         let resolved = resolve_storage(config, |name| std::env::var(name).ok())?;
+        Self::from_resolved(data_dir, resolved)
+    }
+
+    /// Build a backend from the persisted configuration only. This is used by
+    /// the admin settings API so a saved web setting is applied immediately
+    /// and cannot be unexpectedly replaced by a legacy environment variable.
+    pub fn from_stored_config(
+        data_dir: PathBuf,
+        config: Option<&StorageConfig>,
+    ) -> Result<Self, String> {
+        let resolved = resolve_storage(config, |_| None)?;
         Self::from_resolved(data_dir, resolved)
     }
 
@@ -165,21 +176,98 @@ impl MediaStorage {
             }
         };
 
-        Ok(Self { data_dir, backend })
+        Ok(Self {
+            data_dir,
+            backend: Arc::new(RwLock::new(backend)),
+        })
     }
 
     pub fn backend_name(&self) -> &'static str {
-        match self.backend {
+        match self.current_backend() {
             Backend::Local => "local",
             Backend::S3(_) => "s3",
         }
     }
 
     pub fn location(&self) -> String {
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => self.data_dir.display().to_string(),
             Backend::S3(s3) => s3.location.clone(),
         }
+    }
+
+    /// Atomically replace the active backend. In-flight operations keep their
+    /// cloned backend while subsequent operations use the new configuration.
+    pub fn replace_with(&self, replacement: &Self) {
+        let backend = replacement.current_backend();
+        *self.backend.write().unwrap_or_else(|lock| lock.into_inner()) = backend;
+    }
+
+    /// Verify that the configured bucket accepts the operations NovaChat
+    /// needs. The probe writes and deletes one empty, uniquely named object.
+    pub async fn test_connection(&self) -> Result<(), StorageError> {
+        let Backend::S3(s3) = self.current_backend() else {
+            return Ok(());
+        };
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let name = format!(".novachat-storage-test-{}-{nonce}", std::process::id());
+        let key = if s3.prefix.is_empty() {
+            name
+        } else {
+            format!("{}/{name}", s3.prefix)
+        };
+
+        let put_url = s3
+            .bucket
+            .put_object(Some(&s3.credentials), &key)
+            .sign(SIGNED_URL_TTL);
+        let put_response = s3
+            .client
+            .put(put_url)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Vec::new())
+            .send()
+            .await
+            .map_err(|error| request_error("connection test put", &key, error))?;
+        if !put_response.status().is_success() {
+            return Err(response_error(
+                "connection test put",
+                &key,
+                put_response.status(),
+            ));
+        }
+
+        let delete_url = s3
+            .bucket
+            .delete_object(Some(&s3.credentials), &key)
+            .sign(SIGNED_URL_TTL);
+        let delete_response = s3
+            .client
+            .delete(delete_url)
+            .send()
+            .await
+            .map_err(|error| request_error("connection test delete", &key, error))?;
+        if delete_response.status().is_success()
+            || delete_response.status() == StatusCode::NOT_FOUND
+        {
+            Ok(())
+        } else {
+            Err(response_error(
+                "connection test delete",
+                &key,
+                delete_response.status(),
+            ))
+        }
+    }
+
+    fn current_backend(&self) -> Backend {
+        self.backend
+            .read()
+            .unwrap_or_else(|lock| lock.into_inner())
+            .clone()
     }
 
     pub async fn put(
@@ -189,7 +277,7 @@ impl MediaStorage {
         bytes: Vec<u8>,
     ) -> Result<(), StorageError> {
         validate_name(name)?;
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => local_put(&self.data_dir, kind, name, &bytes).await,
             Backend::S3(s3) => {
                 let key = s3.key(kind, name);
@@ -216,7 +304,7 @@ impl MediaStorage {
 
     pub async fn get(&self, kind: MediaKind, name: &str) -> Result<Vec<u8>, StorageError> {
         validate_name(name)?;
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => local_get(&self.data_dir, kind, name).await,
             Backend::S3(s3) => {
                 let key = s3.key(kind, name);
@@ -252,7 +340,7 @@ impl MediaStorage {
 
     pub async fn size(&self, kind: MediaKind, name: &str) -> Result<u64, StorageError> {
         validate_name(name)?;
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => local_size(&self.data_dir, kind, name).await,
             Backend::S3(s3) => {
                 let key = s3.key(kind, name);
@@ -301,7 +389,7 @@ impl MediaStorage {
         if range.start >= range.end {
             return Ok(Vec::new());
         }
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => local_get_range(&self.data_dir, kind, name, range).await,
             Backend::S3(s3) => {
                 let key = s3.key(kind, name);
@@ -348,7 +436,7 @@ impl MediaStorage {
 
     pub async fn delete(&self, kind: MediaKind, name: &str) -> Result<(), StorageError> {
         validate_name(name)?;
-        match &self.backend {
+        match self.current_backend() {
             Backend::Local => local_delete(&self.data_dir, kind, name).await,
             Backend::S3(s3) => {
                 let key = s3.key(kind, name);
@@ -549,8 +637,11 @@ where
     F: FnMut(&str) -> Option<String>,
 {
     let config = config.cloned().unwrap_or_default();
-    let backend = env_value(&mut getenv, &["NOVACHAT_STORAGE_BACKEND"])
-        .or_else(|| nonempty(Some(config.backend.clone())))
+    // Persisted settings win so values saved from the admin page remain
+    // authoritative after a restart. Environment variables are retained as a
+    // backwards-compatible fallback for deployments without [storage].
+    let backend = nonempty(Some(config.backend.clone()))
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_STORAGE_BACKEND"]))
         .unwrap_or_else(|| "local".into())
         .to_ascii_lowercase();
     if backend == "local" {
@@ -560,40 +651,43 @@ where
         return Err("storage backend must be local or s3".into());
     }
 
-    let region = env_value(&mut getenv, &["NOVACHAT_S3_REGION"])
-        .or_else(|| config_value(&config.region))
+    let region = config_value(&config.region)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_REGION"]))
         .or_else(|| env_value(&mut getenv, &["AWS_REGION", "AWS_DEFAULT_REGION"]))
         .unwrap_or_else(|| "us-east-1".into());
-    let custom_endpoint = env_value(&mut getenv, &["NOVACHAT_S3_ENDPOINT"])
-        .or_else(|| config_value(&config.endpoint))
+    let custom_endpoint = config_value(&config.endpoint)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_ENDPOINT"]))
         .or_else(|| env_value(&mut getenv, &["AWS_ENDPOINT_URL_S3"]));
     let endpoint = custom_endpoint
         .clone()
         .unwrap_or_else(|| format!("https://s3.{region}.amazonaws.com"));
-    let bucket = env_value(&mut getenv, &["NOVACHAT_S3_BUCKET"])
-        .or_else(|| config_value(&config.bucket))
+    let bucket = config_value(&config.bucket)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_BUCKET"]))
         .ok_or_else(|| "S3 bucket is required".to_string())?;
     if bucket.contains('/') || bucket.contains('\\') {
         return Err("S3 bucket must not contain slashes".into());
     }
-    let access_key_id = env_value(&mut getenv, &["NOVACHAT_S3_ACCESS_KEY_ID"])
-        .or_else(|| config_value(&config.access_key_id))
+    let access_key_id = config_value(&config.access_key_id)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_ACCESS_KEY_ID"]))
         .or_else(|| env_value(&mut getenv, &["AWS_ACCESS_KEY_ID"]))
         .ok_or_else(|| "S3 access key id is required".to_string())?;
-    let secret_access_key = env_value(&mut getenv, &["NOVACHAT_S3_SECRET_ACCESS_KEY"])
-        .or_else(|| config_value(&config.secret_access_key))
+    let secret_access_key = config_value(&config.secret_access_key)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_SECRET_ACCESS_KEY"]))
         .or_else(|| env_value(&mut getenv, &["AWS_SECRET_ACCESS_KEY"]))
         .ok_or_else(|| "S3 secret access key is required".to_string())?;
-    let session_token = env_value(&mut getenv, &["NOVACHAT_S3_SESSION_TOKEN"])
-        .or_else(|| config_value(&config.session_token))
+    let session_token = config_value(&config.session_token)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_SESSION_TOKEN"]))
         .or_else(|| env_value(&mut getenv, &["AWS_SESSION_TOKEN"]));
-    let prefix = env_value(&mut getenv, &["NOVACHAT_S3_PREFIX"])
-        .or_else(|| config_value(&config.prefix))
+    let prefix = config_value(&config.prefix)
+        .or_else(|| env_value(&mut getenv, &["NOVACHAT_S3_PREFIX"]))
         .unwrap_or_else(|| "novachat".into());
     let prefix = normalize_prefix(prefix)?;
-    let path_style = match env_value(&mut getenv, &["NOVACHAT_S3_PATH_STYLE"]) {
-        Some(value) => parse_bool("NOVACHAT_S3_PATH_STYLE", &value)?,
-        None => config.path_style.unwrap_or(custom_endpoint.is_some()),
+    let path_style = match config.path_style {
+        Some(value) => value,
+        None => match env_value(&mut getenv, &["NOVACHAT_S3_PATH_STYLE"]) {
+            Some(value) => parse_bool("NOVACHAT_S3_PATH_STYLE", &value)?,
+            None => custom_endpoint.is_some(),
+        },
     };
 
     Ok(ResolvedStorage::S3(ResolvedS3 {
@@ -739,6 +833,46 @@ mod tests {
         assert!(resolved.path_style);
     }
 
+    #[test]
+    fn persisted_storage_values_win_over_legacy_environment_values() {
+        let config = StorageConfig {
+            backend: "s3".into(),
+            endpoint: Some("https://saved.example.com".into()),
+            region: Some("saved-region".into()),
+            bucket: Some("saved-bucket".into()),
+            access_key_id: Some("saved-key".into()),
+            secret_access_key: Some("saved-secret".into()),
+            prefix: Some("saved-prefix".into()),
+            path_style: Some(false),
+            ..Default::default()
+        };
+        let environment = HashMap::from([
+            ("NOVACHAT_STORAGE_BACKEND", "local"),
+            ("NOVACHAT_S3_ENDPOINT", "https://env.example.com"),
+            ("NOVACHAT_S3_REGION", "env-region"),
+            ("NOVACHAT_S3_BUCKET", "env-bucket"),
+            ("NOVACHAT_S3_ACCESS_KEY_ID", "env-key"),
+            ("NOVACHAT_S3_SECRET_ACCESS_KEY", "env-secret"),
+            ("NOVACHAT_S3_PREFIX", "env-prefix"),
+            ("NOVACHAT_S3_PATH_STYLE", "true"),
+        ]);
+
+        let resolved = resolve_storage(Some(&config), |name| {
+            environment.get(name).map(ToString::to_string)
+        })
+        .unwrap();
+        let ResolvedStorage::S3(resolved) = resolved else {
+            panic!("expected persisted S3 backend");
+        };
+        assert_eq!(resolved.endpoint, "https://saved.example.com");
+        assert_eq!(resolved.region, "saved-region");
+        assert_eq!(resolved.bucket, "saved-bucket");
+        assert_eq!(resolved.access_key_id, "saved-key");
+        assert_eq!(resolved.secret_access_key, "saved-secret");
+        assert_eq!(resolved.prefix, "saved-prefix");
+        assert!(!resolved.path_style);
+    }
+
     #[tokio::test]
     async fn local_storage_round_trip_range_and_delete() {
         let data_dir = test_data_dir("local");
@@ -800,6 +934,9 @@ mod tests {
         let data_dir = test_data_dir("s3");
         let storage = MediaStorage::from_resolved(data_dir.clone(), resolved).unwrap();
 
+        storage.test_connection().await.unwrap();
+        assert!(objects.read().await.is_empty());
+
         local_put(&data_dir, MediaKind::Image, "legacy.png", b"legacy")
             .await
             .unwrap();
@@ -840,6 +977,21 @@ mod tests {
             .await
             .unwrap();
         assert!(objects.read().await.is_empty());
+
+        let local =
+            MediaStorage::from_resolved(data_dir.clone(), ResolvedStorage::Local).unwrap();
+        storage.replace_with(&local);
+        assert_eq!(storage.backend_name(), "local");
+        storage
+            .put(MediaKind::Image, "after-switch.png", b"local".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            local_get(&data_dir, MediaKind::Image, "after-switch.png")
+                .await
+                .unwrap(),
+            b"local"
+        );
 
         server.abort();
         let _ = tokio::fs::remove_dir_all(data_dir).await;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   ArrowLeft,
@@ -304,12 +304,20 @@ export default function WorkflowStudioPage() {
   const [error, setError] = useState<string | null>(null)
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null)
   const [mobilePanel, setMobilePanel] = useState(false)
+  const canvasViewportRef = useRef<HTMLElement>(null)
   const [drag, setDrag] = useState<{
     nodeId: string
     clientX: number
     clientY: number
     originX: number
     originY: number
+  } | null>(null)
+  const [pan, setPan] = useState<{
+    pointerId: number
+    clientX: number
+    clientY: number
+    scrollLeft: number
+    scrollTop: number
   } | null>(null)
 
   const runNodes = useMemo(
@@ -419,6 +427,28 @@ export default function WorkflowStudioPage() {
       window.removeEventListener("pointerup", up)
     }
   }, [drag])
+
+  useEffect(() => {
+    if (!pan) return
+    function move(event: PointerEvent) {
+      if (event.pointerId !== pan!.pointerId) return
+      const viewport = canvasViewportRef.current
+      if (!viewport) return
+      viewport.scrollLeft = pan!.scrollLeft - (event.clientX - pan!.clientX)
+      viewport.scrollTop = pan!.scrollTop - (event.clientY - pan!.clientY)
+    }
+    function stop(event: PointerEvent) {
+      if (event.pointerId === pan!.pointerId) setPan(null)
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", stop)
+    window.addEventListener("pointercancel", stop)
+    return () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", stop)
+      window.removeEventListener("pointercancel", stop)
+    }
+  }, [pan])
 
   function createBlank() {
     setWorkflowId(null)
@@ -781,7 +811,30 @@ export default function WorkflowStudioPage() {
         )}
 
         <main
-          className="nc-scroll relative flex-1 overflow-auto"
+          ref={canvasViewportRef}
+          className={cn(
+            "nc-scroll relative flex-1 overflow-auto",
+            pan ? "cursor-grabbing select-none" : "cursor-grab"
+          )}
+          onPointerDown={(event) => {
+            if (event.pointerType !== "mouse" || event.button !== 0 || drag || pan) return
+            const target = event.target
+            if (
+              target instanceof Element &&
+              target.closest("[data-workflow-pan-block]")
+            ) {
+              return
+            }
+            event.preventDefault()
+            event.currentTarget.setPointerCapture(event.pointerId)
+            setPan({
+              pointerId: event.pointerId,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              scrollLeft: event.currentTarget.scrollLeft,
+              scrollTop: event.currentTarget.scrollTop,
+            })
+          }}
           style={{
             backgroundImage:
               "radial-gradient(circle, color-mix(in oklch, var(--foreground) 14%, transparent) 1px, transparent 1px)",
@@ -808,7 +861,7 @@ export default function WorkflowStudioPage() {
                 const sourceRun = runNodes.get(source.id)
                 const active = sourceRun?.status === "completed"
                 return (
-                  <g key={edge.id} className="group/edge">
+                  <g key={edge.id} className="group/edge" data-workflow-pan-block>
                     <path d={d} fill="none" stroke="transparent" strokeWidth="16" className="pointer-events-auto cursor-pointer" onClick={() => setGraph((current) => ({ ...current, edges: current.edges.filter((item) => item.id !== edge.id) }))} />
                     <path
                       d={d}
@@ -860,7 +913,7 @@ export default function WorkflowStudioPage() {
             ))}
 
             {graph.nodes.length === 0 && !loading && (
-              <div className="absolute left-1/2 top-1/3 flex w-80 -translate-x-1/2 flex-col items-center rounded-2xl border border-dashed border-border bg-card/80 p-8 text-center shadow-sm backdrop-blur">
+              <div data-workflow-pan-block className="absolute left-1/2 top-1/3 flex w-80 -translate-x-1/2 flex-col items-center rounded-2xl border border-dashed border-border bg-card/80 p-8 text-center shadow-sm backdrop-blur">
                 <div className="mb-3 grid size-12 place-items-center rounded-2xl bg-primary/10 text-primary">
                   <Plus className="size-5" />
                 </div>
@@ -875,7 +928,7 @@ export default function WorkflowStudioPage() {
         </main>
 
         <footer className="flex h-8 shrink-0 items-center justify-between border-t border-border bg-card/80 px-4 text-[10px] text-muted-foreground">
-          <span>{graph.nodes.length} 个节点 · {graph.edges.length} 条连线 · 点击连线可删除</span>
+          <span>{graph.nodes.length} 个节点 · {graph.edges.length} 条连线 · 拖动画布空白处平移 · 点击连线可删除</span>
           {currentRun && (
             <span className={cn(currentRun.status === "running" && "text-primary", currentRun.status === "failed" && "text-destructive", currentRun.status === "completed" && "text-emerald-600")}>
               本次运行：{runStatusText(currentRun.status)}
@@ -929,6 +982,7 @@ function CanvasNodeCard({
 
   return (
     <article
+      data-workflow-pan-block
       className={cn(
         "absolute z-10 rounded-2xl border bg-card/95 shadow-lg shadow-black/5 backdrop-blur-xl transition-shadow",
         connecting && "border-primary ring-4 ring-primary/10",

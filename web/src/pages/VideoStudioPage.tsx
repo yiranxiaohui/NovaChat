@@ -30,6 +30,7 @@ import {
   getVideoJob,
   listVideoJobs,
   listVideoModels,
+  type CreateVideoJobReq,
   type VideoJob,
   type VideoModel,
 } from "@/lib/video-gen"
@@ -118,6 +119,7 @@ export default function VideoStudioPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   const [deletingToken, setDeletingToken] = useState<string | null>(null)
+  const [regeneratingToken, setRegeneratingToken] = useState<string | null>(null)
 
   async function reloadModels() {
     setModelsLoading(true)
@@ -204,6 +206,12 @@ export default function VideoStudioPage() {
       ? computeVideoCost(activeModel, seconds, size)
       : null
 
+  async function enqueueVideoJob(request: CreateVideoJobReq) {
+    const { token } = await createVideoJob(request)
+    const job = await getVideoJob(token)
+    setJobs((prev) => [job, ...prev.filter((item) => item.token !== job.token)])
+  }
+
   async function handleSubmit() {
     if (!activeModel || seconds == null || size == null) return
     const p = prompt.trim()
@@ -211,15 +219,13 @@ export default function VideoStudioPage() {
     setSubmitting(true)
     setError(null)
     try {
-      const { token } = await createVideoJob({
+      await enqueueVideoJob({
         model: activeModel.model,
         prompt: p,
         seconds,
         size,
         input_image_path: refImage ?? undefined,
       })
-      const job = await getVideoJob(token)
-      setJobs((prev) => [job, ...prev])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -247,13 +253,37 @@ export default function VideoStudioPage() {
     return () => window.clearInterval(id)
   }, [jobs])
 
-  function regenerate(job: VideoJob) {
+  async function regenerate(job: VideoJob) {
+    if (submitting || regeneratingToken !== null) return
+
+    // Keep the form in sync with the exact request being retried. In
+    // particular, restoring input_image_path makes this a real image-to-video
+    // retry instead of silently degrading it to text-to-video.
     setModel(job.model)
-    const m = models.find((x) => x.model === job.model)
     setSeconds(job.seconds)
     setSize(job.size)
     setPrompt(job.prompt)
-    if (!m) void reloadModels()
+    setRefImage(job.input_image_path)
+
+    setRegeneratingToken(job.token)
+    setError(null)
+    try {
+      await enqueueVideoJob({
+        model: job.model,
+        prompt: job.prompt,
+        seconds: job.seconds,
+        size: job.size,
+        input_image_path: job.input_image_path ?? undefined,
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      // create_job records and refunds immediate upstream failures before it
+      // returns an error. Refresh so that failed retry is visible as well.
+      await loadJobs(0, false)
+      setError(message)
+    } finally {
+      setRegeneratingToken(null)
+    }
   }
 
   async function removeJob(job: VideoJob) {
@@ -544,7 +574,9 @@ export default function VideoStudioPage() {
                     key={job.token}
                     job={job}
                     deleting={deletingToken === job.token}
-                    onRegenerate={() => regenerate(job)}
+                    regenerating={regeneratingToken === job.token}
+                    regenerateDisabled={submitting || regeneratingToken !== null}
+                    onRegenerate={() => void regenerate(job)}
                     onRemove={() => void removeJob(job)}
                   />
                 ))}
@@ -582,11 +614,15 @@ export default function VideoStudioPage() {
 function VideoJobCard({
   job,
   deleting,
+  regenerating,
+  regenerateDisabled,
   onRegenerate,
   onRemove,
 }: {
   job: VideoJob
   deleting: boolean
+  regenerating: boolean
+  regenerateDisabled: boolean
   onRegenerate: () => void
   onRemove: () => void
 }) {
@@ -607,8 +643,14 @@ function VideoJobCard({
           </p>
         )}
         <div className="mt-1 flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={onRegenerate}>
-            <RefreshCw className="size-3.5" /> 重新生成
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRegenerate}
+            disabled={regenerateDisabled}
+          >
+            <RefreshCw className={cn("size-3.5", regenerating && "animate-spin")} />
+            {regenerating ? "重试中…" : "重新生成"}
           </Button>
           <Button variant="ghost" size="sm" onClick={onRemove} disabled={deleting}>
             <Trash2 className="size-3.5" /> 删除
@@ -660,8 +702,14 @@ function VideoJobCard({
             </a>
           </Button>
         )}
-        <Button variant="outline" size="sm" onClick={onRegenerate}>
-          <RefreshCw className="size-3.5" /> 重新生成
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRegenerate}
+          disabled={regenerateDisabled}
+        >
+          <RefreshCw className={cn("size-3.5", regenerating && "animate-spin")} />
+          {regenerating ? "生成中…" : "重新生成"}
         </Button>
         <Button variant="ghost" size="sm" onClick={onRemove} disabled={deleting}>
           <Trash2 className="size-3.5" /> 删除

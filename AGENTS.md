@@ -1,25 +1,19 @@
 # NovaChat Agent Instructions
 
-## Release and production deployment
+## Release and deployment
 
-When the user asks to publish a release, complete the entire release-and-deploy
-workflow. Do not stop after creating the GitHub Release.
+When the user asks to publish a release, remember to complete the full flow:
 
-- By default, increment only the patch component: `vX.Y.Z` becomes
-  `vX.Y.(Z+1)`. Change the major or minor component only when the user says so.
-- Run `scripts/release-and-deploy.sh` from the clean, up-to-date `main` branch.
-- GitHub Actions builds the container image and worker artifacts only. Production
-  deployment must be initiated by Codex from this trusted host over SSH; do not
-  add production SSH credentials or an automatic deploy job to GitHub Actions.
-- Wait for both release workflows to succeed before deploying production.
-- Do not report completion until the production container is healthy, its image
-  tag matches the release, the local HTTP check returns 200, and the database
-  migration/quick checks pass.
-- The production SSH target belongs in the host-local deployment configuration,
-  never in the repository. See `docs/release-and-deploy.md`.
+1. Default to incrementing only the patch version: `vX.Y.Z` → `vX.Y.(Z+1)`.
+2. Publish the tag and GitHub Release, then wait for the container and Worker
+   release workflows to succeed.
+3. Deploy directly from the current trusted host with SSH to
+   `root@114.66.55.93`; do not delegate production deployment to GitHub Actions.
+4. Back up `/opt/NovaChat/docker-compose.yml` and the SQLite database, update the
+   NovaChat image to the release tag, and recreate only the NovaChat service.
+5. Verify the container is healthy with zero restarts, HTTP returns 200,
+   migrations and database integrity pass, and recent logs have no critical
+   errors before reporting completion.
 
-For a deployment retry without creating another release, run:
-
-```bash
-scripts/deploy-production.sh vX.Y.Z
-```
+Keep this as an agent-operated process. Do not add release or deployment scripts
+unless the user explicitly asks for automation code.

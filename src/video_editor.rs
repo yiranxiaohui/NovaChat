@@ -573,7 +573,9 @@ async fn list_assets(
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     for row in rows {
-        seen.insert(row.path.clone());
+        if !seen.insert(row.path.clone()) {
+            continue;
+        }
         let mut view = library_view(row);
         if !public {
             view.author = None;
@@ -582,48 +584,6 @@ async fn list_assets(
     }
 
     if public {
-        #[derive(sqlx::FromRow)]
-        struct PlazaRow {
-            id: i64,
-            filename: String,
-            prompt: String,
-            created_at: String,
-            author: String,
-        }
-        let plaza_sql = db::q(
-            installed.kind,
-            "SELECT p.id, p.filename, p.prompt, p.created_at, u.username AS author \
-             FROM plaza_images p JOIN users u ON u.id = p.user_id \
-             ORDER BY p.clone_count DESC, p.created_at DESC LIMIT 120",
-        );
-        match sqlx::query_as::<_, PlazaRow>(&plaza_sql)
-            .fetch_all(&installed.pool)
-            .await
-        {
-            Ok(rows) => {
-                for row in rows {
-                    let path = format!("/api/images/{}", row.filename);
-                    if seen.insert(path.clone()) {
-                        assets.push(AssetView {
-                            id: format!("plaza:{}", row.id),
-                            library_id: None,
-                            title: row.prompt.chars().take(48).collect(),
-                            kind: "image".into(),
-                            path: path.clone(),
-                            thumbnail_path: Some(path),
-                            duration: None,
-                            width: None,
-                            height: None,
-                            source: "public".into(),
-                            is_public: true,
-                            author: Some(row.author),
-                            created_at: row.created_at,
-                        });
-                    }
-                }
-            }
-            Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        }
         return Json(assets).into_response();
     }
 

@@ -313,7 +313,7 @@ function OverviewPanel() {
               value={stats.prompts}
               hint={`公开 ${stats.public_prompts}`}
             />
-            <StatCard label="广场图片" value={stats.plaza_images} />
+            <StatCard label="素材库" value={stats.library_assets} />
           </div>
         </>
       )}

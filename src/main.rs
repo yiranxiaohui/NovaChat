@@ -5,7 +5,6 @@ mod conversations;
 mod credits;
 mod db;
 mod email;
-mod image_plaza;
 mod images;
 mod invites;
 mod net_guard;
@@ -1185,7 +1184,6 @@ fn build_router(state: AppState) -> Router {
         .merge(prompts::routes())
         .merge(skills::routes())
         .merge(images::routes())
-        .merge(image_plaza::routes())
         .merge(settings::routes())
         .merge(profile::routes())
         .merge(admin::routes())

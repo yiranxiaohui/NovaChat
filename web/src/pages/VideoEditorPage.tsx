@@ -733,12 +733,12 @@ export default function VideoEditorPage() {
   }
 
   async function toggleAssetPublic(asset: EditorAsset) {
-    if (!asset.library_id) {
-      toast.info("先收藏到个人素材库，再设置公开范围")
-      return
-    }
     try {
-      await videoEditorApi.setVisibility(asset.library_id, !asset.is_public)
+      let libraryId = asset.library_id
+      if (!libraryId) {
+        libraryId = (await videoEditorApi.importAsset(asset)).id
+      }
+      await videoEditorApi.setVisibility(libraryId, !asset.is_public)
       await reloadAssets()
       toast.success(asset.is_public ? "已设为私有" : "已发布到公有素材库")
     } catch (error) {
@@ -1280,12 +1280,12 @@ function AssetPanel({
                   <span className="flex shrink-0 items-center gap-0.5">
                     {scope === "public" ? (
                       <button type="button" className="rounded p-0.5 hover:bg-white/10 hover:text-sky-300" onClick={() => onImport(asset)} title="收藏到我的素材"><Library className="size-3" /></button>
-                    ) : asset.library_id ? (
+                    ) : (
                       <>
                         <button type="button" className={cn("rounded p-0.5 hover:bg-white/10", asset.is_public ? "text-emerald-400" : "hover:text-emerald-300")} onClick={() => onTogglePublic(asset)} title={asset.is_public ? "设为私有" : "发布到公有素材库"}>{asset.is_public ? <Eye className="size-3" /> : <EyeOff className="size-3" />}</button>
-                        <button type="button" className="rounded p-0.5 hover:bg-red-500/10 hover:text-red-300" onClick={() => onRemove(asset)} title="从素材库移除"><Trash2 className="size-3" /></button>
+                        {asset.library_id && <button type="button" className="rounded p-0.5 hover:bg-red-500/10 hover:text-red-300" onClick={() => onRemove(asset)} title="从素材库移除"><Trash2 className="size-3" /></button>}
                       </>
-                    ) : null}
+                    )}
                     <button type="button" className="rounded p-0.5 hover:bg-white/10 hover:text-white" onClick={() => onAdd(asset)} title="添加到时间线"><Plus className="size-3" /></button>
                   </span>
                 </div>

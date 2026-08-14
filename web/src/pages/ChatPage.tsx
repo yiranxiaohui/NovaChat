@@ -13,7 +13,7 @@ import {
   Download,
   FileText,
   Globe,
-  Images,
+  Library,
   Lightbulb,
   Menu,
   MessageSquareText,
@@ -79,7 +79,8 @@ import {
   composeSystemPromptWithSkills,
   type Skill,
 } from "@/lib/skills"
-import { filenameFromPath, plazaApi } from "@/lib/image-plaza"
+import { filenameFromPath } from "@/lib/media-path"
+import { videoEditorApi } from "@/lib/video-editor"
 import { creditsApi, type CreditsMe } from "@/lib/credits"
 import {
   workerApi,
@@ -696,10 +697,10 @@ function Bubble({
                           disabled={busy || published}
                           title={
                             published
-                              ? "已发布到广场"
+                              ? "已分享到素材库"
                               : busy
                                 ? "发布中…"
-                                : "发布到图片广场"
+                                : "分享到公有素材库"
                           }
                           className={cn(
                             "inline-flex items-center gap-1 rounded-md border border-border bg-background/80 px-2 py-1 text-xs backdrop-blur",
@@ -714,7 +715,7 @@ function Bubble({
                           ) : (
                             <>
                               <Upload className="size-3" />{" "}
-                              {busy ? "发布中…" : "发布到广场"}
+                              {busy ? "分享中…" : "分享到素材库"}
                             </>
                           )}
                         </button>
@@ -865,13 +866,17 @@ export default function ChatPage() {
       .catch(() => {
         /* non-fatal */
       })
-    plazaApi
-      .listMine()
+    videoEditorApi
+      .assets("mine")
       .then((rows) => {
         if (cancelled) return
         setPublishedFilenames((prev) => {
           const next = new Set(prev)
-          for (const r of rows) next.add(r.filename)
+          for (const row of rows) {
+            if (!row.is_public) continue
+            const filename = filenameFromPath(row.path)
+            if (filename) next.add(filename)
+          }
           return next
         })
       })
@@ -1097,18 +1102,22 @@ export default function ChatPage() {
     setPublishingFilename(filename)
     setError(null)
     try {
-      await plazaApi.publish({
-        filename,
-        prompt: alt || filename,
+      const path = `/api/images/${filename}`
+      const imported = await videoEditorApi.importAsset({
+        id: `chat:${filename}`,
+        title: alt || filename,
+        kind: "image",
+        path,
+        thumbnail_path: path,
+        source: "generated",
+        is_public: false,
+        created_at: new Date().toISOString(),
       })
+      await videoEditorApi.setVisibility(imported.id, true)
       setPublishedFilenames((s) => new Set(s).add(filename))
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (/already published|CONFLICT/i.test(msg)) {
-        setPublishedFilenames((s) => new Set(s).add(filename))
-      } else {
-        setError(`发布失败：${msg}`)
-      }
+      setError(`分享失败：${msg}`)
     } finally {
       setPublishingFilename(null)
     }
@@ -1921,11 +1930,11 @@ export default function ChatPage() {
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => nav("/plaza")}
-              title="图片广场"
+              onClick={() => nav("/library")}
+              title="素材库"
               className="hidden size-8 sm:inline-flex md:size-9"
             >
-              <Images />
+              <Library />
             </Button>
             <Button
               variant="ghost"
@@ -2060,7 +2069,7 @@ export default function ChatPage() {
                         isLastUser || isSecondLastUser ? editLastUser : undefined,
                     }}
                     onPublishImage={
-                      m.role === "assistant" ? publishImage : undefined
+                      m.role === "assistant" && user ? publishImage : undefined
                     }
                     publishedFilenames={publishedFilenames}
                     publishingFilename={publishingFilename}

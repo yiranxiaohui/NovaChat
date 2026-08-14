@@ -11,11 +11,11 @@ import PaymentReturnPage from "@/pages/PaymentReturnPage"
 import ImageStudioPage from "@/pages/ImageStudioPage"
 import VideoStudioPage from "@/pages/VideoStudioPage"
 import WorkflowStudioPage from "@/pages/WorkflowStudioPage"
-import ImagePlazaPage from "@/pages/ImagePlazaPage"
 import SharedConversationPage from "@/pages/SharedConversationPage"
 import { Toaster } from "@/components/ui/sonner"
 
 const VideoEditorPage = lazy(() => import("@/pages/VideoEditorPage"))
+const MediaLibraryPage = lazy(() => import("@/pages/MediaLibraryPage"))
 
 function Loading() {
   return (
@@ -176,13 +176,16 @@ export default function App() {
               }
             />
             <Route
-              path="/plaza"
+              path="/library"
               element={
                 <Protected>
-                  <ImagePlazaPage />
+                  <Suspense fallback={<Loading />}>
+                    <MediaLibraryPage />
+                  </Suspense>
                 </Protected>
               }
             />
+            <Route path="/plaza" element={<Navigate to="/library" replace />} />
 
             <Route
               path="/w/:id"

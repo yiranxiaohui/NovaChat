@@ -5,7 +5,7 @@ import {
   Bot,
   Clapperboard,
   ImageIcon,
-  Images,
+  Library,
   LogIn,
   LogOut,
   MessageSquareText,
@@ -471,12 +471,12 @@ export function Sidebar({
 
       <div className="flex flex-col gap-1 border-t border-sidebar-border bg-background/20 px-2.5 py-2.5">
         <Link
-          to="/plaza"
+          to="/library"
           onClick={() => onNavigate?.()}
           className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
-          title="浏览公开发布的生成图"
+          title="管理并浏览公开分享的图片、视频和音频"
         >
-          <Images className="size-4" /> 图片广场
+          <Library className="size-4" /> 素材库
         </Link>
         {user?.is_admin && (
           <Link

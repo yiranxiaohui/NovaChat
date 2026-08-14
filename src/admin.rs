@@ -37,7 +37,7 @@ pub struct AdminStats {
     pub public_skills: i64,
     pub prompts: i64,
     pub public_prompts: i64,
-    pub plaza_images: i64,
+    pub library_assets: i64,
     pub sessions: i64,
 }
 
@@ -166,10 +166,10 @@ async fn get_stats(Extension(installed): Extension<InstalledState>) -> Response 
             &format!("SELECT COUNT(*) FROM prompts WHERE is_public = {true_lit}"),
         )
         .await,
-        plaza_images: scalar_i64(
+        library_assets: scalar_i64(
             &installed.pool,
             installed.kind,
-            "SELECT COUNT(*) FROM plaza_images",
+            "SELECT COUNT(*) FROM media_library_assets",
         )
         .await,
         sessions: scalar_i64(

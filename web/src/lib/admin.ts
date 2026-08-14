@@ -22,7 +22,7 @@ export type AdminStats = {
   public_skills: number
   prompts: number
   public_prompts: number
-  plaza_images: number
+  library_assets: number
   sessions: number
 }
 

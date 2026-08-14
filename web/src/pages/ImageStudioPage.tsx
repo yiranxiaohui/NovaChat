@@ -9,7 +9,7 @@ import {
   History,
   ImageIcon,
   ImagePlus,
-  Images,
+  Library,
   Loader2,
   Menu,
   RefreshCw,
@@ -42,7 +42,8 @@ import { useConfirm } from "@/lib/confirm-context"
 import { loadEffectiveSettings, IMAGE_PROTOCOL_META } from "@/lib/settings"
 import { studioApi, type StudioGeneration } from "@/lib/studio"
 import { listPlatformModels } from "@/lib/platform-models"
-import { plazaApi, filenameFromPath } from "@/lib/image-plaza"
+import { filenameFromPath } from "@/lib/media-path"
+import { videoEditorApi } from "@/lib/video-editor"
 import { ImagePreview } from "@/components/app/ImagePreview"
 
 // Radix 的 SelectItem 不接受空字符串作为 value（会直接抛错），用哨兵值代表
@@ -344,10 +345,16 @@ export default function ImageStudioPage() {
   }
   useEffect(() => {
     void loadHistory()
-    plazaApi
-      .listMine()
+    videoEditorApi
+      .assets("mine")
       .then((rows) => {
-        setPublishedFilenames(new Set(rows.map((r) => r.filename)))
+        const published = new Set<string>()
+        for (const row of rows) {
+          if (!row.is_public) continue
+          const filename = filenameFromPath(row.path)
+          if (filename) published.add(filename)
+        }
+        setPublishedFilenames(published)
       })
       .catch(() => {
         /* non-fatal */
@@ -530,7 +537,7 @@ export default function ImageStudioPage() {
     }
   }
 
-  async function publishToPlaza(g: StudioGeneration) {
+  async function shareToLibrary(g: StudioGeneration) {
     if (!g.image_path) return
     const fname = filenameFromPath(g.image_path)
     if (!fname) return
@@ -538,19 +545,21 @@ export default function ImageStudioPage() {
     setPublishingFilename(fname)
     setError(null)
     try {
-      await plazaApi.publish({
-        filename: fname,
-        prompt: g.prompt,
-        revised_prompt: g.revised_prompt,
+      const imported = await videoEditorApi.importAsset({
+        id: `studio:${g.id}`,
+        title: g.prompt || fname,
+        kind: "image",
+        path: g.image_path,
+        thumbnail_path: g.image_path,
+        source: "generated",
+        is_public: false,
+        created_at: g.created_at,
       })
+      await videoEditorApi.setVisibility(imported.id, true)
       setPublishedFilenames((s) => new Set(s).add(fname))
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (/already published|CONFLICT/i.test(msg)) {
-        setPublishedFilenames((s) => new Set(s).add(fname))
-      } else {
-        setError(`发布失败：${msg}`)
-      }
+      setError(`分享失败：${msg}`)
     } finally {
       setPublishingFilename(null)
     }
@@ -934,18 +943,18 @@ export default function ImageStudioPage() {
             <ImageIcon className="size-4 shrink-0 text-muted-foreground" />
             <h1 className="truncate text-base font-semibold">图像工作室</h1>
             <span className="hidden text-xs text-muted-foreground sm:inline">
-              单图生成 · 可发布到广场
+              单图生成 · 产物自动进入素材库
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => nav("/plaza")}
-              title="图片广场"
+              onClick={() => nav("/library")}
+              title="素材库"
             >
-              <Images className="size-3.5" />
-              <span className="hidden sm:inline">图片广场</span>
+              <Library className="size-3.5" />
+              <span className="hidden sm:inline">素材库</span>
             </Button>
             <Button
               variant="ghost"
@@ -1031,7 +1040,7 @@ export default function ImageStudioPage() {
                         filenameFromPath(effectivePreview.image_path)
                       : false
                   }
-                  onPublish={() => void publishToPlaza(effectivePreview)}
+                  onPublish={() => void shareToLibrary(effectivePreview)}
                   canPublish={canPublish(effectivePreview)}
                   onUseAsBase={async () => {
                     if (!effectivePreview.image_path) return
@@ -1084,7 +1093,7 @@ export default function ImageStudioPage() {
                         setCurrent(g)
                         setHistoryOpen(false)
                       }}
-                      onPublish={() => void publishToPlaza(g)}
+                      onPublish={() => void shareToLibrary(g)}
                       onRemove={() => void removeHistory(g)}
                       onRetry={() => void retryGeneration(g)}
                       onPickParams={() => void pickParams(g)}
@@ -1277,10 +1286,10 @@ function PreviewCard({
         <ImageAction
           label={
             published
-              ? "已发布到广场"
+              ? "已分享到素材库"
               : publishing
                 ? "发布中…"
-                : "发布到图片广场"
+                : "分享到公有素材库"
           }
           icon={
             published ? (
@@ -1537,7 +1546,7 @@ function HistoryCard({
               }}
               disabled={published || publishing}
               className="inline-flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 text-[11px] hover:bg-white/20 disabled:cursor-default disabled:opacity-70"
-              title={published ? "已发布" : "发布到广场"}
+              title={published ? "已分享" : "分享到公有素材库"}
             >
               {published ? (
                 <Check className="size-3 text-emerald-400" />

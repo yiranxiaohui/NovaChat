@@ -100,6 +100,7 @@ static SQLITE_MIGRATIONS: &[(i32, &str)] = &[
     (33, include_str!("../migrations/sqlite/0033_workflow_canvas.sql")),
     (34, include_str!("../migrations/sqlite/0034_workflow_run_logs.sql")),
     (35, include_str!("../migrations/sqlite/0035_video_editor.sql")),
+    (36, include_str!("../migrations/sqlite/0036_unify_media_library.sql")),
 ];
 static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/mysql/0001_init.sql")),
@@ -137,6 +138,7 @@ static MYSQL_MIGRATIONS: &[(i32, &str)] = &[
     (33, include_str!("../migrations/mysql/0033_workflow_canvas.sql")),
     (34, include_str!("../migrations/mysql/0034_workflow_run_logs.sql")),
     (35, include_str!("../migrations/mysql/0035_video_editor.sql")),
+    (36, include_str!("../migrations/mysql/0036_unify_media_library.sql")),
 ];
 static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/postgres/0001_init.sql")),
@@ -174,6 +176,7 @@ static POSTGRES_MIGRATIONS: &[(i32, &str)] = &[
     (33, include_str!("../migrations/postgres/0033_workflow_canvas.sql")),
     (34, include_str!("../migrations/postgres/0034_workflow_run_logs.sql")),
     (35, include_str!("../migrations/postgres/0035_video_editor.sql")),
+    (36, include_str!("../migrations/postgres/0036_unify_media_library.sql")),
 ];
 
 fn migrations_for(kind: DbKind) -> &'static [(i32, &'static str)] {

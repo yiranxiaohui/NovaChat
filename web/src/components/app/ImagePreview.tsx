@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Download, Minus, Plus, RotateCcw, X } from "lucide-react"
-import { filenameFromPath } from "@/lib/image-plaza"
+import { filenameFromPath } from "@/lib/media-path"
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 8

@@ -14,9 +14,11 @@ use crate::{AppState, InstalledState, auth, db};
 // persisted config
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StoredConfig {
     pub database_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<crate::storage::StorageConfig>,
 }
 
 pub fn load_config(path: &Path) -> Result<StoredConfig, String> {
@@ -323,7 +325,13 @@ async fn install(
         }
     };
 
-    if let Err(e) = save_config(&state.config_path, &StoredConfig { database_url: url.clone() }) {
+    if let Err(e) = save_config(
+        &state.config_path,
+        &StoredConfig {
+            database_url: url.clone(),
+            storage: None,
+        },
+    ) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write config: {e}"));
     }
 
@@ -340,4 +348,32 @@ pub fn routes() -> Router<AppState> {
         .route("/setup/status", get(status))
         .route("/setup/test", post(test_connection))
         .route("/setup/install", post(install))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StoredConfig;
+
+    #[test]
+    fn legacy_config_without_storage_still_loads() {
+        let config: StoredConfig =
+            toml::from_str("database_url = 'sqlite://data/test.db'").unwrap();
+        assert!(config.storage.is_none());
+    }
+
+    #[test]
+    fn s3_storage_config_loads_from_toml() {
+        let config: StoredConfig = toml::from_str(
+            "database_url = 'sqlite://data/test.db'\n\
+             [storage]\n\
+             backend = 's3'\n\
+             bucket = 'media'\n\
+             access_key_id = 'key'\n\
+             secret_access_key = 'secret'\n",
+        )
+        .unwrap();
+        let storage = config.storage.unwrap();
+        assert_eq!(storage.backend, "s3");
+        assert_eq!(storage.bucket.as_deref(), Some("media"));
+    }
 }

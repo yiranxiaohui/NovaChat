@@ -9,7 +9,7 @@ use axum::{
 use rand::RngCore;
 use serde::Deserialize;
 
-use crate::{AppState, CurrentUser, InstalledState, UserDto, auth, db};
+use crate::{AppState, CurrentUser, InstalledState, UserDto, auth, db, storage::MediaKind};
 
 pub const MAX_DISPLAY_NAME: usize = 64;
 pub const MAX_AVATAR_URL: usize = 512;
@@ -238,13 +238,8 @@ async fn upload_avatar(
         return err(StatusCode::PAYLOAD_TOO_LARGE, "avatar exceeds 2MB limit");
     }
 
-    let avatars_dir = state.data_dir.join("avatars");
-    if let Err(e) = tokio::fs::create_dir_all(&avatars_dir).await {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}"));
-    }
     let filename = format!("{}.{ext}", random_hex(16));
-    let path = avatars_dir.join(&filename);
-    if let Err(e) = tokio::fs::write(&path, &body).await {
+    if let Err(e) = state.storage.put(MediaKind::Avatar, &filename, body.to_vec()).await {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"));
     }
 
@@ -263,14 +258,14 @@ async fn upload_avatar(
         .execute(&installed.pool)
         .await
     {
-        let _ = tokio::fs::remove_file(&path).await;
+        let _ = state.storage.delete(MediaKind::Avatar, &filename).await;
         return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     }
 
     if let Some((Some(prev_url),)) = prev {
         if let Some(name) = prev_url.strip_prefix("/api/avatars/") {
             if !name.contains('/') && !name.contains('\\') && !name.contains("..") {
-                let _ = tokio::fs::remove_file(avatars_dir.join(name)).await;
+                let _ = state.storage.delete(MediaKind::Avatar, name).await;
             }
         }
     }
@@ -285,12 +280,15 @@ async fn serve_avatar(State(state): State<AppState>, Path(name): Path<String>) -
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let path = state.data_dir.join("avatars").join(&name);
-    let bytes = match tokio::fs::read(&path).await {
+    let bytes = match state.storage.get(MediaKind::Avatar, &name).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) if e.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("[storage] serve avatar {name}: {e}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
     };
-    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    let mime = mime_guess::from_path(&name).first_or_octet_stream();
     Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")

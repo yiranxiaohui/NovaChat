@@ -59,6 +59,8 @@ pub struct AdminSystemInfo {
     pub config_path: String,
     pub bind_addr: String,
     pub images_dir_bytes: u64,
+    pub storage_backend: &'static str,
+    pub storage_location: String,
 }
 
 #[derive(Deserialize)]
@@ -391,6 +393,8 @@ async fn get_system_info(
         config_path: state.config_path.display().to_string(),
         bind_addr: std::env::var("NOVACHAT_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into()),
         images_dir_bytes,
+        storage_backend: state.storage.backend_name(),
+        storage_location: state.storage.location(),
     };
     Json(info).into_response()
 }

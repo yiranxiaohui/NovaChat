@@ -52,6 +52,45 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 
 测试在本地跑：`cargo test` + `cd web && npx tsc -b`。CI 只负责构建镜像、不跑测试。
 
+## S3 媒体存储
+
+NovaChat 默认把图片、视频和头像保存在 `NOVACHAT_DATA_DIR`。可在
+`novachat.toml` 中启用 AWS S3、Cloudflare R2、MinIO 等 S3 兼容存储：
+
+```toml
+database_url = "sqlite:///data/novachat.db"
+
+[storage]
+backend = "s3"
+endpoint = "https://<account-id>.r2.cloudflarestorage.com" # AWS S3 可省略
+region = "auto"                                            # AWS 填实际 region
+bucket = "novachat-media"
+access_key_id = "..."
+secret_access_key = "..."
+prefix = "novachat"
+path_style = true                                           # 自定义 endpoint 默认 true
+```
+
+修改配置后需要重启 NovaChat。也可全部使用环境变量，适合 Docker/Kubernetes：
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `NOVACHAT_STORAGE_BACKEND` | 设为 `s3` 启用 S3；默认 `local` |
+| `NOVACHAT_S3_ENDPOINT` | S3 兼容 endpoint；AWS S3 可省略 |
+| `NOVACHAT_S3_REGION` | 区域，默认 `us-east-1` |
+| `NOVACHAT_S3_BUCKET` | bucket 名称 |
+| `NOVACHAT_S3_ACCESS_KEY_ID` | Access Key ID |
+| `NOVACHAT_S3_SECRET_ACCESS_KEY` | Secret Access Key |
+| `NOVACHAT_S3_SESSION_TOKEN` | 临时凭证的 session token（可选） |
+| `NOVACHAT_S3_PREFIX` | 对象 key 前缀，默认 `novachat` |
+| `NOVACHAT_S3_PATH_STYLE` | 是否使用 path-style，支持 `true/false` |
+
+凭证和区域也兼容标准的 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、
+`AWS_SESSION_TOKEN`、`AWS_REGION` / `AWS_DEFAULT_REGION`。bucket 可以保持私有，
+NovaChat 会代理读取并保留原有 `/api/images/...`、`/api/videos/...` 地址以及视频
+Range 播放。启用后新图片、视频和头像只写入 S3；切换前的本地媒体仍可回退读取，
+但不会自动上传或删除。普通聊天文档附件仍保存在本地 `files/` 目录。
+
 ## 部署
 
 正式版本镜像 tag：`docker.yunnet.top/github/yiranxiaohui/novachat:X.Y.Z`。

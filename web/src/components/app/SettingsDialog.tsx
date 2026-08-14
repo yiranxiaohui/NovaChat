@@ -29,7 +29,9 @@ import { workerApi, type Worker } from "@/lib/worker"
 type Props = {
   open: boolean
   initial: UpstreamSettings
+  isAuthenticated: boolean
   onClose: () => void
+  onLoginRequired: () => void
   onSave: (s: UpstreamSettings) => void
 }
 
@@ -38,7 +40,14 @@ type Tab = "chat" | "image" | "worker"
 const PROTOCOL_OPTIONS: Protocol[] = ["openai", "claude", "gemini"]
 const IMAGE_PROTOCOL_OPTIONS: ImageProtocol[] = ["openai", "gemini"]
 
-export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
+export function SettingsDialog({
+  open,
+  initial,
+  isAuthenticated,
+  onClose,
+  onLoginRequired,
+  onSave,
+}: Props) {
   // --- Mode ---
   const [chatMode, setChatMode] = useState<UpstreamMode>(initial.chatMode)
   const [imageMode, setImageMode] = useState<UpstreamMode>(initial.imageMode)
@@ -106,7 +115,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
 
   // Fetch platform models when dialog opens and platform mode is active.
   useEffect(() => {
-    if (!open || chatMode !== "platform") return
+    if (!open || !isAuthenticated || chatMode !== "platform") return
     const ctrl = new AbortController()
     setPlatformChatError(null)
     listPlatformModels("chat", ctrl.signal)
@@ -125,10 +134,10 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       })
     return () => ctrl.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, chatMode])
+  }, [open, chatMode, isAuthenticated])
 
   useEffect(() => {
-    if (!open || imageMode !== "platform") return
+    if (!open || !isAuthenticated || imageMode !== "platform") return
     const ctrl = new AbortController()
     setPlatformImageError(null)
     listPlatformModels("image", ctrl.signal)
@@ -148,7 +157,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
       })
     return () => ctrl.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, imageMode])
+  }, [open, imageMode, isAuthenticated])
 
   useEffect(() => {
     setChatModels([])
@@ -298,15 +307,23 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             <TabsTrigger value="image">
               <ImageIcon className="size-3.5" /> 图像
             </TabsTrigger>
-            <TabsTrigger value="worker">工蜂</TabsTrigger>
+            <TabsTrigger value="worker" disabled={!isAuthenticated}>
+              工蜂
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="chat">
           <div className="mt-4 flex flex-col gap-3">
             <ModeToggle
               mode={chatMode}
-              onChange={setChatMode}
-              platformLabel="云端积分"
+              onChange={(next) => {
+                if (next === "platform" && !isAuthenticated) {
+                  onLoginRequired()
+                  return
+                }
+                setChatMode(next)
+              }}
+              platformLabel={isAuthenticated ? "云端积分" : "云端积分（需登录）"}
               byokLabel="自带 API Key"
             />
 
@@ -450,8 +467,14 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
           <div className="mt-4 flex flex-col gap-3">
             <ModeToggle
               mode={imageMode}
-              onChange={setImageMode}
-              platformLabel="云端积分"
+              onChange={(next) => {
+                if (next === "platform" && !isAuthenticated) {
+                  onLoginRequired()
+                  return
+                }
+                setImageMode(next)
+              }}
+              platformLabel={isAuthenticated ? "云端积分" : "云端积分（需登录）"}
               byokLabel="自带 API Key"
             />
 
@@ -575,10 +598,13 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
             type="checkbox"
             className="mt-1"
             checked={cloudSync}
+            disabled={!isAuthenticated}
             onChange={(e) => setCloudSync(e.target.checked)}
           />
           <span>
-            云端同步 API Key / Base URL / 模型（保存到服务器账户，换设备登录后自动恢复；关闭后将从服务器删除）
+            {isAuthenticated
+              ? "云端同步 API Key / Base URL / 模型（保存到服务器账户，换设备登录后自动恢复；关闭后将从服务器删除）"
+              : "登录后可开启模型设置云端同步"}
           </span>
         </label>
 
@@ -602,7 +628,7 @@ export function SettingsDialog({ open, initial, onClose, onSave }: Props) {
                 imageApiKey: imageApiKey.trim(),
                 imageModel: imageModel.trim(),
                 imageUseProxy,
-                cloudSync,
+                cloudSync: isAuthenticated && cloudSync,
               })
             }
           >

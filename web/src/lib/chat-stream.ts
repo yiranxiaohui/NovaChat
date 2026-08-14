@@ -23,8 +23,8 @@ function extractImages(md: string): ExtractedImages {
 
 // Document attachments are embedded in user messages as ordinary markdown
 // links whose URL points at our own `/api/files/` store, e.g.
-// `[report.pdf](/api/files/ab12.pdf)`. We strip them from the prompt text and
-// re-attach each as a native document block for the active protocol.
+// `[report.pdf](/api/files/ab12.pdf)`, or a guest-mode data URL. We strip them
+// from the prompt text and re-attach each as a native document block.
 type FileRef = { name: string; url: string }
 type ExtractedFiles = { text: string; files: FileRef[] }
 
@@ -32,7 +32,7 @@ function extractFiles(md: string): ExtractedFiles {
   const files: FileRef[] = []
   const text = md
     .replace(
-      /\[([^\]]*)\]\((\/api\/files\/[^)\s]+)\)/g,
+      /\[([^\]]*)\]\(((?:\/api\/files\/|data:)[^)\s]+)\)/g,
       (_m, name: string, url: string) => {
         if (url) files.push({ name: name || "file", url })
         return ""
@@ -144,6 +144,9 @@ export type ChatStreamOptions = {
   // base64 bytes are uploaded to /api/images/save and a markdown image
   // reference is spliced into the assistant message.
   imageGen?: boolean
+  // Guests have no server media store. Keep generated images as data URLs in
+  // the in-memory conversation instead of calling the protected save route.
+  persistGeneratedImages?: boolean
   temperature?: number
   maxTokens?: number
   signal?: AbortSignal
@@ -626,7 +629,11 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
               if (item?.type === "image_generation_call") {
                 stopImgPlaceholder()
                 if (item.result) {
-                  await persistImageGenerationCall(item, o.onDelta)
+                  await persistImageGenerationCall(
+                    item,
+                    o.onDelta,
+                    o.persistGeneratedImages !== false
+                  )
                 }
                 continue
               }
@@ -688,10 +695,15 @@ export async function streamChat(o: ChatStreamOptions): Promise<void> {
 
 async function persistImageGenerationCall(
   item: { result?: string; revised_prompt?: string },
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  persist: boolean
 ): Promise<void> {
   if (!item.result) return
-  const alt = (item.revised_prompt || "image").replace(/[\[\]]/g, "")
+  const alt = (item.revised_prompt || "image").replace(/[[\]]/g, "")
+  if (!persist) {
+    onDelta(`\n\n![${alt}](data:image/png;base64,${item.result})`)
+    return
+  }
   try {
     const res = await fetch("/api/images/save", {
       method: "POST",

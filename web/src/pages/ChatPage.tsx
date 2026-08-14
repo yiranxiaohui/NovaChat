@@ -59,6 +59,7 @@ import {
   loadEffectiveSettings,
   settingsApi,
   likelyWebSearchCapable,
+  GUEST_SETTINGS_ID,
   PROTOCOL_META,
   type Protocol,
   type UpstreamSettings,
@@ -752,6 +753,7 @@ const SAMPLE_PROMPTS = [
 export default function ChatPage() {
   const auth = useAuth()
   const user = auth.state.status === "authed" ? auth.state.user : null
+  const settingsOwnerId = user?.id ?? GUEST_SETTINGS_ID
   const nav = useNavigate()
   const { id: paramId } = useParams()
   const location = useLocation()
@@ -765,24 +767,7 @@ export default function ChatPage() {
   const msgAnchorScrolledRef = useRef<string | null>(null)
 
   const [settings, setSettings] = useState<UpstreamSettings>(() =>
-    user
-      ? loadSettings(user.id)
-      : {
-          chatMode: "platform",
-          imageMode: "platform",
-          protocol: "openai",
-          baseUrl: "",
-          apiKey: "",
-          model: "",
-          useProxy: true,
-          imageProtocol: "openai",
-          imageBaseUrl: "",
-          imageApiKey: "",
-          imageModel: "",
-          imageUseProxy: true,
-          webSearch: false,
-          cloudSync: false,
-        }
+    loadSettings(settingsOwnerId)
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rechargeOpen, setRechargeOpen] = useState(false)
@@ -860,7 +845,12 @@ export default function ChatPage() {
   }, [])
 
   useEffect(() => {
-    if (!user) return
+    if (!user) {
+      setSettings(loadSettings(GUEST_SETTINGS_ID))
+      setCreditsMe(null)
+      setPublishedFilenames(new Set())
+      return
+    }
     setSettings(loadSettings(user.id))
     let cancelled = false
     loadEffectiveSettings(user.id).then((s) => {
@@ -894,7 +884,7 @@ export default function ChatPage() {
   }, [user])
 
   useEffect(() => {
-    if (settings.chatMode !== "platform" || workerMode) return
+    if (!user || settings.chatMode !== "platform" || workerMode) return
     let cancelled = false
     listPlatformModels("chat")
       .then((list) => {
@@ -911,9 +901,10 @@ export default function ChatPage() {
     return () => {
       cancelled = true
     }
-  }, [settings.chatMode, workerMode])
+  }, [settings.chatMode, workerMode, user])
 
   async function refreshCredits() {
+    if (!user) return
     try {
       const me = await creditsApi.me()
       setCreditsMe(me)
@@ -925,7 +916,7 @@ export default function ChatPage() {
   function toggleWebSearch() {
     const next = { ...settings, webSearch: !settings.webSearch }
     setSettings(next)
-    if (user) saveSettings(user.id, next)
+    saveSettings(settingsOwnerId, next)
     if (next.cloudSync) {
       settingsApi.save(next).catch(() => {
         /* non-fatal */
@@ -1219,6 +1210,15 @@ export default function ChatPage() {
     kind: "image" | "file"
   }): Promise<string> {
     const b64 = bytesToB64(new Uint8Array(await att.file.arrayBuffer()))
+    if (!user) {
+      const mime =
+        att.file.type ||
+        (att.kind === "image" ? "image/png" : "application/octet-stream")
+      const dataUrl = `data:${mime};base64,${b64}`
+      if (att.kind === "image") return `![](${dataUrl})`
+      const safeName = att.file.name.replace(/[[\]()]/g, "_")
+      return `[${safeName}](${dataUrl})`
+    }
     if (att.kind === "image") {
       const res = await fetch("/api/images/save", {
         method: "POST",
@@ -1358,11 +1358,15 @@ export default function ChatPage() {
       await sendWorker(text)
       return
     }
-    if (!canSend || !user) return
+    if (!canSend) return
+    if (!user && settings.chatMode === "platform") {
+      nav("/login?next=/")
+      return
+    }
     const text = input.trim()
 
-    const convId = await ensureConversation()
-    if (!convId) return
+    const convId = user ? await ensureConversation() : null
+    if (user && !convId) return
 
     // Upload attachments first — fail early so the user message never gets
     // added if saving breaks.
@@ -1430,6 +1434,7 @@ export default function ChatPage() {
         usePlatform: settings.chatMode === "platform",
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
+        persistGeneratedImages: Boolean(user),
         messages: toModel,
         signal: ctrl.signal,
         onReasoning: (delta) => {
@@ -1505,6 +1510,7 @@ export default function ChatPage() {
       toSave.push({ role: "assistant", content: assistantContent })
     }
     try {
+      if (!user || !convId) return
       await conversationsApi.append(convId, toSave)
       setSidebarReload((x) => x + 1)
       await refetchMessages(convId)
@@ -1516,17 +1522,20 @@ export default function ChatPage() {
   }
 
   async function regenerateLastAssistant() {
-    if (!conversationId || streaming) return
+    if (streaming) return
     const last = messages[messages.length - 1]
-    if (!last || last.role !== "assistant" || last.id === undefined) return
+    if (!last || last.role !== "assistant") return
     const prevUser = messages[messages.length - 2]
     if (!prevUser || prevUser.role !== "user") return
 
-    try {
-      await conversationsApi.truncate(conversationId, last.id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return
+    if (user) {
+      if (!conversationId || last.id === undefined) return
+      try {
+        await conversationsApi.truncate(conversationId, last.id)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return
+      }
     }
 
     const trimmed = messages.slice(0, -1)
@@ -1560,6 +1569,7 @@ export default function ChatPage() {
         usePlatform: settings.chatMode === "platform",
         webSearch: settings.webSearch,
         imageGen: settings.protocol === "openai",
+        persistGeneratedImages: Boolean(user),
         messages: toModel,
         signal: ctrl.signal,
         onReasoning: (delta) => {
@@ -1627,7 +1637,7 @@ export default function ChatPage() {
       return
     }
 
-    if (assistantContent) {
+    if (assistantContent && user && conversationId) {
       try {
         await conversationsApi.append(conversationId, [
           { role: "assistant", content: assistantContent },
@@ -1643,22 +1653,25 @@ export default function ChatPage() {
   }
 
   async function editLastUser() {
-    if (!conversationId || streaming) return
+    if (streaming) return
     const last = messages[messages.length - 1]
     let target: UiMessage | undefined
     if (last?.role === "user") target = last
     else if (last?.role === "assistant" && messages[messages.length - 2]?.role === "user")
       target = messages[messages.length - 2]
-    if (!target || target.id === undefined) return
+    if (!target) return
 
-    try {
-      await conversationsApi.truncate(conversationId, target.id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return
+    if (user) {
+      if (!conversationId || target.id === undefined) return
+      try {
+        await conversationsApi.truncate(conversationId, target.id)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return
+      }
     }
 
-    const keepUntil = messages.findIndex((m) => m.id === target!.id)
+    const keepUntil = messages.indexOf(target)
     setMessages(keepUntil < 0 ? messages : messages.slice(0, keepUntil))
     setInput(target.content)
     setTimeout(() => textareaRef.current?.focus(), 0)
@@ -1786,6 +1799,17 @@ export default function ChatPage() {
         <Sidebar
           reloadKey={sidebarReload}
           onOpenLibrary={() => setLibraryOpen(true)}
+          onNewGuest={() => {
+            if (streaming) stop()
+            setMessages([])
+            setSystemPrompt("")
+            setAttachedSkills([])
+            setCurrentConversation(null)
+            setChatUsageTokens(null)
+            setInput("")
+            clearAttachments()
+            setError(null)
+          }}
           onNavigate={() => setMobileNavOpen(false)}
         />
       </div>
@@ -1819,7 +1843,7 @@ export default function ChatPage() {
                   ...(nextProtocol ? { protocol: nextProtocol } : {}),
                 }
                 setSettings(updated)
-                if (user) saveSettings(user.id, updated)
+                saveSettings(settingsOwnerId, updated)
                 if (updated.cloudSync) {
                   settingsApi.save(updated).catch(() => {
                     /* non-fatal */
@@ -1863,33 +1887,37 @@ export default function ChatPage() {
                 <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
               )}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setLibraryOpen(true)}
-              title="提示词库"
-              className="hidden md:inline-flex"
-            >
-              <BookMarked />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSkillsOpen(true)}
-              title={
-                attachedSkills.length > 0
-                  ? `Skills（已挂载 ${attachedSkills.length}）`
-                  : "Skills"
-              }
-              className="relative size-8 md:size-9"
-            >
-              <Wand2 />
-              {attachedSkills.length > 0 && (
-                <span className="absolute right-1 top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">
-                  {attachedSkills.length}
-                </span>
-              )}
-            </Button>
+            {user && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setLibraryOpen(true)}
+                  title="提示词库"
+                  className="hidden md:inline-flex"
+                >
+                  <BookMarked />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setSkillsOpen(true)}
+                  title={
+                    attachedSkills.length > 0
+                      ? `Skills（已挂载 ${attachedSkills.length}）`
+                      : "Skills"
+                  }
+                  className="relative size-8 md:size-9"
+                >
+                  <Wand2 />
+                  {attachedSkills.length > 0 && (
+                    <span className="absolute right-1 top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">
+                      {attachedSkills.length}
+                    </span>
+                  )}
+                </Button>
+              </>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -1993,14 +2021,20 @@ export default function ChatPage() {
               const key = m.id !== undefined ? `m-${m.id}` : `t-${i}`
               const isLast = i === lastIdx
               const isLastAssistant =
-                isLast && m.role === "assistant" && m.id !== undefined && !streaming
+                isLast &&
+                m.role === "assistant" &&
+                (!user || m.id !== undefined) &&
+                !streaming
               const isLastUser =
-                isLast && m.role === "user" && m.id !== undefined && !streaming
+                isLast &&
+                m.role === "user" &&
+                (!user || m.id !== undefined) &&
+                !streaming
               // Edit should also be available when last assistant follows a last user
               const isSecondLastUser =
                 i === lastIdx - 1 &&
                 m.role === "user" &&
-                m.id !== undefined &&
+                (!user || m.id !== undefined) &&
                 !streaming &&
                 messages[lastIdx]?.role === "assistant"
               const isHighlighted =
@@ -2342,17 +2376,30 @@ export default function ChatPage() {
       <SettingsDialog
         open={settingsOpen}
         initial={settings}
+        isAuthenticated={Boolean(user)}
         onClose={() => setSettingsOpen(false)}
+        onLoginRequired={() => {
+          setSettingsOpen(false)
+          nav("/login?next=/")
+        }}
         onSave={(s) => {
           const prevCloud = settings.cloudSync
-          if (user) saveSettings(user.id, s)
-          setSettings(s)
+          const next: UpstreamSettings = user
+            ? s
+            : {
+                ...s,
+                chatMode: "byok",
+                imageMode: "byok",
+                cloudSync: false,
+              }
+          saveSettings(settingsOwnerId, next)
+          setSettings(next)
           setSettingsOpen(false)
-          if (s.cloudSync) {
-            settingsApi.save(s).catch((e) => {
+          if (user && next.cloudSync) {
+            settingsApi.save(next).catch((e) => {
               setError(`云端同步失败：${e instanceof Error ? e.message : String(e)}`)
             })
-          } else if (prevCloud) {
+          } else if (user && prevCloud) {
             settingsApi.remove().catch(() => {
               // ignore — user turned cloud off, best-effort cleanup
             })

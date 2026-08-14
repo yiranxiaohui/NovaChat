@@ -64,6 +64,9 @@ pub struct AppState {
     /// Per-IP rate limiter for unauthenticated auth endpoints (login /
     /// register / send-code). See [`rate_limit`] for details.
     pub auth_limiter: std::sync::Arc<rate_limit::RateLimiter>,
+    /// Per-IP limiter for anonymous BYOK proxy traffic. Authenticated users
+    /// keep the existing unrestricted proxy behavior.
+    pub guest_proxy_limiter: std::sync::Arc<rate_limit::RateLimiter>,
     /// Online worker registry: worker_id -> handle with WS send channel.
     pub workers: crate::worker::WorkerRegistry,
     /// Human-in-the-loop approval map: call_id -> oneshot used by the agent
@@ -523,6 +526,40 @@ async fn require_auth(
     next.run(req).await
 }
 
+/// Load an authenticated user when a valid session cookie is present, while
+/// still allowing anonymous requests through. Used only by BYOK proxy routes:
+/// anonymous callers may forward their own upstream credentials, but shared
+/// platform channels remain account-only.
+async fn optional_auth(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    mut req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let installed = match state.require_installed().await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let mut authenticated = false;
+    if let Some(c) = jar.get(auth::SESSION_COOKIE)
+        && let Some((id, _)) =
+            auth::user_for_token(&installed.pool, installed.kind, c.value()).await
+    {
+        req.extensions_mut().insert(CurrentUser { id });
+        authenticated = true;
+    }
+    if !authenticated
+        && !state
+            .guest_proxy_limiter
+            .allow(rate_limit::client_ip(req.headers()))
+            .await
+    {
+        return (StatusCode::TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试").into_response();
+    }
+    req.extensions_mut().insert(installed);
+    next.run(req).await
+}
+
 // ---------------------------------------------------------------------------
 // chat proxy (optional, for upstreams without CORS)
 // ---------------------------------------------------------------------------
@@ -583,6 +620,35 @@ pub fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn has_byok_headers(headers: &HeaderMap) -> bool {
+    header_str(headers, "x-upstream-url").is_some()
+        && header_str(headers, "x-upstream-key").is_some()
+}
+
+#[cfg(test)]
+mod proxy_access_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn anonymous_byok_requires_both_non_empty_headers() {
+        let mut headers = HeaderMap::new();
+        assert!(!has_byok_headers(&headers));
+
+        headers.insert(
+            "x-upstream-url",
+            HeaderValue::from_static("https://api.example.com/v1/responses"),
+        );
+        assert!(!has_byok_headers(&headers));
+
+        headers.insert("x-upstream-key", HeaderValue::from_static("secret"));
+        assert!(has_byok_headers(&headers));
+
+        headers.insert("x-upstream-key", HeaderValue::from_static("   "));
+        assert!(!has_byok_headers(&headers));
+    }
+}
+
 fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
         return axum::body::Bytes::copy_from_slice(body);
@@ -600,7 +666,7 @@ fn override_json_model(body: &[u8], new_model: &str) -> axum::body::Bytes {
 
 async fn proxy_forward(
     state: &AppState,
-    user: CurrentUser,
+    user: Option<CurrentUser>,
     protocol: Protocol,
     headers: &HeaderMap,
     body: axum::body::Bytes,
@@ -609,6 +675,12 @@ async fn proxy_forward(
         Ok(s) => s,
         Err(r) => return r,
     };
+
+    // Anonymous access is deliberately limited to BYOK. Without both client
+    // headers the resolver would select a paid platform channel.
+    if user.is_none() && !has_byok_headers(headers) {
+        return (StatusCode::UNAUTHORIZED, "云端模型需要登录").into_response();
+    }
 
     // Extract the requested model (used for channel lookup + body rewrite).
     let req_model = channels::extract_chat_model(&body, headers).unwrap_or_default();
@@ -638,6 +710,9 @@ async fn proxy_forward(
             send_chat_once(client, &byok.base_url, &byok.api_key, protocol, &body, headers).await
         }
         channels::Route::Channels { chain, model } => {
+            let Some(user) = user else {
+                return (StatusCode::UNAUTHORIZED, "云端模型需要登录").into_response();
+            };
             // Deduct based on per-model pricing (whitelist gate).
             // Refund on hard failure.
             let cost = match channels::try_deduct_for_model(
@@ -884,35 +959,57 @@ async fn send_chat_once(
 
 async fn proxy_openai(
     State(state): State<AppState>,
-    axum::Extension(user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, user, Protocol::OpenAi, &headers, body).await
+    proxy_forward(
+        &state,
+        user.map(|axum::Extension(user)| user),
+        Protocol::OpenAi,
+        &headers,
+        body,
+    )
+    .await
 }
 
 async fn proxy_claude(
     State(state): State<AppState>,
-    axum::Extension(user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, user, Protocol::Claude, &headers, body).await
+    proxy_forward(
+        &state,
+        user.map(|axum::Extension(user)| user),
+        Protocol::Claude,
+        &headers,
+        body,
+    )
+    .await
 }
 
 async fn proxy_gemini(
     State(state): State<AppState>,
-    axum::Extension(user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    proxy_forward(&state, user, Protocol::Gemini, &headers, body).await
+    proxy_forward(
+        &state,
+        user.map(|axum::Extension(user)| user),
+        Protocol::Gemini,
+        &headers,
+        body,
+    )
+    .await
 }
 
 async fn proxy_get_forward(
     state: &AppState,
     protocol: Protocol,
     headers: &HeaderMap,
+    allow_shared: bool,
 ) -> Response {
     let installed = match state.require_installed().await {
         Ok(s) => s,
@@ -927,6 +1024,10 @@ async fn proxy_get_forward(
 
     let use_client_headers =
         matches!((hdr_url, hdr_key), (Some(u), Some(k)) if !u.is_empty() && !k.is_empty());
+
+    if !use_client_headers && !allow_shared {
+        return (StatusCode::UNAUTHORIZED, "云端模型需要登录").into_response();
+    }
 
     let (url, key, used_shared) = if use_client_headers {
         (
@@ -1004,26 +1105,26 @@ async fn proxy_get_forward(
 
 async fn proxy_openai_models(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
 ) -> Response {
-    proxy_get_forward(&state, Protocol::OpenAi, &headers).await
+    proxy_get_forward(&state, Protocol::OpenAi, &headers, user.is_some()).await
 }
 
 async fn proxy_claude_models(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
 ) -> Response {
-    proxy_get_forward(&state, Protocol::Claude, &headers).await
+    proxy_get_forward(&state, Protocol::Claude, &headers, user.is_some()).await
 }
 
 async fn proxy_gemini_models(
     State(state): State<AppState>,
-    axum::Extension(_user): axum::Extension<CurrentUser>,
+    user: Option<axum::Extension<CurrentUser>>,
     headers: HeaderMap,
 ) -> Response {
-    proxy_get_forward(&state, Protocol::Gemini, &headers).await
+    proxy_get_forward(&state, Protocol::Gemini, &headers, user.is_some()).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,12 +1175,6 @@ fn serve(path: &str) -> Option<Response> {
 
 fn build_router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/proxy/openai", post(proxy_openai))
-        .route("/proxy/claude", post(proxy_claude))
-        .route("/proxy/gemini", post(proxy_gemini))
-        .route("/proxy/openai/models", get(proxy_openai_models))
-        .route("/proxy/claude/models", get(proxy_claude_models))
-        .route("/proxy/gemini/models", get(proxy_gemini_models))
         .merge(conversations::routes())
         .merge(prompts::routes())
         .merge(skills::routes())
@@ -1102,6 +1197,15 @@ fn build_router(state: AppState) -> Router {
         .merge(worker::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
+    let proxy = Router::new()
+        .route("/proxy/openai", post(proxy_openai))
+        .route("/proxy/claude", post(proxy_claude))
+        .route("/proxy/gemini", post(proxy_gemini))
+        .route("/proxy/openai/models", get(proxy_openai_models))
+        .route("/proxy/claude/models", get(proxy_claude_models))
+        .route("/proxy/gemini/models", get(proxy_gemini_models))
+        .route_layer(middleware::from_fn_with_state(state.clone(), optional_auth));
+
     let public = Router::new()
         .route("/health", get(health))
         .route("/auth/config", get(auth_config))
@@ -1118,7 +1222,7 @@ fn build_router(state: AppState) -> Router {
         .merge(videos::public_routes());
 
     Router::new()
-        .nest("/api", public.merge(protected))
+        .nest("/api", public.merge(proxy).merge(protected))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
         .with_state(state)
         .fallback(static_handler)
@@ -1177,6 +1281,20 @@ async fn main() {
             let lim = Arc::new(rate_limit::RateLimiter::new(
                 20,
                 std::time::Duration::from_secs(300),
+            ));
+            let pruner = lim.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    pruner.prune().await;
+                }
+            });
+            lim
+        },
+        guest_proxy_limiter: {
+            let lim = Arc::new(rate_limit::RateLimiter::new(
+                60,
+                std::time::Duration::from_secs(60),
             ));
             let pruner = lim.clone();
             tokio::spawn(async move {

@@ -26,6 +26,7 @@ export type VideoJob = {
   prompt: string
   seconds: number
   size: string
+  input_image_path: string | null
   status: "pending" | "running" | "completed" | "failed"
   progress: number
   video_path: string | null

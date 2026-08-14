@@ -668,6 +668,7 @@ struct JobView {
     prompt: String,
     seconds: i64,
     size: String,
+    input_image_path: Option<String>,
     status: String,
     progress: i64,
     video_path: Option<String>,
@@ -686,6 +687,7 @@ impl From<&JobRow> for JobView {
             prompt: r.prompt.clone(),
             seconds: r.seconds,
             size: r.size.clone(),
+            input_image_path: r.input_image_path.clone(),
             status: r.status.clone(),
             progress: r.progress,
             video_path: r.video_path.clone(),
@@ -1211,7 +1213,7 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_video_range;
+    use super::{parse_video_range, JobRow, JobView};
 
     #[test]
     fn parses_http_byte_ranges() {
@@ -1223,5 +1225,35 @@ mod tests {
         assert_eq!(parse_video_range("0-1,4-5", 1000), None);
         assert_eq!(parse_video_range("-0", 1000), None);
         assert_eq!(parse_video_range("0-", 0), None);
+    }
+
+    #[test]
+    fn job_view_keeps_reference_image_for_retries() {
+        let row = JobRow {
+            id: 1,
+            user_id: 2,
+            token: "job-token".to_string(),
+            model: "video-model".to_string(),
+            prompt: "animate this image".to_string(),
+            seconds: 4,
+            size: "1280x720".to_string(),
+            input_image_path: Some("/api/images/reference.png".to_string()),
+            upstream_video_id: None,
+            channel_id: Some(3),
+            cost_credits: 25,
+            status: "failed".to_string(),
+            progress: 0,
+            video_path: None,
+            error: Some("temporary upstream error".to_string()),
+            refunded: true,
+            download_retries: 0,
+            polling: false,
+            last_polled_at: None,
+            created_at: "2026-08-14 00:00:00".to_string(),
+            finished_at: Some("2026-08-14 00:00:01".to_string()),
+        };
+
+        let json = serde_json::to_value(JobView::from(&row)).unwrap();
+        assert_eq!(json["input_image_path"], "/api/images/reference.png");
     }
 }

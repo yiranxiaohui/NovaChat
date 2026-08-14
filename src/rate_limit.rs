@@ -1,7 +1,8 @@
-//! Per-IP rate limiter for auth endpoints (login / register / email send-code).
+//! Small in-memory per-IP rate limiter for public endpoints.
 //!
 //! Hand-rolled fixed-window counter, in-memory. Goal is brute-force
-//! resistance — not DDoS-grade protection. A background task periodically
+//! resistance and basic anonymous-proxy abuse control — not DDoS-grade
+//! protection. A background task periodically
 //! prunes stale buckets so the map stays bounded.
 //!
 //! ## Client IP

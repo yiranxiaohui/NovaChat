@@ -6,6 +6,7 @@ import {
   Clapperboard,
   ImageIcon,
   Images,
+  LogIn,
   LogOut,
   MessageSquareText,
   MoreHorizontal,
@@ -32,6 +33,7 @@ type Props = {
   reloadKey: number
   onCreated?: (c: Conversation) => void
   onOpenLibrary?: () => void
+  onNewGuest?: () => void
   /** Called after the user picks a navigation target (link or button).
    *  Parent uses this to close the mobile drawer. */
   onNavigate?: () => void
@@ -54,7 +56,13 @@ function relativeTime(iso: string): string {
   return d.toLocaleDateString()
 }
 
-export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Props) {
+export function Sidebar({
+  reloadKey,
+  onCreated,
+  onOpenLibrary,
+  onNewGuest,
+  onNavigate,
+}: Props) {
   const { confirm, prompt } = useConfirm()
   const { id: paramId } = useParams()
   const activeId = paramId ? Number(paramId) : null
@@ -80,6 +88,12 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }, [user?.avatar_url])
 
   useEffect(() => {
+    if (!user) {
+      setItems([])
+      setError(null)
+      setLoading(false)
+      return
+    }
     let cancelled = false
     setLoading(true)
     Promise.all([
@@ -113,7 +127,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
     return () => {
       cancelled = true
     }
-  }, [reloadKey])
+  }, [reloadKey, user])
 
   const trimmedQuery = query.trim()
   const isApiSearch = trimmedQuery.length >= 2
@@ -125,7 +139,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
   }, [items, trimmedQuery, isApiSearch])
 
   useEffect(() => {
-    if (!isApiSearch) {
+    if (!user || !isApiSearch) {
       setSearchHits(null)
       setSearching(false)
       setSearchError(null)
@@ -154,9 +168,15 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
       cancelled = true
       window.clearTimeout(handle)
     }
-  }, [trimmedQuery, isApiSearch])
+  }, [trimmedQuery, isApiSearch, user])
 
   async function createNew() {
+    if (!user) {
+      onNewGuest?.()
+      nav("/")
+      onNavigate?.()
+      return
+    }
     try {
       const c = await conversationsApi.create()
       setItems((s) => [
@@ -282,7 +302,8 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索会话…"
+            placeholder={user ? "搜索会话…" : "登录后查看历史会话"}
+            disabled={!user}
             className="h-9 rounded-xl border-sidebar-border bg-background/45 pl-9 text-sm shadow-none"
           />
         </div>
@@ -318,7 +339,11 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
         )}
         {!loading && filtered.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-            {items.length === 0 ? "还没有会话" : "没有匹配结果"}
+            {!user
+              ? "游客对话仅保留在当前页面"
+              : items.length === 0
+                ? "还没有会话"
+                : "没有匹配结果"}
           </p>
         )}
         {error && (
@@ -439,7 +464,7 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             <Shield className="size-4" /> 管理控制台
           </Link>
         )}
-        {onOpenLibrary && (
+        {user && onOpenLibrary && (
           <button
             type="button"
             onClick={() => {
@@ -451,42 +476,57 @@ export function Sidebar({ reloadKey, onCreated, onOpenLibrary, onNavigate }: Pro
             <BookMarked className="size-4" /> 提示词库
           </button>
         )}
-        <div className="mt-1 flex items-center justify-between gap-2 rounded-xl border border-sidebar-border bg-background/45 p-1.5 shadow-sm">
-          <button
-            type="button"
-            onClick={() => setProfileOpen(true)}
-            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-sidebar-accent/70"
-            title="个人资料"
-          >
-            {user?.avatar_url && !avatarBroken ? (
-              <img
-                src={user.avatar_url}
-                alt=""
-                className="size-7 shrink-0 rounded-full border border-border object-cover"
-                onError={() => setAvatarBroken(true)}
-              />
-            ) : (
-              <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
-                {((user?.display_name?.trim() || user?.username || "?")
-                  .slice(0, 1)).toUpperCase()}
-              </div>
-            )}
-            <span className="truncate text-xs">
-              {user?.display_name?.trim() || user?.username}
-            </span>
-          </button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void auth.logout()}
-            title="退出登录"
-          >
-            <LogOut className="size-4" />
+        {user ? (
+          <div className="mt-1 flex items-center justify-between gap-2 rounded-xl border border-sidebar-border bg-background/45 p-1.5 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setProfileOpen(true)}
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-sidebar-accent/70"
+              title="个人资料"
+            >
+              {user.avatar_url && !avatarBroken ? (
+                <img
+                  src={user.avatar_url}
+                  alt=""
+                  className="size-7 shrink-0 rounded-full border border-border object-cover"
+                  onError={() => setAvatarBroken(true)}
+                />
+              ) : (
+                <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-semibold text-primary-foreground">
+                  {((user.display_name?.trim() || user.username)
+                    .slice(0, 1)).toUpperCase()}
+                </div>
+              )}
+              <span className="truncate text-xs">
+                {user.display_name?.trim() || user.username}
+              </span>
+            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void auth.logout().then(() => {
+                  nav("/")
+                  onNavigate?.()
+                })
+              }}
+              title="退出登录"
+            >
+              <LogOut className="size-4" />
+            </Button>
+          </div>
+        ) : (
+          <Button asChild className="mt-1 w-full justify-start gap-2.5">
+            <Link to="/login?next=/" onClick={() => onNavigate?.()}>
+              <LogIn className="size-4" /> 登录使用云端模型
+            </Link>
           </Button>
-        </div>
+        )}
       </div>
 
-      <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
+      {user && (
+        <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
+      )}
     </aside>
   )
 }

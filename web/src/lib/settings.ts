@@ -2,6 +2,8 @@ export type Protocol = "openai" | "claude" | "gemini"
 export type ImageProtocol = "openai" | "gemini"
 export type UpstreamMode = "platform" | "byok"
 
+export const GUEST_SETTINGS_ID = "guest"
+
 export type UpstreamSettings = {
   // mode: use admin-configured platform channels (deduct credits), or BYOK
   chatMode: UpstreamMode
@@ -93,19 +95,31 @@ const EMPTY: UpstreamSettings = {
   cloudSync: false,
 }
 
+const GUEST_EMPTY: UpstreamSettings = {
+  ...EMPTY,
+  chatMode: "byok",
+  imageMode: "byok",
+}
+
 function keyFor(userId: number | string) {
   return `novachat:upstream:v2:${userId}`
 }
 
 export function loadSettings(userId: number | string): UpstreamSettings {
+  const fallback = userId === GUEST_SETTINGS_ID ? GUEST_EMPTY : EMPTY
   try {
     const raw = localStorage.getItem(keyFor(userId))
-    if (!raw) return EMPTY
+    if (!raw) return fallback
     const parsed = JSON.parse(raw) as Partial<UpstreamSettings>
-    const merged: UpstreamSettings = { ...EMPTY, ...parsed }
+    const merged: UpstreamSettings = { ...fallback, ...parsed }
+    if (userId === GUEST_SETTINGS_ID) {
+      merged.chatMode = "byok"
+      merged.imageMode = "byok"
+      merged.cloudSync = false
+    }
     return merged
   } catch {
-    return EMPTY
+    return fallback
   }
 }
 

@@ -35,6 +35,13 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function Ready({ children }: { children: React.ReactNode }) {
+  const { state } = useAuth()
+  if (state.status === "loading") return <Loading />
+  if (state.status === "setup") return <Navigate to="/setup" replace />
+  return <>{children}</>
+}
+
 function AnonOnly({ children }: { children: React.ReactNode }) {
   const { state } = useAuth()
   if (state.status === "loading") return <Loading />
@@ -83,9 +90,9 @@ export default function App() {
             <Route
               path="/"
               element={
-                <Protected>
+                <Ready>
                   <ChatPage />
-                </Protected>
+                </Ready>
               }
             />
             <Route

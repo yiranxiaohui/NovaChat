@@ -57,6 +57,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { useConfirm } from "@/lib/confirm-context"
 import { cn } from "@/lib/utils"
 import {
@@ -98,6 +105,20 @@ function formatTime(value: number, fps = 30): string {
   return [hours, minutes, seconds, frames]
     .map((part) => String(part).padStart(2, "0"))
     .join(":")
+}
+
+function formatExportTime(value: string): string {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
 }
 
 function clipAt(
@@ -197,8 +218,10 @@ export default function VideoEditorPage() {
   const [generationStatus, setGenerationStatus] = useState("")
 
   const [exports, setExports] = useState<EditorExport[]>([])
-  const [activeExport, setActiveExport] = useState<string | null>(null)
-  const [exporting, setExporting] = useState(false)
+  const [exportSubmitting, setExportSubmitting] = useState(false)
+  const [exportQueueOpen, setExportQueueOpen] = useState(false)
+  const exportStatusesRef = useRef(new Map<string, EditorExport["status"]>())
+  const exportPollErrorShownRef = useRef(false)
 
   useEffect(() => {
     timelineRef.current = timeline
@@ -239,6 +262,9 @@ export default function VideoEditorPage() {
         setMineAssets(mine)
         setPublicAssets(shared)
         setExports(recentExports)
+        exportStatusesRef.current = new Map(
+          recentExports.map((item) => [item.token, item.status])
+        )
         setVideoModels(models)
         const first = models[0]
         if (first) {
@@ -819,56 +845,80 @@ export default function VideoEditorPage() {
   }
 
   async function startExport() {
-    setExporting(true)
+    setExportSubmitting(true)
     try {
       const savedId = dirty || !projectId ? await saveProject(true) : projectId
       if (!savedId) throw new Error("请先保存项目")
       const result = await videoEditorApi.startExport(savedId)
-      setActiveExport(result.token)
-      setExports((items) => [
-        {
-          token: result.token,
-          project_id: savedId,
-          status: "pending",
-          progress: 0,
-          video_path: null,
-          error: null,
-          created_at: new Date().toISOString(),
-          started_at: null,
-          finished_at: null,
-        },
-        ...items,
-      ])
-      toast.success("导出任务已开始")
+      const queued: EditorExport = {
+        token: result.token,
+        project_id: savedId,
+        status: "pending",
+        progress: 0,
+        video_path: null,
+        error: null,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        finished_at: null,
+      }
+      exportStatusesRef.current.set(result.token, "pending")
+      setExports((items) => [queued, ...items])
+      setExportQueueOpen(true)
+      toast.success("已加入导出队列，可继续编辑或再次导出")
     } catch (error) {
-      setExporting(false)
       toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setExportSubmitting(false)
     }
   }
 
+  const activeExportKey = exports
+    .filter((item) => item.status === "pending" || item.status === "running")
+    .map((item) => item.token)
+    .join(",")
+
   useEffect(() => {
-    if (!activeExport) return
+    if (!activeExportKey) return
+    const tokens = activeExportKey.split(",")
     let cancelled = false
     const poll = async () => {
-      try {
-        const item = await videoEditorApi.export(activeExport)
-        if (cancelled) return
-        setExports((items) => [item, ...items.filter((entry) => entry.token !== item.token)])
-        if (item.status === "completed") {
-          setActiveExport(null)
-          setExporting(false)
-          toast.success("视频导出完成")
-        } else if (item.status === "failed") {
-          setActiveExport(null)
-          setExporting(false)
-          toast.error(item.error || "视频导出失败")
+      const results = await Promise.allSettled(
+        tokens.map((token) => videoEditorApi.export(token))
+      )
+      if (cancelled) return
+
+      const refreshed = new Map<string, EditorExport>()
+      let firstError: unknown = null
+      for (const result of results) {
+        if (result.status === "rejected") {
+          firstError ??= result.reason
+          continue
         }
-      } catch (error) {
-        if (!cancelled) {
-          setActiveExport(null)
-          setExporting(false)
-          toast.error(error instanceof Error ? error.message : String(error))
+        const item = result.value
+        refreshed.set(item.token, item)
+        const previous = exportStatusesRef.current.get(item.token)
+        exportStatusesRef.current.set(item.token, item.status)
+        if (previous && previous !== item.status) {
+          if (item.status === "completed") {
+            toast.success("视频导出完成，可在导出队列下载")
+          } else if (item.status === "failed") {
+            toast.error(item.error || "视频导出失败")
+          }
         }
+      }
+      setExports((items) =>
+        items.map((item) => refreshed.get(item.token) ?? item)
+      )
+
+      if (!firstError) {
+        exportPollErrorShownRef.current = false
+      } else if (!exportPollErrorShownRef.current) {
+        exportPollErrorShownRef.current = true
+        toast.error(
+          `导出队列暂时无法刷新，将自动重试：${
+            firstError instanceof Error ? firstError.message : String(firstError)
+          }`
+        )
       }
     }
     void poll()
@@ -877,7 +927,7 @@ export default function VideoEditorPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeExport])
+  }, [activeExportKey])
 
   const shownAssets = useMemo(() => {
     const source = assetScope === "mine" ? mineAssets : publicAssets
@@ -899,7 +949,9 @@ export default function VideoEditorPage() {
         currentModel.size_rules[0]?.size ?? "1280x720"
       )
     : null
-  const currentExport = exports.find((item) => item.token === activeExport)
+  const activeExportCount = exports.filter(
+    (item) => item.status === "pending" || item.status === "running"
+  ).length
 
   if (loading) {
     return (
@@ -970,9 +1022,14 @@ export default function VideoEditorPage() {
           <Button size="icon-sm" variant="ghost" className="text-zinc-400 hover:bg-white/10 xl:hidden" onClick={() => setMobilePanel(mobilePanel === "inspector" ? null : "inspector")} title="属性"><Settings2 /></Button>
           <Button size="sm" variant="ghost" className="hidden text-zinc-300 hover:bg-white/10 sm:flex" onClick={() => void saveProject()}><Save /> 保存</Button>
           {projectId && <Button size="icon-sm" variant="ghost" className="hidden text-zinc-500 hover:bg-red-500/10 hover:text-red-300 lg:inline-flex" onClick={() => void deleteCurrentProject()} title="删除项目"><Trash2 /></Button>}
-          <Button size="sm" className="bg-sky-500 text-white hover:bg-sky-400" disabled={exporting || duration <= 0} onClick={() => void startExport()}>
-            {exporting ? <Loader2 className="animate-spin" /> : <Download />}
-            <span className="hidden sm:inline">{currentExport ? `${currentExport.progress}%` : "导出"}</span>
+          <Button size="sm" variant="ghost" className="relative text-zinc-300 hover:bg-white/10" onClick={() => setExportQueueOpen(true)} title="打开导出队列">
+            <Layers3 />
+            <span className="hidden md:inline">导出队列</span>
+            {activeExportCount > 0 && <span className="min-w-4 rounded-full bg-sky-500 px-1 text-center text-[9px] leading-4 text-white">{activeExportCount}</span>}
+          </Button>
+          <Button size="sm" className="bg-sky-500 text-white hover:bg-sky-400" disabled={exportSubmitting || duration <= 0} onClick={() => void startExport()}>
+            {exportSubmitting ? <Loader2 className="animate-spin" /> : <Download />}
+            <span className="hidden sm:inline">{exportSubmitting ? "提交中" : "导出"}</span>
           </Button>
         </div>
       </header>
@@ -1056,7 +1113,6 @@ export default function VideoEditorPage() {
           )}
           timeline={timeline}
           selected={selected}
-          exports={exports}
           onProject={(patch) => commitTimeline((next) => Object.assign(next, patch))}
           onClip={changeSelectedClip}
           onClose={() => setMobilePanel(null)}
@@ -1088,6 +1144,13 @@ export default function VideoEditorPage() {
           onGenerate={() => void generateMissingShot()}
         />
       )}
+
+      <ExportQueueSheet
+        open={exportQueueOpen}
+        onOpenChange={setExportQueueOpen}
+        exports={exports}
+        projects={projects}
+      />
     </div>
   )
 }
@@ -1633,7 +1696,6 @@ function InspectorPanel({
   className,
   timeline,
   selected,
-  exports,
   onProject,
   onClip,
   onClose,
@@ -1641,7 +1703,6 @@ function InspectorPanel({
   className?: string
   timeline: EditorTimeline
   selected: { track: EditorTrack; clip: EditorClip } | null
-  exports: EditorExport[]
   onProject: (patch: Partial<EditorTimeline>) => void
   onClip: (patch: Partial<EditorClip>) => void
   onClose: () => void
@@ -1719,19 +1780,156 @@ function InspectorPanel({
                 <Stat label="总帧数" value={Math.ceil(timelineDuration(timeline) * timeline.fps)} />
               </div>
             </InspectorSection>
-
-            <InspectorSection title="最近导出">
-              {exports.length === 0 ? <p className="rounded-lg border border-dashed border-white/10 px-3 py-5 text-center text-[10px] text-zinc-600">尚未导出视频</p> : exports.slice(0, 5).map((item) => (
-                <div key={item.token} className="rounded-lg border border-white/10 bg-black/15 p-2">
-                  <div className="flex items-center justify-between text-[9px]"><span className={cn(item.status === "completed" ? "text-emerald-400" : item.status === "failed" ? "text-red-400" : "text-sky-400")}>{item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : `处理中 ${item.progress}%`}</span><span className="font-mono text-zinc-600">{item.token.slice(0, 8)}</span></div>
-                  {item.video_path && <a href={item.video_path} download className="mt-2 flex items-center justify-center gap-1 rounded bg-white/5 px-2 py-1 text-[9px] text-zinc-300 hover:bg-white/10"><Download className="size-3" /> 下载 MP4</a>}
-                </div>
-              ))}
-            </InspectorSection>
           </div>
         )}
       </div>
     </aside>
+  )
+}
+
+function ExportQueueSheet({
+  open,
+  onOpenChange,
+  exports,
+  projects,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  exports: EditorExport[]
+  projects: EditorProject[]
+}) {
+  const activeCount = exports.filter(
+    (item) => item.status === "pending" || item.status === "running"
+  ).length
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="gap-0 border-white/10 bg-[#111217] text-zinc-100 sm:max-w-md">
+        <SheetHeader className="border-b border-white/10 pr-12">
+          <SheetTitle className="flex items-center gap-2 text-zinc-100">
+            <Layers3 className="size-4 text-sky-400" /> 导出队列
+          </SheetTitle>
+          <SheetDescription className="text-xs text-zinc-500">
+            {activeCount > 0
+              ? `${activeCount} 个任务正在排队或处理。导出期间可以继续编辑并再次导出。`
+              : exports.length > 0
+                ? "导出已完成，点击视频卡片即可下载 MP4。"
+                : "提交导出后，任务进度和结果会显示在这里。"}
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {exports.length === 0 ? (
+            <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-white/10 bg-black/10 text-center">
+              <div>
+                <Film className="mx-auto mb-3 size-8 text-zinc-700" />
+                <p className="text-xs text-zinc-500">暂无导出任务</p>
+                <p className="mt-1 text-[10px] text-zinc-700">点击编辑器右上角“导出”开始</p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {exports.map((item) => {
+                const project = projects.find((entry) => entry.id === item.project_id)
+                const projectLabel = project?.name || (item.project_id ? `剪辑项目 #${item.project_id}` : "已删除的剪辑项目")
+                const filename = `NovaCut-${item.token.slice(0, 8)}.mp4`
+
+                if (item.status === "completed" && item.video_path) {
+                  return (
+                    <a
+                      key={item.token}
+                      href={item.video_path}
+                      download={filename}
+                      className="group block overflow-hidden rounded-xl border border-white/10 bg-black/20 transition-colors hover:border-emerald-400/35 hover:bg-white/[.04]"
+                      title={`下载 ${filename}`}
+                    >
+                      <div className="relative aspect-video overflow-hidden bg-black">
+                        <video
+                          src={item.video_path}
+                          preload="metadata"
+                          muted
+                          playsInline
+                          className="pointer-events-none size-full object-contain"
+                        />
+                        <div className="absolute inset-0 grid place-items-center bg-black/15 opacity-0 transition-opacity group-hover:opacity-100">
+                          <span className="flex items-center gap-1.5 rounded-full bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-sm">
+                            <Download className="size-3.5" /> 下载 MP4
+                          </span>
+                        </div>
+                        <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-emerald-500/90 px-2 py-1 text-[9px] font-medium text-white shadow">
+                          <Check className="size-3" /> 已完成
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-zinc-200">{projectLabel}</p>
+                          <p className="mt-0.5 text-[9px] text-zinc-600">{formatExportTime(item.finished_at || item.created_at)}</p>
+                        </div>
+                        <Download className="size-4 shrink-0 text-zinc-500 transition-colors group-hover:text-emerald-400" />
+                      </div>
+                    </a>
+                  )
+                }
+
+                const pending = item.status === "pending"
+                return (
+                  <div key={item.token} className={cn(
+                    "rounded-xl border p-3",
+                    item.status === "failed"
+                      ? "border-red-500/20 bg-red-500/[.04]"
+                      : "border-sky-500/20 bg-sky-500/[.04]"
+                  )}>
+                    <div className="flex items-start gap-3">
+                      <span className={cn(
+                        "grid size-10 shrink-0 place-items-center rounded-lg",
+                        item.status === "failed" ? "bg-red-500/10 text-red-400" : "bg-sky-500/10 text-sky-400"
+                      )}>
+                        {item.status === "failed" ? <X className="size-4" /> : <Loader2 className="size-4 animate-spin" />}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="truncate text-xs font-medium text-zinc-200">{projectLabel}</p>
+                          <span className={cn(
+                            "shrink-0 text-[9px] font-medium",
+                            item.status === "failed" ? "text-red-400" : "text-sky-400"
+                          )}>
+                            {item.status === "failed" ? "导出失败" : pending ? "排队中" : `处理中 ${item.progress}%`}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[9px] text-zinc-600">{formatExportTime(item.created_at)} · {item.token.slice(0, 8)}</p>
+                        {item.status === "failed" ? (
+                          <p className="mt-2 break-words text-[10px] leading-relaxed text-red-300/80">{item.error || "视频导出失败，请重新导出"}</p>
+                        ) : (
+                          <>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5">
+                              <div
+                                className={cn("h-full rounded-full bg-sky-500 transition-[width] duration-500", !pending && "animate-pulse")}
+                                style={{ width: `${pending ? 4 : Math.max(5, item.progress)}%` }}
+                              />
+                            </div>
+                            <p className="mt-1.5 text-[9px] text-zinc-600">
+                              {pending
+                                ? "等待可用的媒体处理资源…"
+                                : item.progress < 25
+                                  ? "正在准备导出素材…"
+                                  : item.progress < 40
+                                    ? "正在合成时间线…"
+                                    : item.progress < 90
+                                      ? "FFmpeg 正在编码，耗时取决于视频长度和分辨率…"
+                                      : "正在保存导出视频…"}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }
 

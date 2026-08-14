@@ -1216,7 +1216,6 @@ async fn run_export_job(
     token: String,
     snapshot: EditorSnapshot,
 ) {
-    update_export(&installed, &token, "running", 5, None, None, false).await;
     let permit = match state.media_process_slots.acquire().await {
         Ok(permit) => permit,
         Err(_) => {
@@ -1233,6 +1232,10 @@ async fn run_export_job(
             return;
         }
     };
+    // Keep the persisted status as `pending` while this export is waiting for
+    // a media-processing slot. The client can then distinguish queued work
+    // from the export that FFmpeg is actively rendering.
+    update_export(&installed, &token, "running", 5, None, None, false).await;
     let result = render_snapshot(&state, &installed, &token, &snapshot).await;
     drop(permit);
     match result {

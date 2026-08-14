@@ -8,6 +8,7 @@ import {
   Loader2,
   Menu,
   RefreshCw,
+  Scissors,
   Trash2,
   X,
 } from "lucide-react"
@@ -534,6 +535,12 @@ export default function VideoStudioPage() {
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
+            <Button asChild variant="outline" size="sm">
+              <Link to="/editor">
+                <Scissors className="size-3.5" />
+                <span className="hidden sm:inline">精细剪辑</span>
+              </Link>
+            </Button>
             <Button
               variant="ghost"
               size="sm"

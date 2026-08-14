@@ -168,7 +168,7 @@ export function StoragePanel() {
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
         <h2 className="text-sm font-semibold">媒体存储配置</h2>
         <p className="mb-4 mt-1 text-xs text-muted-foreground">
-          用于生成图片、视频和用户头像。普通聊天文档附件仍保存在本地。
+          用于生成图片、视频、剪辑音频和用户头像。普通聊天文档附件仍保存在本地。
         </p>
 
         <div className="space-y-4">
@@ -340,7 +340,7 @@ export function StoragePanel() {
             </>
           ) : (
             <p className="rounded-lg border border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
-              新图片、视频和头像将写入本机数据目录。切换不会迁移已有文件，已保存的 S3 凭证会保留，方便之后重新启用。
+              新图片、视频、剪辑音频和头像将写入本机数据目录。切换不会迁移已有文件，已保存的 S3 凭证会保留，方便之后重新启用。
             </p>
           )}
 

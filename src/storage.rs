@@ -38,6 +38,7 @@ pub struct StorageConfig {
 pub enum MediaKind {
     Image,
     Video,
+    Audio,
     Avatar,
 }
 
@@ -46,6 +47,7 @@ impl MediaKind {
         match self {
             Self::Image => "images",
             Self::Video => "videos",
+            Self::Audio => "audio",
             Self::Avatar => "avatars",
         }
     }
@@ -586,7 +588,9 @@ fn map_io_error(error: std::io::Error) -> StorageError {
 
 fn content_type(kind: MediaKind, name: &str) -> String {
     match kind {
-        MediaKind::Video => "video/mp4".into(),
+        MediaKind::Video | MediaKind::Audio => mime_guess::from_path(name)
+            .first_or_octet_stream()
+            .to_string(),
         MediaKind::Image | MediaKind::Avatar => mime_guess::from_path(name)
             .first_or_octet_stream()
             .essence_str()

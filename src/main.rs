@@ -21,6 +21,7 @@ mod skills;
 mod studio;
 mod storage;
 mod videos;
+mod video_editor;
 mod worker;
 mod workflows;
 
@@ -1196,6 +1197,7 @@ fn build_router(state: AppState) -> Router {
         .merge(payments::admin_routes())
         .merge(studio::routes())
         .merge(videos::routes())
+        .merge(video_editor::routes())
         .merge(workflows::routes())
         .merge(invites::routes())
         .merge(search::routes())
@@ -1225,7 +1227,8 @@ fn build_router(state: AppState) -> Router {
         .merge(images::public_routes())
         .merge(sharing::public_routes())
         .merge(worker::public_routes())
-        .merge(videos::public_routes());
+        .merge(videos::public_routes())
+        .merge(video_editor::public_routes());
 
     Router::new()
         .nest("/api", public.merge(proxy).merge(protected))
@@ -1346,6 +1349,7 @@ async fn main() {
                 images::cleanup_stale_jobs(&s.pool, s.kind).await;
                 studio::cleanup_stale_jobs(&s.pool, s.kind).await;
                 workflows::recover(&s.pool, s.kind).await;
+                video_editor::recover(&s.pool, s.kind).await;
                 *state.installed.write().await = Some(s.clone());
                 println!("  database: {} ({})", s.kind.as_str(), url);
             }

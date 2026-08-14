@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Scissors,
   Shield,
   Sparkles,
   Trash2,
@@ -273,7 +274,7 @@ export function Sidebar({
           <span className="font-semibold">开启新对话</span>
         </Button>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <Link
             to="/studio"
             onClick={() => onNavigate?.()}
@@ -306,6 +307,17 @@ export function Sidebar({
               <Workflow className="size-4" />
             </span>
             <span className="text-xs font-medium">流水线</span>
+          </Link>
+          <Link
+            to="/editor"
+            onClick={() => onNavigate?.()}
+            title="多轨精细剪辑、素材库与服务端导出"
+            className="group flex min-h-20 flex-col justify-between rounded-xl border border-sidebar-border bg-background/45 p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:bg-background/80 hover:shadow-md"
+          >
+            <span className="grid size-8 place-items-center rounded-lg bg-amber-500/10 text-amber-600 transition-colors group-hover:bg-amber-500/15 dark:text-amber-300">
+              <Scissors className="size-4" />
+            </span>
+            <span className="text-xs font-medium">在线剪辑</span>
           </Link>
         </div>
 

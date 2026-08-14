@@ -1222,6 +1222,7 @@ async fn serve_video(
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    let mime = mime_guess::from_path(&name).first_or_octet_stream();
     if let Some(r) = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
@@ -1252,7 +1253,7 @@ async fn serve_video(
         };
         return Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
-            .header(header::CONTENT_TYPE, "video/mp4")
+            .header(header::CONTENT_TYPE, mime.as_ref())
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
             .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
@@ -1268,7 +1269,7 @@ async fn serve_video(
         }
     };
     Response::builder()
-        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
         .body(Body::from(bytes))

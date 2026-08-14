@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react"
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AuthProvider, useAuth } from "@/lib/auth-context"
 import { ConfirmProvider } from "@/lib/confirm-context"
@@ -13,6 +14,8 @@ import WorkflowStudioPage from "@/pages/WorkflowStudioPage"
 import ImagePlazaPage from "@/pages/ImagePlazaPage"
 import SharedConversationPage from "@/pages/SharedConversationPage"
 import { Toaster } from "@/components/ui/sonner"
+
+const VideoEditorPage = lazy(() => import("@/pages/VideoEditorPage"))
 
 function Loading() {
   return (
@@ -141,6 +144,26 @@ export default function App() {
               element={
                 <Protected>
                   <VideoStudioPage />
+                </Protected>
+              }
+            />
+            <Route
+              path="/editor"
+              element={
+                <Protected>
+                  <Suspense fallback={<Loading />}>
+                    <VideoEditorPage />
+                  </Suspense>
+                </Protected>
+              }
+            />
+            <Route
+              path="/editor/:id"
+              element={
+                <Protected>
+                  <Suspense fallback={<Loading />}>
+                    <VideoEditorPage />
+                  </Suspense>
                 </Protected>
               }
             />

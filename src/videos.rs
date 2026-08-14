@@ -1243,36 +1243,49 @@ async fn serve_video(
                 .body(Body::empty())
                 .unwrap();
         };
-        let chunk = match state.storage.get_range(MediaKind::Video, &name, start..end + 1).await {
-            Ok(bytes) => bytes,
+        let media = match state
+            .storage
+            .open_range_stream(MediaKind::Video, &name, start..end + 1)
+            .await
+        {
+            Ok(media) => media,
             Err(error) if error.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
             Err(error) => {
                 eprintln!("[storage] serve video range {name}: {error}");
                 return StatusCode::BAD_GATEWAY.into_response();
             }
         };
+        let content_length = media.content_length().unwrap_or(end - start + 1);
         return Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
             .header(header::CONTENT_TYPE, mime.as_ref())
+            .header(header::CONTENT_LENGTH, content_length)
             .header(header::ACCEPT_RANGES, "bytes")
-            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+            .header(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{total}"),
+            )
             .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
-            .body(Body::from(chunk))
+            .body(Body::from_stream(media.into_stream()))
             .unwrap();
     }
-    let bytes = match state.storage.get(MediaKind::Video, &name).await {
-        Ok(bytes) => bytes,
+    let media = match state.storage.open_stream(MediaKind::Video, &name).await {
+        Ok(media) => media,
         Err(error) if error.is_not_found() => return StatusCode::NOT_FOUND.into_response(),
         Err(error) => {
             eprintln!("[storage] serve video {name}: {error}");
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
-    Response::builder()
+    let mut response = Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CACHE_CONTROL, "private, max-age=86400, immutable")
-        .body(Body::from(bytes))
+        .header(header::CACHE_CONTROL, "private, max-age=86400, immutable");
+    if let Some(content_length) = media.content_length() {
+        response = response.header(header::CONTENT_LENGTH, content_length);
+    }
+    response
+        .body(Body::from_stream(media.into_stream()))
         .unwrap()
 }
 

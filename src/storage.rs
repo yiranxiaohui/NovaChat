@@ -1,14 +1,19 @@
 use std::{
     fmt,
+    io::SeekFrom,
     ops::Range,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, SystemTime},
 };
 
+use bytes::Bytes;
+use futures_util::{StreamExt, stream::BoxStream};
 use reqwest::{StatusCode, header};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio_util::io::ReaderStream;
 
 const SIGNED_URL_TTL: Duration = Duration::from_secs(15 * 60);
 
@@ -75,6 +80,24 @@ impl fmt::Display for StorageError {
 }
 
 impl std::error::Error for StorageError {}
+
+/// A media object whose bytes can be forwarded without buffering the whole
+/// object in NovaChat first. The stream owns its file or upstream response, so
+/// it remains valid after the storage backend is reconfigured.
+pub struct MediaStream {
+    content_length: Option<u64>,
+    stream: BoxStream<'static, Result<Bytes, StorageError>>,
+}
+
+impl MediaStream {
+    pub fn content_length(&self) -> Option<u64> {
+        self.content_length
+    }
+
+    pub fn into_stream(self) -> BoxStream<'static, Result<Bytes, StorageError>> {
+        self.stream
+    }
+}
 
 #[derive(Clone)]
 pub struct MediaStorage {
@@ -341,6 +364,55 @@ impl MediaStorage {
         }
     }
 
+    /// Open an object as a byte stream. Unlike [`Self::get`], the S3 response
+    /// body is not collected before this method returns, allowing HTTP callers
+    /// to send response headers as soon as S3 accepts the request.
+    pub async fn open_stream(
+        &self,
+        kind: MediaKind,
+        name: &str,
+    ) -> Result<MediaStream, StorageError> {
+        validate_name(name)?;
+        match self.current_backend() {
+            Backend::Local => local_open_stream(&self.data_dir, kind, name, None).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = s3_open_stream(&s3, &key, None).await;
+                self.with_local_fallback(kind, name, result, |data_dir, kind, name| async move {
+                    local_open_stream(&data_dir, kind, &name, None).await
+                })
+                .await
+            }
+        }
+    }
+
+    /// Open a single byte range as a stream. Conformant S3 backends are
+    /// forwarded directly; a backend that ignores Range is buffered only as a
+    /// compatibility fallback so the returned bytes remain correct.
+    pub async fn open_range_stream(
+        &self,
+        kind: MediaKind,
+        name: &str,
+        range: Range<u64>,
+    ) -> Result<MediaStream, StorageError> {
+        validate_name(name)?;
+        if range.start >= range.end {
+            return Err(StorageError::Backend("invalid media range".into()));
+        }
+        match self.current_backend() {
+            Backend::Local => local_open_stream(&self.data_dir, kind, name, Some(range)).await,
+            Backend::S3(s3) => {
+                let key = s3.key(kind, name);
+                let result = s3_open_stream(&s3, &key, Some(range.clone())).await;
+                self.with_local_fallback(kind, name, result, move |data_dir, kind, name| {
+                    let range = range.clone();
+                    async move { local_open_stream(&data_dir, kind, &name, Some(range)).await }
+                })
+                .await
+            }
+        }
+    }
+
     pub async fn size(&self, kind: MediaKind, name: &str) -> Result<u64, StorageError> {
         validate_name(name)?;
         match self.current_backend() {
@@ -505,6 +577,80 @@ impl S3Backend {
     }
 }
 
+async fn s3_open_stream(
+    s3: &S3Backend,
+    key: &str,
+    range: Option<Range<u64>>,
+) -> Result<MediaStream, StorageError> {
+    let url = s3
+        .bucket
+        .get_object(Some(&s3.credentials), key)
+        .sign(SIGNED_URL_TTL);
+    let mut request = s3.client.get(url);
+    if let Some(range) = &range {
+        request = request.header(
+            header::RANGE,
+            format!("bytes={}-{}", range.start, range.end - 1),
+        );
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| request_error("stream", key, error))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(response_error("stream", key, status));
+    }
+
+    if let Some(range) = range {
+        if status != StatusCode::PARTIAL_CONTENT {
+            // A few S3-compatible services ignore Range and return 200. Keep
+            // the old compatibility behavior without penalizing conformant
+            // backends with whole-object buffering.
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| request_error("range read", key, error))?;
+            if range.end > bytes.len() as u64 {
+                return Err(StorageError::Backend(
+                    "S3 range response is shorter than requested".into(),
+                ));
+            }
+            let bytes = bytes.slice(range.start as usize..range.end as usize);
+            return Ok(buffered_stream(bytes));
+        }
+        let content_length = Some(range.end - range.start);
+        return Ok(response_stream(response, key, content_length));
+    }
+
+    let content_length = response.content_length();
+    Ok(response_stream(response, key, content_length))
+}
+
+fn response_stream(
+    response: reqwest::Response,
+    key: &str,
+    content_length: Option<u64>,
+) -> MediaStream {
+    let key = key.to_string();
+    let stream = response
+        .bytes_stream()
+        .map(move |chunk| chunk.map_err(|error| request_error("stream read", &key, error)))
+        .boxed();
+    MediaStream {
+        content_length,
+        stream,
+    }
+}
+
+fn buffered_stream(bytes: Bytes) -> MediaStream {
+    let content_length = Some(bytes.len() as u64);
+    MediaStream {
+        content_length,
+        stream: futures_util::stream::once(async move { Ok(bytes) }).boxed(),
+    }
+}
+
 fn request_error(operation: &str, key: &str, error: reqwest::Error) -> StorageError {
     StorageError::Backend(format!("S3 {operation} {key}: {}", error.without_url()))
 }
@@ -546,6 +692,44 @@ async fn local_get(data_dir: &Path, kind: MediaKind, name: &str) -> Result<Vec<u
     tokio::fs::read(local_path(data_dir, kind, name))
         .await
         .map_err(map_io_error)
+}
+
+async fn local_open_stream(
+    data_dir: &Path,
+    kind: MediaKind,
+    name: &str,
+    range: Option<Range<u64>>,
+) -> Result<MediaStream, StorageError> {
+    let mut file = tokio::fs::File::open(local_path(data_dir, kind, name))
+        .await
+        .map_err(map_io_error)?;
+    let total = file.metadata().await.map_err(map_io_error)?.len();
+
+    let (content_length, stream) = if let Some(range) = range {
+        if range.start >= range.end || range.end > total {
+            return Err(StorageError::Backend(
+                "media range exceeds object size".into(),
+            ));
+        }
+        file.seek(SeekFrom::Start(range.start))
+            .await
+            .map_err(map_io_error)?;
+        let length = range.end - range.start;
+        let stream = ReaderStream::new(file.take(length))
+            .map(|chunk| chunk.map_err(map_io_error))
+            .boxed();
+        (Some(length), stream)
+    } else {
+        let stream = ReaderStream::new(file)
+            .map(|chunk| chunk.map_err(map_io_error))
+            .boxed();
+        (Some(total), stream)
+    };
+
+    Ok(MediaStream {
+        content_length,
+        stream,
+    })
 }
 
 async fn local_size(data_dir: &Path, kind: MediaKind, name: &str) -> Result<u64, StorageError> {
@@ -709,7 +893,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::SystemTime};
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+        time::{Duration, SystemTime},
+    };
 
     use axum::{
         Router,
@@ -785,13 +973,32 @@ mod tests {
                     let (start, end) = value.split_once('-')?;
                     Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
                 }) {
+                    let bytes = bytes[range.0..=range.1].to_vec();
                     return Response::builder()
                         .status(StatusCode::PARTIAL_CONTENT)
-                        .body(Body::from(bytes[range.0..=range.1].to_vec()))
+                        .header(header::CONTENT_LENGTH, bytes.len())
+                        .body(Body::from(bytes))
+                        .unwrap();
+                }
+                if key.ends_with("slow.mp4") {
+                    let content_length = bytes.len();
+                    let first = Bytes::copy_from_slice(&bytes[..1]);
+                    let rest = Bytes::copy_from_slice(&bytes[1..]);
+                    let chunks =
+                        futures_util::stream::once(async move { Ok::<_, Infallible>(first) })
+                            .chain(futures_util::stream::once(async move {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                Ok::<_, Infallible>(rest)
+                            }));
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_LENGTH, content_length)
+                        .body(Body::from_stream(chunks))
                         .unwrap();
                 }
                 Response::builder()
                     .status(StatusCode::OK)
+                    .header(header::CONTENT_LENGTH, bytes.len())
                     .body(Body::from(bytes))
                     .unwrap()
             }
@@ -904,6 +1111,28 @@ mod tests {
             storage.size(MediaKind::Video, "sample.mp4").await.unwrap(),
             10
         );
+        let media = storage
+            .open_stream(MediaKind::Video, "sample.mp4")
+            .await
+            .unwrap();
+        assert_eq!(media.content_length(), Some(10));
+        assert_eq!(
+            to_bytes(Body::from_stream(media.into_stream()), usize::MAX)
+                .await
+                .unwrap(),
+            b"0123456789".as_slice()
+        );
+        let media = storage
+            .open_range_stream(MediaKind::Video, "sample.mp4", 2..6)
+            .await
+            .unwrap();
+        assert_eq!(media.content_length(), Some(4));
+        assert_eq!(
+            to_bytes(Body::from_stream(media.into_stream()), usize::MAX)
+                .await
+                .unwrap(),
+            b"2345".as_slice()
+        );
         assert_eq!(
             storage
                 .get_range(MediaKind::Video, "sample.mp4", 2..6)
@@ -979,6 +1208,28 @@ mod tests {
             storage.size(MediaKind::Video, "sample.mp4").await.unwrap(),
             10
         );
+        let media = storage
+            .open_stream(MediaKind::Video, "sample.mp4")
+            .await
+            .unwrap();
+        assert_eq!(media.content_length(), Some(10));
+        assert_eq!(
+            to_bytes(Body::from_stream(media.into_stream()), usize::MAX)
+                .await
+                .unwrap(),
+            b"0123456789".as_slice()
+        );
+        let media = storage
+            .open_range_stream(MediaKind::Video, "sample.mp4", 3..7)
+            .await
+            .unwrap();
+        assert_eq!(media.content_length(), Some(4));
+        assert_eq!(
+            to_bytes(Body::from_stream(media.into_stream()), usize::MAX)
+                .await
+                .unwrap(),
+            b"3456".as_slice()
+        );
         assert_eq!(
             storage
                 .get_range(MediaKind::Video, "sample.mp4", 3..7)
@@ -990,6 +1241,25 @@ mod tests {
             storage.get(MediaKind::Video, "sample.mp4").await.unwrap(),
             b"0123456789"
         );
+
+        storage
+            .put(MediaKind::Video, "slow.mp4", b"streamed".to_vec())
+            .await
+            .unwrap();
+        let media = tokio::time::timeout(
+            Duration::from_millis(500),
+            storage.open_stream(MediaKind::Video, "slow.mp4"),
+        )
+        .await
+        .expect("opening an S3 stream must not wait for the complete body")
+        .unwrap();
+        assert_eq!(
+            to_bytes(Body::from_stream(media.into_stream()), usize::MAX)
+                .await
+                .unwrap(),
+            b"streamed".as_slice()
+        );
+        storage.delete(MediaKind::Video, "slow.mp4").await.unwrap();
         storage
             .delete(MediaKind::Video, "sample.mp4")
             .await

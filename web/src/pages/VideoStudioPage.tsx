@@ -33,6 +33,10 @@ import {
   type VideoJob,
   type VideoModel,
 } from "@/lib/video-gen"
+import {
+  consecutiveSecondsRange,
+  videoSizeLabel,
+} from "@/lib/video-capabilities"
 
 const POLL_MS = 5000
 
@@ -67,8 +71,11 @@ async function uploadRefImage(file: File): Promise<string> {
 }
 
 function firstSecondsAndSize(m: VideoModel): { seconds: number | null; size: string | null } {
+  const range = consecutiveSecondsRange(m.allowed_seconds)
+  const preferredSeconds =
+    range && range.min <= 8 && range.max >= 8 ? 8 : m.allowed_seconds[0]
   return {
-    seconds: m.allowed_seconds[0] ?? null,
+    seconds: preferredSeconds ?? null,
     size: m.size_rules[0]?.size ?? null,
   }
 }
@@ -118,13 +125,24 @@ export default function VideoStudioPage() {
       const list = await listVideoModels()
       setModels(list)
       if (list.length > 0) {
-        const m = list[0]!
-        setModel((prev) => (list.some((x) => x.model === prev) ? prev : m.model))
-        if (!list.some((x) => x.model === model)) {
-          const { seconds: s, size: sz } = firstSecondsAndSize(m)
-          setSeconds(s)
-          setSize(sz)
-        }
+        const selected = list.find((item) => item.model === model) ?? list[0]!
+        const defaults = firstSecondsAndSize(selected)
+        setModel(selected.model)
+        setSeconds((previous) =>
+          previous != null && selected.allowed_seconds.includes(previous)
+            ? previous
+            : defaults.seconds
+        )
+        setSize((previous) =>
+          previous != null &&
+          selected.size_rules.some((rule) => rule.size === previous)
+            ? previous
+            : defaults.size
+        )
+      } else {
+        setModel("")
+        setSeconds(null)
+        setSize(null)
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -178,6 +196,9 @@ export default function VideoStudioPage() {
   }
 
   const activeModel = models.find((m) => m.model === model)
+  const durationRange = activeModel
+    ? consecutiveSecondsRange(activeModel.allowed_seconds)
+    : null
   const cost =
     activeModel && seconds != null && size != null
       ? computeVideoCost(activeModel, seconds, size)
@@ -321,37 +342,67 @@ export default function VideoStudioPage() {
           {activeModel && (
             <>
               <div className="mb-3 flex flex-col gap-1.5">
-                <Label className="text-xs">时长</Label>
-                <div className="flex flex-wrap gap-1.5">
-                  {activeModel.allowed_seconds.map((s) => (
-                    <Button
-                      key={s}
-                      type="button"
-                      size="sm"
-                      variant={seconds === s ? "default" : "outline"}
-                      onClick={() => setSeconds(s)}
-                    >
-                      {s} 秒
-                    </Button>
-                  ))}
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs">时长</Label>
+                  {durationRange && (
+                    <span className="text-xs font-medium tabular-nums text-primary">
+                      {seconds ?? durationRange.min} 秒
+                    </span>
+                  )}
                 </div>
+                {durationRange ? (
+                  <>
+                    <input
+                      type="range"
+                      min={durationRange.min}
+                      max={durationRange.max}
+                      step={1}
+                      value={seconds ?? durationRange.min}
+                      onChange={(e) => setSeconds(Number(e.target.value))}
+                      aria-label="视频时长（秒）"
+                      className="h-2 w-full cursor-pointer accent-primary"
+                    />
+                    <div className="flex justify-between text-[11px] tabular-nums text-muted-foreground">
+                      <span>{durationRange.min} 秒</span>
+                      <span>可逐秒选择</span>
+                      <span>{durationRange.max} 秒</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeModel.allowed_seconds.map((s) => (
+                      <Button
+                        key={s}
+                        type="button"
+                        size="sm"
+                        variant={seconds === s ? "default" : "outline"}
+                        onClick={() => setSeconds(s)}
+                      >
+                        {s} 秒
+                      </Button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mb-3 flex flex-col gap-1.5">
                 <Label className="text-xs">分辨率</Label>
-                <div className="flex flex-wrap gap-1.5">
-                  {activeModel.size_rules.map((r) => (
-                    <Button
-                      key={r.size}
-                      type="button"
-                      size="sm"
-                      variant={size === r.size ? "default" : "outline"}
-                      onClick={() => setSize(r.size)}
-                    >
-                      {r.size}
-                    </Button>
-                  ))}
-                </div>
+                <Select
+                  value={size ?? undefined}
+                  onValueChange={setSize}
+                  disabled={activeModel.size_rules.length === 0}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="选择分辨率" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activeModel.size_rules.map((r) => (
+                      <SelectItem key={r.size} value={r.size}>
+                        {videoSizeLabel(activeModel.model, r.size)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </>
           )}

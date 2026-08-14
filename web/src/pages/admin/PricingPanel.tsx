@@ -1,9 +1,21 @@
-import { useEffect, useState } from "react"
-import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  CircleAlert,
+  LoaderCircle,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -34,6 +46,13 @@ import {
   type PricingInput,
   type VideoSizeRule,
 } from "@/lib/channels"
+import {
+  defaultVideoSize,
+  displayVideoSize,
+  effectiveAllowedSeconds,
+  isGrokVideoModel,
+  videoSizeOptions,
+} from "@/lib/video-capabilities"
 
 const KINDS: ChannelKind[] = ["chat", "image", "video"]
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
@@ -47,21 +66,6 @@ const PROTOCOL_LABELS: Record<ChannelProtocol, string> = {
   openai: "OpenAI",
   claude: "Claude",
   gemini: "Gemini",
-}
-
-function parseAllowedSecondsText(text: string): number[] | null {
-  if (!text.trim()) return []
-  const nums: number[] = []
-  for (const part of text.split(",").map((value) => value.trim()).filter(Boolean)) {
-    const seconds = Number(part)
-    if (!Number.isInteger(seconds) || seconds <= 0) return null
-    nums.push(seconds)
-  }
-  return nums
-}
-
-function displaySize(size: string): string {
-  return size.replace("x", "×")
 }
 
 type DialogMode =
@@ -88,7 +92,21 @@ export function PricingPanel() {
     }
   }
   useEffect(() => {
-    void load()
+    let cancelled = false
+    channelsAdminApi
+      .listPricing()
+      .then((nextRows) => {
+        if (!cancelled) setRows(nextRows)
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const q = query.trim().toLowerCase()
@@ -273,7 +291,7 @@ export function PricingPanel() {
   )
 }
 
-type FormState = PricingInput & { allowedSecondsText: string }
+type FormState = PricingInput
 
 function PricingDialog({
   mode,
@@ -296,7 +314,7 @@ function PricingDialog({
           context_limit: mode.row.context_limit,
           base_credits: mode.row.base_credits,
           per_second: mode.row.per_second,
-          allowedSecondsText: (mode.row.allowed_seconds ?? []).join(", "),
+          allowed_seconds: mode.row.allowed_seconds ?? [],
           size_rules: mode.row.size_rules ?? [],
         }
       : {
@@ -309,7 +327,7 @@ function PricingDialog({
           context_limit: null,
           base_credits: 0,
           per_second: 0,
-          allowedSecondsText: "",
+          allowed_seconds: [],
           size_rules: [],
         }
   const [form, setForm] = useState<FormState>(initial)
@@ -319,7 +337,10 @@ function PricingDialog({
   const [probeErrors, setProbeErrors] = useState<
     { channel: string; error: string }[]
   >([])
+  const [loadingModels, setLoadingModels] = useState(true)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
+  const dialogTitleRef = useRef<HTMLHeadingElement>(null)
 
   // Probe channel catalogs for model selection and binding refresh.
   useEffect(() => {
@@ -333,25 +354,57 @@ function PricingDialog({
         setAllModels([])
         setProbeErrors([])
       })
+      .finally(() => setLoadingModels(false))
   }, [mode.kind])
 
   // A model's function is selected below; channel discovery is function-agnostic.
   const suggestions = allModels
   const modelQuery = form.model.trim().toLowerCase()
-  const filteredSuggestions = suggestions
-    .filter(
-      (m) =>
-        !modelQuery ||
-        m.model.toLowerCase().includes(modelQuery) ||
-        m.channels.some((c) => c.name.toLowerCase().includes(modelQuery))
-    )
-    .slice(0, 80)
+  const matchingSuggestions = suggestions.filter(
+    (m) =>
+      !modelQuery ||
+      m.model.toLowerCase().includes(modelQuery) ||
+      m.channels.some((c) => c.name.toLowerCase().includes(modelQuery))
+  )
+  const filteredSuggestions = matchingSuggestions.slice(0, 50)
   const currentMatch = suggestions.find((m) => m.model === form.model)
   const compatibleChannels =
     currentMatch?.channels.filter((c) => c.protocol === form.protocol) ?? []
 
   const isVideo = form.kind === "video"
   const sizeRules = form.size_rules ?? []
+  const isGrokVideo = isGrokVideoModel(form.model)
+  const allowedSeconds = effectiveAllowedSeconds(
+    form.model,
+    form.allowed_seconds ?? []
+  )
+  const sizeOptions = videoSizeOptions(
+    form.model,
+    sizeRules.map((rule) => rule.size)
+  )
+  const nextSizeOption = sizeOptions.find(
+    (option) => !sizeRules.some((rule) => rule.size === option.value)
+  )
+
+  function selectModel(model: AllChannelModel) {
+    setForm({
+      ...form,
+      model: model.model,
+      display_name: form.display_name || model.model,
+      ...(form.kind === "video"
+        ? {
+            allowed_seconds: effectiveAllowedSeconds(model.model, [4]),
+            size_rules: [
+              {
+                size: defaultVideoSize(model.model),
+                multiplier: 100,
+              },
+            ],
+          }
+        : {}),
+    })
+    setModelPickerOpen(false)
+  }
 
   function updateSizeRule(idx: number, patch: Partial<VideoSizeRule>) {
     setForm({
@@ -360,8 +413,20 @@ function PricingDialog({
     })
   }
 
-  const allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
-  const previewSeconds = allowedSeconds?.[0]
+  function updateAllowedSecond(idx: number, seconds: number) {
+    setForm({
+      ...form,
+      allowed_seconds: allowedSeconds.map((value, index) =>
+        index === idx ? seconds : value
+      ),
+    })
+  }
+
+  const sortedAllowedSeconds = [...allowedSeconds].sort((a, b) => a - b)
+  const previewSeconds =
+    isGrokVideo && sortedAllowedSeconds.includes(8)
+      ? 8
+      : sortedAllowedSeconds[0]
   const previewRule = sizeRules.find(
     (rule) => SIZE_RE.test(rule.size.trim()) && rule.multiplier > 0
   )
@@ -381,15 +446,22 @@ function PricingDialog({
       setErr(`该模型没有 ${form.protocol} 协议的可用渠道`)
       return
     }
-    let allowedSeconds: number[] | null = null
+    const submittedSeconds = [...allowedSeconds]
     if (isVideo) {
-      allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
-      if (allowedSeconds === null) {
-        setErr("时长必须为正整数，多个用逗号分隔，如 4,8,12")
+      if (
+        submittedSeconds.some(
+          (seconds) => !Number.isInteger(seconds) || seconds <= 0
+        )
+      ) {
+        setErr("支持时长必须全部为正整数")
         return
       }
-      if (allowedSeconds.length === 0) {
+      if (submittedSeconds.length === 0) {
         setErr("允许时长不能为空")
+        return
+      }
+      if (new Set(submittedSeconds).size !== submittedSeconds.length) {
+        setErr("支持时长不能重复")
         return
       }
       if (sizeRules.length === 0) {
@@ -409,15 +481,15 @@ function PricingDialog({
     }
     setSaving(true)
     try {
-      const { allowedSecondsText: _text, ...input } = form
-      void _text
       await channelsAdminApi.upsertPricing({
-        ...input,
+        ...form,
         channel_ids: currentMatch
           ? compatibleChannels.map((c) => c.id)
           : undefined,
         display_name: form.display_name?.toString().trim() || null,
-        allowed_seconds: isVideo ? allowedSeconds : null,
+        allowed_seconds: isVideo
+          ? submittedSeconds.sort((a, b) => a - b)
+          : null,
         size_rules: isVideo
           ? sizeRules.map((r) => ({ size: r.size.trim(), multiplier: r.multiplier }))
           : null,
@@ -434,15 +506,27 @@ function PricingDialog({
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent
-        aria-describedby={undefined}
-        className="flex max-h-[min(90vh,46rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-card p-0 sm:max-w-lg"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          dialogTitleRef.current?.focus()
+        }}
+        className="flex max-h-[min(92vh,52rem)] flex-col gap-0 overflow-hidden rounded-3xl border-border/80 bg-card p-0 shadow-2xl sm:max-w-xl [&_[data-slot=dialog-close]]:right-5 [&_[data-slot=dialog-close]]:top-5 [&_[data-slot=dialog-close]]:rounded-lg [&_[data-slot=dialog-close]]:p-1"
       >
-        <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
-          <DialogTitle className="text-base leading-6">
-            {mode.kind === "create" ? "新建模型" : "编辑模型"}
+        <DialogHeader className="gap-1 border-b border-border/60 bg-muted/15 px-6 py-5 pr-14">
+          <DialogTitle
+            ref={dialogTitleRef}
+            tabIndex={-1}
+            className="text-lg leading-6 outline-none"
+          >
+            {mode.kind === "create" ? "新建计费规则" : "编辑计费规则"}
           </DialogTitle>
+          <DialogDescription className="text-xs leading-5">
+            {mode.kind === "create"
+              ? "选择上游模型，并设置它的功能、协议与积分规则。"
+              : "调整展示信息与计费方式，模型 ID 保持不变。"}
+          </DialogDescription>
           {mode.kind === "edit" && (
-            <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
+            <div className="flex flex-wrap items-center gap-2 pt-1.5 text-xs">
               <span className="max-w-full truncate font-mono font-medium text-foreground">
                 {form.model}
               </span>
@@ -456,96 +540,240 @@ function PricingDialog({
           )}
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="space-y-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="space-y-6">
             {mode.kind === "create" && (
-              <section className="space-y-3">
-                <div>
-                  <Label>模型 ID</Label>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    从渠道探测结果中选择，也可以输入自定义 ID。
-                  </p>
+              <section className="space-y-3.5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <Label htmlFor="pricing-model">模型 ID</Label>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      搜索已启用渠道，也可以直接填写自定义模型 ID。
+                    </p>
+                  </div>
+                  {!loadingModels && suggestions.length > 0 && (
+                    <span className="shrink-0 rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-medium text-primary">
+                      {suggestions.length} 个可用
+                    </span>
+                  )}
                 </div>
-                <div className="relative">
-                  <Input
-                    value={form.model}
-                    onFocus={() => setModelPickerOpen(true)}
-                    onBlur={() => window.setTimeout(() => setModelPickerOpen(false), 120)}
-                    onChange={(e) => {
-                      setForm({ ...form, model: e.target.value })
-                      setModelPickerOpen(true)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setModelPickerOpen(false)
-                    }}
-                    placeholder="搜索上游模型，或输入自定义模型 ID"
-                    autoComplete="off"
-                  />
-                  {modelPickerOpen && filteredSuggestions.length > 0 && (
-                    <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-[60] max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl">
-                      <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                        {modelQuery
-                          ? `匹配 ${filteredSuggestions.length} / ${suggestions.length} 个候选`
-                          : `实时探测到 ${suggestions.length} 个候选模型`}
+                <div>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="pricing-model"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-controls="pricing-model-options"
+                      aria-expanded={modelPickerOpen}
+                      aria-activedescendant={
+                        modelPickerOpen && filteredSuggestions[activeSuggestionIndex]
+                          ? `pricing-model-${activeSuggestionIndex}`
+                          : undefined
+                      }
+                      value={form.model}
+                      onFocus={() => setModelPickerOpen(true)}
+                      onBlur={() =>
+                        window.setTimeout(() => setModelPickerOpen(false), 160)
+                      }
+                      onChange={(e) => {
+                        setForm({ ...form, model: e.target.value })
+                        setActiveSuggestionIndex(0)
+                        setModelPickerOpen(true)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          setModelPickerOpen(false)
+                        } else if (e.key === "ArrowDown") {
+                          e.preventDefault()
+                          setModelPickerOpen(true)
+                          setActiveSuggestionIndex((index) =>
+                            Math.min(index + 1, filteredSuggestions.length - 1)
+                          )
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault()
+                          setActiveSuggestionIndex((index) =>
+                            Math.max(index - 1, 0)
+                          )
+                        } else if (
+                          e.key === "Enter" &&
+                          modelPickerOpen &&
+                          filteredSuggestions[activeSuggestionIndex]
+                        ) {
+                          e.preventDefault()
+                          selectModel(filteredSuggestions[activeSuggestionIndex])
+                        }
+                      }}
+                      placeholder="搜索模型名称或渠道"
+                      autoComplete="off"
+                      className="h-11 bg-background pl-10 pr-10 font-mono"
+                    />
+                    <ChevronDown
+                      className={`pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground transition-transform ${
+                        modelPickerOpen ? "rotate-180" : ""
+                      }`}
+                    />
+                  </div>
+
+                  {modelPickerOpen && (
+                    <div
+                      id="pricing-model-options"
+                      role="listbox"
+                      className="mt-2 overflow-hidden rounded-xl border border-border/80 bg-popover shadow-lg shadow-black/5"
+                    >
+                      <div className="flex items-center justify-between border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                        <span>
+                          {loadingModels
+                            ? "正在读取渠道模型…"
+                            : modelQuery
+                              ? `${matchingSuggestions.length} 个匹配结果`
+                              : "选择一个已探测到的模型"}
+                        </span>
+                        {matchingSuggestions.length > filteredSuggestions.length && (
+                          <span>仅显示前 {filteredSuggestions.length} 个</span>
+                        )}
                       </div>
-                      {filteredSuggestions.map((m) => (
-                        <button
-                          key={m.model}
-                          type="button"
-                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-accent focus:bg-accent focus:outline-none"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            setForm({
-                              ...form,
-                              model: m.model,
-                              display_name: form.display_name || m.model,
-                            })
-                            setModelPickerOpen(false)
-                          }}
-                        >
-                          <span className="font-mono text-sm font-medium">{m.model}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {m.channels
-                              .map((c) => `${c.name} (${c.protocol})`)
-                              .join("、")}
-                          </span>
-                        </button>
-                      ))}
+                      {loadingModels ? (
+                        <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground">
+                          <LoaderCircle className="size-4 animate-spin" />
+                          正在加载候选模型
+                        </div>
+                      ) : filteredSuggestions.length > 0 ? (
+                        <div className="max-h-56 overflow-y-auto p-1.5">
+                          {filteredSuggestions.map((model, index) => {
+                            const isSelected = model.model === form.model
+                            const protocols = Array.from(
+                              new Set(model.channels.map((channel) => channel.protocol))
+                            )
+
+                            return (
+                              <button
+                                id={`pricing-model-${index}`}
+                                key={model.model}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors focus:outline-none ${
+                                  index === activeSuggestionIndex
+                                    ? "bg-accent"
+                                    : "hover:bg-accent/70"
+                                }`}
+                                onMouseEnter={() => setActiveSuggestionIndex(index)}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => selectModel(model)}
+                              >
+                                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background text-muted-foreground shadow-xs">
+                                  {isSelected ? (
+                                    <Check className="size-3.5 text-primary" />
+                                  ) : (
+                                    <span className="size-1.5 rounded-full bg-muted-foreground/45" />
+                                  )}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-mono text-sm font-medium text-foreground">
+                                    {model.model}
+                                  </span>
+                                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                    {model.channels.map((channel) => channel.name).join("、")}
+                                  </span>
+                                </span>
+                                <span className="hidden shrink-0 items-center gap-1 sm:flex">
+                                  {protocols.map((protocol) => (
+                                    <span
+                                      key={protocol}
+                                      className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground"
+                                    >
+                                      {protocol}
+                                    </span>
+                                  ))}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="px-4 py-7 text-center">
+                          <p className="text-sm font-medium">没有找到匹配模型</p>
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                            仍可将“{form.model.trim()}”作为自定义模型 ID 保存。
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {currentMatch
-                    ? compatibleChannels.length > 0
-                      ? `将绑定渠道：${compatibleChannels.map((c) => c.name).join("、")}`
-                      : `该模型没有 ${form.protocol} 协议的可用渠道`
-                    : form.model.trim()
-                    ? "⚠️ 未在实时候选中找到；仍可保存为自定义模型 ID，请确认上游渠道实际支持。"
-                    : suggestions.length > 0
-                    ? `候选来自所有启用渠道的实时 /models 探测（${suggestions.length} 个）`
-                    : "暂无候选——请检查上游渠道是否可连通。"}
-                </p>
+
+                <div aria-live="polite">
+                  {loadingModels ? (
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <LoaderCircle className="size-3.5 animate-spin" />
+                      正在探测启用渠道
+                    </p>
+                  ) : currentMatch ? (
+                    compatibleChannels.length > 0 ? (
+                      <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle2 className="size-3.5" />
+                        将绑定到：{compatibleChannels.map((c) => c.name).join("、")}
+                      </p>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                        <CircleAlert className="size-3.5" />
+                        该模型没有 {PROTOCOL_LABELS[form.protocol]} 协议的可用渠道
+                      </p>
+                    )
+                  ) : form.model.trim() ? (
+                    <p className="flex items-start gap-1.5 text-xs leading-5 text-amber-600 dark:text-amber-400">
+                      <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                      未在渠道中找到；将按自定义模型 ID 保存，请确认上游支持。
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      候选模型来自所有启用渠道的实时探测。
+                    </p>
+                  )}
+                </div>
+
                 {probeErrors.length > 0 && (
-                  <div className="mt-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-xs text-yellow-800">
-                    部分渠道探测失败：
-                    {probeErrors.map((e) => e.channel).join("、")}
-                    （不影响可用渠道）
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                    <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                    <span>
+                      {probeErrors.map((e) => e.channel).join("、")} 探测失败，
+                      不影响其他渠道。
+                    </span>
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
                     <Label>功能</Label>
                     <Select
                       value={form.kind}
-                      onValueChange={(value) =>
+                      onValueChange={(value) => {
+                        const nextKind = value as ChannelKind
                         setForm({
                           ...form,
-                          kind: value as ChannelKind,
-                          ...(value === "video"
-                            ? { protocol: "openai" as ChannelProtocol }
+                          kind: nextKind,
+                          ...(nextKind === "video"
+                            ? {
+                                protocol: "openai" as ChannelProtocol,
+                                allowed_seconds: effectiveAllowedSeconds(
+                                  form.model,
+                                  form.allowed_seconds?.length
+                                    ? form.allowed_seconds
+                                    : [4]
+                                ),
+                                size_rules: sizeRules.length
+                                  ? sizeRules
+                                  : [
+                                      {
+                                        size: defaultVideoSize(form.model),
+                                        multiplier: 100,
+                                      },
+                                    ],
+                              }
                             : {}),
                         })
-                      }
+                      }}
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue />
@@ -559,7 +787,7 @@ function PricingDialog({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div>
+                  <div className="space-y-1.5">
                     <Label>协议</Label>
                     <Select
                       value={form.protocol}
@@ -588,8 +816,9 @@ function PricingDialog({
             )}
 
             <section className="space-y-1.5">
-              <Label>显示名称</Label>
+              <Label htmlFor="pricing-display-name">显示名称</Label>
               <Input
+                id="pricing-display-name"
                 value={form.display_name ?? ""}
                 onChange={(e) =>
                   setForm({ ...form, display_name: e.target.value })
@@ -687,7 +916,7 @@ function PricingDialog({
                     <span className="text-xs text-muted-foreground">价格示例</span>
                     {previewCost !== null && previewSeconds && previewRule ? (
                       <span className="text-sm font-semibold tabular-nums text-foreground">
-                        {previewSeconds} 秒 · {displaySize(previewRule.size)} = {previewCost} 积分
+                        {previewSeconds} 秒 · {displayVideoSize(previewRule.size)} = {previewCost} 积分
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -701,26 +930,84 @@ function PricingDialog({
                   <div>
                     <Label>支持时长</Label>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      多个秒数用逗号分隔。
+                      决定用户生成视频时可以选择的秒数。
                     </p>
                   </div>
-                  <Input
-                    value={form.allowedSecondsText}
-                    onChange={(e) =>
-                      setForm({ ...form, allowedSecondsText: e.target.value })
-                    }
-                    placeholder="4, 8, 12"
-                  />
-                  {allowedSeconds && allowedSeconds.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {allowedSeconds.map((seconds, index) => (
-                        <span
-                          key={`${seconds}-${index}`}
-                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                        >
-                          {seconds} 秒
+                  {isGrokVideo ? (
+                    <div className="rounded-lg border border-primary/15 bg-primary/5 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium">连续时长</span>
+                        <span className="text-sm font-semibold tabular-nums text-primary">
+                          1–15 秒
                         </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Grok 支持用户按 1 秒步长自由选择，保存时自动应用完整范围。
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {allowedSeconds.map((seconds, index) => (
+                        <div
+                          key={index}
+                          className="grid grid-cols-[minmax(0,1fr)_2rem] items-center gap-2"
+                        >
+                          <div className="relative">
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={seconds || ""}
+                              onChange={(e) =>
+                                updateAllowedSecond(index, Number(e.target.value))
+                              }
+                              className="pr-9"
+                              aria-label={`第 ${index + 1} 个支持时长`}
+                            />
+                            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                              秒
+                            </span>
+                          </div>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            type="button"
+                            aria-label={`删除 ${seconds} 秒`}
+                            onClick={() =>
+                              setForm({
+                                ...form,
+                                allowed_seconds: allowedSeconds.filter(
+                                  (_, itemIndex) => itemIndex !== index
+                                ),
+                              })
+                            }
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
                       ))}
+                      {allowedSeconds.length === 0 && (
+                        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+                          还没有支持时长，添加一个即可开始计价。
+                        </div>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            allowed_seconds: [
+                              ...allowedSeconds,
+                              Math.max(3, ...allowedSeconds) + 1,
+                            ],
+                          })
+                        }
+                        className="w-full border-dashed text-muted-foreground"
+                      >
+                        <Plus /> 添加时长
+                      </Button>
                     </div>
                   )}
                 </section>
@@ -743,13 +1030,30 @@ function PricingDialog({
                         key={idx}
                         className="grid grid-cols-[minmax(0,1fr)_7rem_2rem] items-center gap-2"
                       >
-                        <Input
+                        <Select
                           value={r.size}
-                          onChange={(e) =>
-                            updateSizeRule(idx, { size: e.target.value })
+                          onValueChange={(value) =>
+                            updateSizeRule(idx, { size: value })
                           }
-                          placeholder="1280x720"
-                        />
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="选择分辨率" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {sizeOptions.map((option) => (
+                              <SelectItem
+                                key={option.value}
+                                value={option.value}
+                                disabled={sizeRules.some(
+                                  (rule, ruleIndex) =>
+                                    ruleIndex !== idx && rule.size === option.value
+                                )}
+                              >
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <div className="relative">
                           <Input
                             type="number"
@@ -792,12 +1096,18 @@ function PricingDialog({
                       size="sm"
                       variant="outline"
                       type="button"
+                      disabled={!nextSizeOption}
                       onClick={() =>
                         setForm({
                           ...form,
                           size_rules: [
                             ...sizeRules,
-                            { size: "", multiplier: 100 },
+                            {
+                              size:
+                                nextSizeOption?.value ??
+                                defaultVideoSize(form.model),
+                              multiplier: 100,
+                            },
                           ],
                         })
                       }
@@ -921,15 +1231,20 @@ function PricingDialog({
           </div>
         </div>
 
-        <DialogFooter className="flex-row justify-end border-t border-border/70 bg-card px-5 py-3.5">
+        <DialogFooter className="flex-row justify-end border-t border-border/60 bg-muted/10 px-6 py-4">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>
           <Button
             onClick={() => void submit()}
             disabled={saving || !form.model.trim()}
+            className="min-w-24"
           >
-            {saving ? "保存中…" : "保存"}
+            {saving
+              ? "保存中…"
+              : mode.kind === "create"
+                ? "创建规则"
+                : "保存更改"}
           </Button>
         </DialogFooter>
       </DialogContent>

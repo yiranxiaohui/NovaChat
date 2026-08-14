@@ -38,6 +38,31 @@ import {
 const KINDS: ChannelKind[] = ["chat", "image", "video"]
 const PROTOCOLS: ChannelProtocol[] = ["openai", "claude", "gemini"]
 const SIZE_RE = /^\d+x\d+$/
+const KIND_LABELS: Record<ChannelKind, string> = {
+  chat: "对话",
+  image: "图片",
+  video: "视频",
+}
+const PROTOCOL_LABELS: Record<ChannelProtocol, string> = {
+  openai: "OpenAI",
+  claude: "Claude",
+  gemini: "Gemini",
+}
+
+function parseAllowedSecondsText(text: string): number[] | null {
+  if (!text.trim()) return []
+  const nums: number[] = []
+  for (const part of text.split(",").map((value) => value.trim()).filter(Boolean)) {
+    const seconds = Number(part)
+    if (!Number.isInteger(seconds) || seconds <= 0) return null
+    nums.push(seconds)
+  }
+  return nums
+}
+
+function displaySize(size: string): string {
+  return size.replace("x", "×")
+}
 
 type DialogMode =
   | { kind: "create" }
@@ -335,17 +360,20 @@ function PricingDialog({
     })
   }
 
-  function parseAllowedSeconds(): number[] | null {
-    const text = form.allowedSecondsText.trim()
-    if (!text) return []
-    const nums: number[] = []
-    for (const p of text.split(",").map((s) => s.trim()).filter(Boolean)) {
-      const n = Number(p)
-      if (!Number.isInteger(n) || n <= 0) return null
-      nums.push(n)
-    }
-    return nums
-  }
+  const allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
+  const previewSeconds = allowedSeconds?.[0]
+  const previewRule = sizeRules.find(
+    (rule) => SIZE_RE.test(rule.size.trim()) && rule.multiplier > 0
+  )
+  const previewCost =
+    previewSeconds && previewRule
+      ? Math.round(
+          (((form.base_credits ?? 0) +
+            (form.per_second ?? 0) * previewSeconds) *
+            previewRule.multiplier) /
+            100
+        )
+      : null
 
   async function submit() {
     setErr(null)
@@ -355,7 +383,7 @@ function PricingDialog({
     }
     let allowedSeconds: number[] | null = null
     if (isVideo) {
-      allowedSeconds = parseAllowedSeconds()
+      allowedSeconds = parseAllowedSecondsText(form.allowedSecondsText)
       if (allowedSeconds === null) {
         setErr("时长必须为正整数，多个用逗号分隔，如 4,8,12")
         return
@@ -407,18 +435,37 @@ function PricingDialog({
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent
         aria-describedby={undefined}
-        className="block max-h-[85vh] overflow-y-auto rounded-xl bg-card p-5 sm:max-w-md"
+        className="flex max-h-[min(90vh,46rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-card p-0 sm:max-w-lg"
       >
-        <DialogHeader className="mb-3">
-          <DialogTitle className="text-base">
-            {mode.kind === "create" ? "新建计费规则" : `编辑 ${mode.row.model}`}
+        <DialogHeader className="border-b border-border/70 px-5 py-4 pr-12">
+          <DialogTitle className="text-base leading-6">
+            {mode.kind === "create" ? "新建模型" : "编辑模型"}
           </DialogTitle>
+          {mode.kind === "edit" && (
+            <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
+              <span className="max-w-full truncate font-mono font-medium text-foreground">
+                {form.model}
+              </span>
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                {KIND_LABELS[form.kind]}
+              </span>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                {PROTOCOL_LABELS[form.protocol]}
+              </span>
+            </div>
+          )}
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2">
-            <Label>模型 ID</Label>
-            {mode.kind === "create" ? (
-              <>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="space-y-5">
+            {mode.kind === "create" && (
+              <section className="space-y-3">
+                <div>
+                  <Label>模型 ID</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    从渠道探测结果中选择，也可以输入自定义 ID。
+                  </p>
+                </div>
                 <div className="relative">
                   <Input
                     value={form.model}
@@ -485,223 +532,396 @@ function PricingDialog({
                     （不影响可用渠道）
                   </div>
                 )}
-              </>
-            ) : (
-              <>
-                <Input value={form.model} disabled />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {currentMatch
-                    ? compatibleChannels.length > 0
-                      ? `保存后绑定渠道：${compatibleChannels.map((c) => c.name).join("、")}`
-                      : `当前没有 ${form.protocol} 协议的可用渠道`
-                    : "模型 ID 不可改；未探测到时保存会保留原渠道绑定。"}
-                </p>
-              </>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>功能</Label>
+                    <Select
+                      value={form.kind}
+                      onValueChange={(value) =>
+                        setForm({
+                          ...form,
+                          kind: value as ChannelKind,
+                          ...(value === "video"
+                            ? { protocol: "openai" as ChannelProtocol }
+                            : {}),
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {KINDS.map((kind) => (
+                          <SelectItem key={kind} value={kind}>
+                            {KIND_LABELS[kind]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>协议</Label>
+                    <Select
+                      value={form.protocol}
+                      disabled={form.kind === "video"}
+                      onValueChange={(value) =>
+                        setForm({
+                          ...form,
+                          protocol: value as ChannelProtocol,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PROTOCOLS.map((protocol) => (
+                          <SelectItem key={protocol} value={protocol}>
+                            {PROTOCOL_LABELS[protocol]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </section>
             )}
-          </div>
-          <div>
-            <Label>功能</Label>
-            <Select
-              value={form.kind}
-              onValueChange={(v) =>
-                setForm({
-                  ...form,
-                  kind: v as ChannelKind,
-                  // 后端约束：video 仅支持 openai 协议
-                  ...(v === "video" ? { protocol: "openai" as ChannelProtocol } : {}),
-                })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {KINDS.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {k}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label>协议</Label>
-            <Select
-              value={form.protocol}
-              disabled={form.kind === "video"}
-              onValueChange={(v) =>
-                setForm({ ...form, protocol: v as ChannelProtocol })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROTOCOLS.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              保存时会绑定到上方实时探测到的同协议渠道。
-            </p>
-          </div>
-          {!isVideo && (
-            <>
-              <div>
-                <Label>积分/次</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.cost_credits}
-                  onChange={(e) =>
-                    setForm({ ...form, cost_credits: Number(e.target.value) || 0 })
-                  }
-                />
-              </div>
-              <div>
-                <Label>上下文 (tokens)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.context_limit ?? ""}
-                  onChange={(e) => {
-                    const n = Math.floor(Number(e.target.value))
-                    setForm({ ...form, context_limit: n > 0 ? n : null })
-                  }}
-                  placeholder="留空自动推断"
-                />
-              </div>
-            </>
-          )}
-          {isVideo && (
-            <>
-              <div>
-                <Label>基础积分</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.base_credits}
-                  onChange={(e) =>
-                    setForm({ ...form, base_credits: Number(e.target.value) || 0 })
-                  }
-                />
-              </div>
-              <div>
-                <Label>积分/秒</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.per_second}
-                  onChange={(e) =>
-                    setForm({ ...form, per_second: Number(e.target.value) || 0 })
-                  }
-                />
-              </div>
-              <div className="col-span-2">
-                <Label>允许时长（秒，逗号分隔）</Label>
-                <Input
-                  value={form.allowedSecondsText}
-                  onChange={(e) =>
-                    setForm({ ...form, allowedSecondsText: e.target.value })
-                  }
-                  placeholder="4, 8, 12"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  计费 = (基础积分 + 积分/秒 × 时长) × 分辨率倍率。
-                </p>
-              </div>
-              <div className="col-span-2">
-                <Label>分辨率倍率（%，100 = 原价）</Label>
-                <div className="mt-1 flex flex-col gap-2">
-                  {sizeRules.map((r, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <Input
-                        value={r.size}
-                        onChange={(e) => updateSizeRule(idx, { size: e.target.value })}
-                        placeholder="1280x720"
-                        className="flex-1"
-                      />
+
+            <section className="space-y-1.5">
+              <Label>显示名称</Label>
+              <Input
+                value={form.display_name ?? ""}
+                onChange={(e) =>
+                  setForm({ ...form, display_name: e.target.value })
+                }
+                placeholder={form.model || "例如：GPT-4o mini"}
+              />
+            </section>
+
+            {!isVideo && (
+              <section className="rounded-xl border border-border/80 bg-muted/20 p-3.5">
+                <div className="mb-3">
+                  <h3 className="text-sm font-medium">计费设置</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    设置每次调用的积分，以及可选的上下文长度。
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>积分/次</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={form.cost_credits}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          cost_credits: Number(e.target.value) || 0,
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>上下文</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={form.context_limit ?? ""}
+                      onChange={(e) => {
+                        const value = Math.floor(Number(e.target.value))
+                        setForm({
+                          ...form,
+                          context_limit: value > 0 ? value : null,
+                        })
+                      }}
+                      placeholder="自动推断"
+                    />
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {isVideo && (
+              <>
+                <section className="rounded-xl border border-border/80 bg-muted/20 p-3.5">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-medium">计费设置</h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      总价由基础积分、生成时长和分辨率共同决定。
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>基础积分</Label>
                       <Input
                         type="number"
                         min={0}
-                        step="1"
-                        value={r.multiplier}
+                        value={form.base_credits}
                         onChange={(e) =>
-                          updateSizeRule(idx, { multiplier: Number(e.target.value) || 0 })
-                        }
-                        placeholder="倍率(%)"
-                        className="w-24"
-                      />
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        type="button"
-                        onClick={() =>
                           setForm({
                             ...form,
-                            size_rules: sizeRules.filter((_, i) => i !== idx),
+                            base_credits: Number(e.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>每秒积分</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={form.per_second}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            per_second: Number(e.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div
+                    aria-live="polite"
+                    className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-primary/10 bg-primary/5 px-3 py-2"
+                  >
+                    <span className="text-xs text-muted-foreground">价格示例</span>
+                    {previewCost !== null && previewSeconds && previewRule ? (
+                      <span className="text-sm font-semibold tabular-nums text-foreground">
+                        {previewSeconds} 秒 · {displaySize(previewRule.size)} = {previewCost} 积分
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        完善时长与分辨率后显示
+                      </span>
+                    )}
+                  </div>
+                </section>
+
+                <section className="space-y-2">
+                  <div>
+                    <Label>支持时长</Label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      多个秒数用逗号分隔。
+                    </p>
+                  </div>
+                  <Input
+                    value={form.allowedSecondsText}
+                    onChange={(e) =>
+                      setForm({ ...form, allowedSecondsText: e.target.value })
+                    }
+                    placeholder="4, 8, 12"
+                  />
+                  {allowedSeconds && allowedSeconds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {allowedSeconds.map((seconds, index) => (
+                        <span
+                          key={`${seconds}-${index}`}
+                          className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                        >
+                          {seconds} 秒
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="space-y-3">
+                  <div>
+                    <Label>分辨率与价格</Label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      100% 为原价，例如 150% 表示 1.5 倍价格。
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-[minmax(0,1fr)_7rem_2rem] items-center gap-2 px-1 text-[11px] text-muted-foreground">
+                    <span>分辨率</span>
+                    <span>价格倍率</span>
+                    <span className="sr-only">操作</span>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {sizeRules.map((r, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-[minmax(0,1fr)_7rem_2rem] items-center gap-2"
+                      >
+                        <Input
+                          value={r.size}
+                          onChange={(e) =>
+                            updateSizeRule(idx, { size: e.target.value })
+                          }
+                          placeholder="1280x720"
+                        />
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            min={1}
+                            step="1"
+                            value={r.multiplier}
+                            onChange={(e) =>
+                              updateSizeRule(idx, {
+                                multiplier: Number(e.target.value) || 0,
+                              })
+                            }
+                            className="pr-7"
+                          />
+                          <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          type="button"
+                          aria-label={`删除 ${r.size || "分辨率"}`}
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              size_rules: sizeRules.filter((_, i) => i !== idx),
+                            })
+                          }
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    ))}
+                    {sizeRules.length === 0 && (
+                      <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+                        还没有分辨率，添加一个即可开始计价。
+                      </div>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          size_rules: [
+                            ...sizeRules,
+                            { size: "", multiplier: 100 },
+                          ],
+                        })
+                      }
+                      className="w-full border-dashed text-muted-foreground"
+                    >
+                      <Plus /> 添加分辨率
+                    </Button>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {mode.kind === "edit" && (
+              <details className="group rounded-xl border border-border/80">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3 text-sm font-medium marker:hidden">
+                  <span>
+                    高级设置
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      模型 ID、功能与协议
+                    </span>
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="text-muted-foreground transition-transform group-open:rotate-180"
+                  >
+                    ⌄
+                  </span>
+                </summary>
+                <div className="space-y-3 border-t border-border/70 px-3.5 py-3">
+                  <div>
+                    <Label>模型 ID</Label>
+                    <Input value={form.model} disabled />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>功能</Label>
+                      <Select
+                        value={form.kind}
+                        onValueChange={(value) =>
+                          setForm({
+                            ...form,
+                            kind: value as ChannelKind,
+                            ...(value === "video"
+                              ? { protocol: "openai" as ChannelProtocol }
+                              : {}),
                           })
                         }
                       >
-                        <Trash2 />
-                      </Button>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {KINDS.map((kind) => (
+                            <SelectItem key={kind} value={kind}>
+                              {KIND_LABELS[kind]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
-                  ))}
-                  {sizeRules.length === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      至少添加一个分辨率档位。
-                    </p>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    type="button"
-                    onClick={() =>
-                      setForm({
-                        ...form,
-                        size_rules: [...sizeRules, { size: "", multiplier: 100 }],
-                      })
-                    }
-                    className="self-start"
-                  >
-                    <Plus /> 添加档位
-                  </Button>
+                    <div>
+                      <Label>协议</Label>
+                      <Select
+                        value={form.protocol}
+                        disabled={form.kind === "video"}
+                        onValueChange={(value) =>
+                          setForm({
+                            ...form,
+                            protocol: value as ChannelProtocol,
+                          })
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROTOCOLS.map((protocol) => (
+                            <SelectItem key={protocol} value={protocol}>
+                              {PROTOCOL_LABELS[protocol]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    修改功能或协议后，保存时会重新匹配可用渠道。
+                  </p>
                 </div>
-              </div>
-            </>
-          )}
-          <div className="col-span-2">
-            <Label>显示名（可空）</Label>
-            <Input
-              value={form.display_name ?? ""}
-              onChange={(e) =>
-                setForm({ ...form, display_name: e.target.value })
-              }
-              placeholder="GPT-4o mini"
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="inline-flex items-center gap-2 text-sm">
+              </details>
+            )}
+
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/80 px-3.5 py-3 transition-colors hover:bg-muted/30 has-[:checked]:border-primary/25 has-[:checked]:bg-primary/[0.04]">
               <input
                 type="checkbox"
                 checked={form.enabled ?? true}
                 onChange={(e) =>
                   setForm({ ...form, enabled: e.target.checked })
                 }
+                className="size-4 accent-primary"
               />
-              启用（白名单激活）
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">启用此模型</span>
+                <span className="block text-xs text-muted-foreground">
+                  启用后模型会出现在对应功能的可用列表中。
+                </span>
+              </span>
             </label>
+
+            {mode.kind === "edit" && currentMatch && compatibleChannels.length === 0 && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                当前没有支持 {PROTOCOL_LABELS[form.protocol]} 协议的可用渠道。
+              </div>
+            )}
+
+            {err && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {err}
+              </div>
+            )}
           </div>
         </div>
-        {err && (
-          <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {err}
-          </div>
-        )}
-        <DialogFooter className="mt-4 flex-row justify-end">
+
+        <DialogFooter className="flex-row justify-end border-t border-border/70 bg-card px-5 py-3.5">
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
           </Button>

@@ -58,15 +58,6 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 
 - push `main` → GitHub Actions 构建开发镜像
 - push `vX.Y.Z` → GitHub Actions 构建正式镜像与 Worker 多平台附件
-- 两个发布工作流成功后，由 Codex 所在可信服务器 SSH 部署生产环境
+- 两个发布工作流成功后，由 Codex 从可信服务器 SSH 部署生产环境
 - migration 在容器启动时自动跑
 - 默认版本策略只递增最后一位：`vX.Y.Z` → `vX.Y.(Z+1)`
-
-一键发布并部署：
-
-```bash
-scripts/release-and-deploy.sh
-```
-
-完整流程、备份与回滚说明见
-[`docs/release-and-deploy.md`](docs/release-and-deploy.md)。

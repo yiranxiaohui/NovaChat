@@ -16,6 +16,10 @@ use crate::{
     db::{self, DbKind, Pool},
 };
 
+const EPAY_SUBMIT_PATH: &str = "/submit.php";
+const EPAY_NOTIFY_PATH: &str = "/api/payments/epay/notify";
+const EPAY_RETURN_PATH: &str = "/api/payments/epay/return";
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -56,6 +60,49 @@ fn random_out_trade_no(user_id: i64) -> String {
 
 async fn s(pool: &Pool, kind: DbKind, key: &str) -> String {
     credits::get_setting(pool, kind, key).await.unwrap_or_default()
+}
+
+/// Accept either the full epay endpoint or its host-level base URL.
+fn epay_submit_url(value: &str) -> String {
+    let base = value.trim().trim_end_matches('/');
+    if base.is_empty() || base.ends_with(EPAY_SUBMIT_PATH) {
+        base.to_string()
+    } else {
+        format!("{base}{EPAY_SUBMIT_PATH}")
+    }
+}
+
+fn epay_api_base(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches('/')
+        .strip_suffix(EPAY_SUBMIT_PATH)
+        .unwrap_or(value.trim().trim_end_matches('/'))
+        .to_string()
+}
+
+/// Accept either a full NovaChat callback route or its host-level base URL.
+fn epay_callback_url(value: &str, path: &str) -> String {
+    let base = value.trim().trim_end_matches('/');
+    if base.is_empty() || base.ends_with(path) {
+        base.to_string()
+    } else {
+        format!("{base}{path}")
+    }
+}
+
+fn epay_callback_base(notify_url: &str, return_url: &str) -> String {
+    let value = if !notify_url.trim().is_empty() {
+        notify_url.trim()
+    } else {
+        return_url.trim()
+    };
+    value
+        .strip_suffix(EPAY_NOTIFY_PATH)
+        .or_else(|| value.strip_suffix(EPAY_RETURN_PATH))
+        .unwrap_or(value)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn validate_payway(p: &str) -> Option<&'static str> {
@@ -121,11 +168,17 @@ async fn create_order(
         .await
         .max(1);
 
-    let api_url = s(pool, kind, "epay_api_url").await;
+    let api_url = epay_submit_url(&s(pool, kind, "epay_api_url").await);
     let pid = s(pool, kind, "epay_pid").await;
     let key = s(pool, kind, "epay_key").await;
-    let notify_url = s(pool, kind, "epay_notify_url").await;
-    let return_url = s(pool, kind, "epay_return_url").await;
+    let notify_url = epay_callback_url(
+        &s(pool, kind, "epay_notify_url").await,
+        EPAY_NOTIFY_PATH,
+    );
+    let return_url = epay_callback_url(
+        &s(pool, kind, "epay_return_url").await,
+        EPAY_RETURN_PATH,
+    );
     let product_name = {
         let n = s(pool, kind, "epay_product_name").await;
         if n.is_empty() { "NovaChat 积分充值".to_string() } else { n }
@@ -486,6 +539,8 @@ struct AdminPaymentConfig {
     product_name: String,
     min_yuan: i64,
     max_yuan: i64,
+    callback_url: String,
+    // Kept in the response for older clients. New clients should use callback_url.
     return_url: String,
     notify_url: String,
 }
@@ -494,9 +549,11 @@ async fn admin_get_config(Extension(installed): Extension<InstalledState>) -> Re
     let pool = &installed.pool;
     let kind = installed.kind;
     let key = s(pool, kind, "epay_key").await;
+    let notify_url = s(pool, kind, "epay_notify_url").await;
+    let return_url = s(pool, kind, "epay_return_url").await;
     let view = AdminPaymentConfig {
         enabled: credits::get_setting_bool(pool, kind, "epay_enabled", false).await,
-        api_url: s(pool, kind, "epay_api_url").await,
+        api_url: epay_api_base(&s(pool, kind, "epay_api_url").await),
         pid: s(pool, kind, "epay_pid").await,
         key_set: !key.is_empty(),
         sign_type: {
@@ -507,8 +564,9 @@ async fn admin_get_config(Extension(installed): Extension<InstalledState>) -> Re
         product_name: s(pool, kind, "epay_product_name").await,
         min_yuan: credits::get_setting_i64(pool, kind, "epay_min_yuan", 1).await,
         max_yuan: credits::get_setting_i64(pool, kind, "epay_max_yuan", 5000).await,
-        return_url: s(pool, kind, "epay_return_url").await,
-        notify_url: s(pool, kind, "epay_notify_url").await,
+        callback_url: epay_callback_base(&notify_url, &return_url),
+        return_url: epay_callback_url(&return_url, EPAY_RETURN_PATH),
+        notify_url: epay_callback_url(&notify_url, EPAY_NOTIFY_PATH),
     };
     Json(view).into_response()
 }
@@ -525,6 +583,9 @@ struct AdminPaymentConfigUpdate {
     product_name: Option<String>,
     min_yuan: Option<i64>,
     max_yuan: Option<i64>,
+    /// Host-level base URL; the server appends the notify and return paths.
+    callback_url: Option<String>,
+    // Legacy clients may still submit the two complete URLs separately.
     return_url: Option<String>,
     notify_url: Option<String>,
 }
@@ -536,24 +597,62 @@ async fn admin_patch_config(
     let pool = &installed.pool;
     let kind = installed.kind;
 
-    let ops: Vec<(&str, Option<String>)> = vec![
-        ("epay_enabled", body.enabled.map(|b| b.to_string())),
-        ("epay_api_url", body.api_url.map(|s| s.trim().to_string())),
-        ("epay_pid", body.pid.map(|s| s.trim().to_string())),
-        ("epay_key", body.key),
-        ("epay_sign_type", body.sign_type.map(|s| s.trim().to_uppercase())),
-        ("epay_credits_per_yuan", body.credits_per_yuan.map(|v| v.max(1).to_string())),
-        ("epay_product_name", body.product_name.map(|s| s.trim().to_string())),
-        ("epay_min_yuan", body.min_yuan.map(|v| v.max(1).to_string())),
-        ("epay_max_yuan", body.max_yuan.map(|v| v.max(1).to_string())),
-        ("epay_return_url", body.return_url.map(|s| s.trim().to_string())),
-        ("epay_notify_url", body.notify_url.map(|s| s.trim().to_string())),
-    ];
+    let mut ops: Vec<(&str, String)> = Vec::new();
+    if let Some(v) = body.enabled {
+        ops.push(("epay_enabled", v.to_string()));
+    }
+    if let Some(v) = body.api_url {
+        ops.push(("epay_api_url", v.trim().to_string()));
+    }
+    if let Some(v) = body.pid {
+        ops.push(("epay_pid", v.trim().to_string()));
+    }
+    if let Some(v) = body.key {
+        ops.push(("epay_key", v));
+    }
+    if let Some(v) = body.sign_type {
+        ops.push(("epay_sign_type", v.trim().to_uppercase()));
+    }
+    if let Some(v) = body.credits_per_yuan {
+        ops.push(("epay_credits_per_yuan", v.max(1).to_string()));
+    }
+    if let Some(v) = body.product_name {
+        ops.push(("epay_product_name", v.trim().to_string()));
+    }
+    if let Some(v) = body.min_yuan {
+        ops.push(("epay_min_yuan", v.max(1).to_string()));
+    }
+    if let Some(v) = body.max_yuan {
+        ops.push(("epay_max_yuan", v.max(1).to_string()));
+    }
+
+    if let Some(base) = body.callback_url {
+        let base = base.trim().to_string();
+        ops.push((
+            "epay_notify_url",
+            epay_callback_url(&base, EPAY_NOTIFY_PATH),
+        ));
+        ops.push((
+            "epay_return_url",
+            epay_callback_url(&base, EPAY_RETURN_PATH),
+        ));
+    } else {
+        if let Some(v) = body.return_url {
+            ops.push((
+                "epay_return_url",
+                epay_callback_url(&v, EPAY_RETURN_PATH),
+            ));
+        }
+        if let Some(v) = body.notify_url {
+            ops.push((
+                "epay_notify_url",
+                epay_callback_url(&v, EPAY_NOTIFY_PATH),
+            ));
+        }
+    }
     for (k, v) in ops {
-        if let Some(val) = v {
-            if let Err(e) = credits::set_setting(pool, kind, k, &val).await {
-                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-            }
+        if let Err(e) = credits::set_setting(pool, kind, k, &v).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     }
     StatusCode::NO_CONTENT.into_response()
@@ -667,4 +766,56 @@ pub fn public_routes() -> Router<AppState> {
             get(notify_get).post(notify_post),
         )
         .route("/payments/epay/return", get(return_handler))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EPAY_NOTIFY_PATH, EPAY_RETURN_PATH, EPAY_SUBMIT_PATH, epay_api_base,
+        epay_callback_base, epay_callback_url, epay_submit_url,
+    };
+
+    #[test]
+    fn base_urls_expand_to_expected_epay_endpoints() {
+        assert_eq!(
+            epay_submit_url("https://pay.example.com"),
+            format!("https://pay.example.com{EPAY_SUBMIT_PATH}")
+        );
+        assert_eq!(
+            epay_callback_url("https://chat.example.com", EPAY_NOTIFY_PATH),
+            format!("https://chat.example.com{EPAY_NOTIFY_PATH}")
+        );
+        assert_eq!(
+            epay_callback_url("https://chat.example.com/", EPAY_RETURN_PATH),
+            format!("https://chat.example.com{EPAY_RETURN_PATH}")
+        );
+    }
+
+    #[test]
+    fn full_urls_are_not_duplicated() {
+        assert_eq!(
+            epay_submit_url("https://pay.example.com/submit.php"),
+            "https://pay.example.com/submit.php"
+        );
+        assert_eq!(
+            epay_callback_url(
+                "https://chat.example.com/api/payments/epay/notify",
+                EPAY_NOTIFY_PATH
+            ),
+            "https://chat.example.com/api/payments/epay/notify"
+        );
+    }
+
+    #[test]
+    fn config_values_are_presented_as_base_urls() {
+        assert_eq!(epay_api_base("https://pay.example.com/submit.php"), "https://pay.example.com");
+        assert_eq!(
+            epay_callback_base(
+                "https://chat.example.com/api/payments/epay/notify",
+                "https://chat.example.com/api/payments/epay/return"
+            ),
+            "https://chat.example.com"
+        );
+        assert_eq!(epay_callback_base("https://chat.example.com", ""), "https://chat.example.com");
+    }
 }

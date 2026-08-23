@@ -1689,7 +1689,7 @@ function PaymentsPanel() {
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
         当前对接 <b>易支付</b>（epay）通用协议。用户在充值弹窗下单后会跳转到
-        <code>API URL</code> 完成支付，支付平台异步回调 <code>notify_url</code>，回调里的
+        易支付完成支付，支付平台会向回调地址发送异步通知；回调里的
         <code>MD5</code> 签名用「商户密钥」校验，成功即按「1 元 = N 积分」比例入账。
       </p>
 
@@ -1716,12 +1716,15 @@ function PaymentsPanel() {
           </div>
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label className="text-xs">
-              API URL <span className="text-muted-foreground">（如 https://pay.example.com/submit.php）</span>
+              易支付地址{" "}
+              <span className="text-muted-foreground">
+                （填写网关域名或完整的 submit.php 地址）
+              </span>
             </Label>
             <Input
               defaultValue={cfg.api_url}
               onChange={(e) => set("api_url", e.target.value.trim())}
-              placeholder="https://pay.example.com/submit.php"
+              placeholder="https://pay.example.com"
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -1750,29 +1753,15 @@ function PaymentsPanel() {
           </div>
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label className="text-xs">
-              异步通知地址 notify_url{" "}
+              回调地址{" "}
               <span className="text-muted-foreground">
-                （必须是公网可达的绝对 URL，指向本站 /api/payments/epay/notify）
+                （只填写公网域名，例如 https://chat.example.com，系统自动补全通知路径）
               </span>
             </Label>
             <Input
-              defaultValue={cfg.notify_url}
-              onChange={(e) => set("notify_url", e.target.value.trim())}
-              placeholder="https://your-domain.com/api/payments/epay/notify"
-            />
-          </div>
-          <div className="flex flex-col gap-1.5 sm:col-span-2">
-            <Label className="text-xs">
-              同步回跳地址 return_url{" "}
-              <span className="text-muted-foreground">
-                （用户支付后浏览器跳回此地址，指向本站
-                /api/payments/epay/return）
-              </span>
-            </Label>
-            <Input
-              defaultValue={cfg.return_url}
-              onChange={(e) => set("return_url", e.target.value.trim())}
-              placeholder="https://your-domain.com/api/payments/epay/return"
+              defaultValue={cfg.callback_url}
+              onChange={(e) => set("callback_url", e.target.value.trim())}
+              placeholder="https://your-domain.com"
             />
           </div>
           <div className="flex flex-col gap-1.5">

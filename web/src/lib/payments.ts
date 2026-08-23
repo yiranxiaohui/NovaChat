@@ -28,12 +28,18 @@ export type AdminPaymentConfig = {
   product_name: string
   min_yuan: number
   max_yuan: number
+  callback_url: string
+  // Kept for compatibility with older API responses.
   return_url: string
   notify_url: string
 }
 
 export type AdminPaymentConfigUpdate = Partial<
-  Omit<AdminPaymentConfig, "key_set"> & { key: string }
+  Omit<AdminPaymentConfig, "key_set" | "return_url" | "notify_url"> & {
+    key: string
+    return_url: string
+    notify_url: string
+  }
 >
 
 export type AdminOrder = PaymentOrder & { user_id: number; username: string }

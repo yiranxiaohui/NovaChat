@@ -26,8 +26,8 @@ export type UpstreamSettings = {
   imageModel: string
   imageUseProxy: boolean
 
-  // video generation — local-only custom upstream configuration. Video jobs
-  // send these credentials per request and never persist them server-side.
+  // Video generation. Custom requests go from the browser directly to the
+  // local upstream; these values are never sent to or persisted by NovaChat.
   videoMode: UpstreamMode
   videoBaseUrl: string
   videoApiKey: string

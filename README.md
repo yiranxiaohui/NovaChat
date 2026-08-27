@@ -67,18 +67,18 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 
 ### 自定义视频 API
 
-视频工作室支持切换到「自定义 API」模式，填写 OpenAI 兼容服务的 Base URL、
-API Key（可选）和模型。服务端会调用 `/v1/videos`，创建、轮询和 MP4 下载仍会
-进入个人视频库；自定义任务不扣平台积分，凭据只保存在浏览器并随请求转发，
-不会写入数据库或云端同步。服务提供 `/v1/models` 时可在页面加载模型列表，
-否则可以手动填写模型、时长和分辨率。
+视频工作室支持切换到「本地 API」模式，填写 OpenAI 兼容服务的 Base URL、
+API Key（可选）和模型。模型查询、创建、轮询和 MP4 下载都由当前浏览器直接
+访问本地服务，不经过 NovaChat 后端；自定义任务不扣平台积分，凭据和任务记录
+只保存在浏览器，不会写入数据库或云端同步。服务提供 `/v1/models` 时可在页面
+加载模型列表，否则可以手动填写模型、时长和分辨率。
 
-为避免用户输入的地址被滥用，默认只允许公网 HTTP(S) 上游。自托管 NovaChat
-并在同机运行提供 OpenAI 兼容层的 ComfyUI 或其他本地服务时，可显式设置
-`NOVACHAT_ALLOW_PRIVATE_VIDEO_UPSTREAM=1`（Docker Compose 中默认注释）后使用
-私网地址；公网部署不应开启此开关。
+本地服务必须允许 NovaChat 页面来源的 CORS 请求；浏览器要求局域网访问授权时
+也需要允许该权限。HTTPS 页面不能调用普通局域网地址上的 HTTP 服务，此时需要
+给本地服务配置 HTTPS，或从 HTTP 页面使用。若填写 API Key，本地服务的 CORS
+预检还需允许 `Authorization` 请求头。
 
-当前自定义模式对接的是 OpenAI 兼容的三段式视频接口；原生 ComfyUI 的
+当前本地模式对接的是 OpenAI 兼容的三段式视频接口；原生 ComfyUI 的
 `/prompt` 工作流协议尚未直接接入，需要先使用兼容层或适配器暴露
 `/v1/videos`、`/v1/models`。
 

@@ -611,12 +611,12 @@ export function SettingsDialog({
                   setVideoMode(next)
                 }}
                 platformLabel={isAuthenticated ? "云端积分" : "云端积分（需登录）"}
-                byokLabel="自定义 API"
+                byokLabel="本地 API"
               />
 
               {videoMode === "platform" ? (
                 <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-                  视频页会显示管理员配置的模型、时长和分辨率。切换到“自定义 API”后，可使用自己的 OpenAI 兼容视频服务，不消耗平台积分。
+                  视频页会显示管理员配置的模型、时长和分辨率。切换到“本地 API”后，浏览器会直接访问自己的 OpenAI 兼容视频服务。
                 </div>
               ) : (
                 <>
@@ -629,7 +629,7 @@ export function SettingsDialog({
                       onChange={(e) => setVideoBaseUrl(e.target.value)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      只填主机或 API 根路径，系统会请求 <code>/v1/videos</code> 和 <code>/v1/models</code>；原生 ComfyUI 需先配置兼容层。
+                      浏览器会直接请求 <code>/v1/videos</code> 和 <code>/v1/models</code>；本地服务需允许当前站点跨域访问。
                     </p>
                   </div>
 

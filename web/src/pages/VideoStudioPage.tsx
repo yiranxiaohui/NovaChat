@@ -27,11 +27,16 @@ import {
 import { useConfirm } from "@/lib/confirm-context"
 import {
   computeVideoCost,
+  createLocalVideoJob,
   createVideoJob,
   deleteVideoJob,
+  getLocalVideoJob,
   getVideoJob,
+  isLocalVideoJob,
+  loadLocalVideoJobs,
   listVideoJobs,
   listVideoModels,
+  saveLocalVideoJobs,
   type CreateVideoJobReq,
   type VideoJob,
   type VideoModel,
@@ -81,6 +86,14 @@ async function uploadRefImage(file: File): Promise<string> {
   }
   const j = (await res.json()) as { path: string }
   return j.path
+}
+
+async function downloadRefImage(path: string): Promise<File> {
+  const response = await fetch(path, { credentials: "same-origin" })
+  if (!response.ok) throw new Error("读取原参考图失败")
+  const blob = await response.blob()
+  const name = path.split("/").pop()?.split("?")[0] || "reference-image"
+  return new File([blob], name, { type: blob.type || "image/png" })
 }
 
 function firstSecondsAndSize(m: VideoModel): { seconds: number | null; size: string | null } {
@@ -144,8 +157,13 @@ export default function VideoStudioPage() {
   const [size, setSize] = useState<string | null>(null)
   const [prompt, setPrompt] = useState("")
   const [refImage, setRefImage] = useState<string | null>(null)
+  const [refImageFile, setRefImageFile] = useState<File | null>(null)
   const [refImageUploading, setRefImageUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const referencePreviewUrlRef = useRef<string | null>(null)
+  const localJobFilesRef = useRef(new Map<string, File>())
+  const localVideoUrlsRef = useRef(new Set<string>())
+  const hydratedOwnerRef = useRef<number | string | null>(null)
 
   const [jobs, setJobs] = useState<VideoJob[]>([])
   const [hasMore, setHasMore] = useState(false)
@@ -160,6 +178,16 @@ export default function VideoStudioPage() {
   const [regeneratingToken, setRegeneratingToken] = useState<string | null>(null)
 
   useEffect(() => {
+    const videoUrls = localVideoUrlsRef.current
+    const referenceUrl = referencePreviewUrlRef
+    return () => {
+      if (referenceUrl.current) URL.revokeObjectURL(referenceUrl.current)
+      for (const url of videoUrls) URL.revokeObjectURL(url)
+      videoUrls.clear()
+    }
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     void loadEffectiveSettings(settingsOwner).then((settings) => {
       if (cancelled) return
@@ -168,12 +196,24 @@ export default function VideoStudioPage() {
       setVideoBaseUrl(settings.videoBaseUrl)
       setVideoApiKey(settings.videoApiKey)
       setVideoModel(settings.videoModel)
+      hydratedOwnerRef.current = settingsOwner
+      const localJobs = loadLocalVideoJobs(settingsOwner)
+      setJobs((previous) => [
+        ...localJobs,
+        ...previous.filter((job) => !isLocalVideoJob(job)),
+      ])
       setSettingsReady(true)
     })
     return () => {
       cancelled = true
     }
   }, [settingsOwner])
+
+  useEffect(() => {
+    if (settingsReady && hydratedOwnerRef.current === settingsOwner) {
+      saveLocalVideoJobs(settingsOwner, jobs)
+    }
+  }, [jobs, settingsOwner, settingsReady])
 
   function updateVideoSetting<K extends keyof Pick<UpstreamSettings, "videoMode" | "videoBaseUrl" | "videoApiKey" | "videoModel">>(
     key: K,
@@ -186,6 +226,23 @@ export default function VideoStudioPage() {
     if (key === "videoBaseUrl") setVideoBaseUrl(value as string)
     if (key === "videoApiKey") setVideoApiKey(value as string)
     if (key === "videoModel") setVideoModel(value as string)
+  }
+
+  function clearReferenceImage() {
+    if (referencePreviewUrlRef.current) {
+      URL.revokeObjectURL(referencePreviewUrlRef.current)
+      referencePreviewUrlRef.current = null
+    }
+    setRefImage(null)
+    setRefImageFile(null)
+  }
+
+  function setLocalReferenceImage(file: File) {
+    clearReferenceImage()
+    const url = URL.createObjectURL(file)
+    referencePreviewUrlRef.current = url
+    setRefImage(url)
+    setRefImageFile(file)
   }
 
   function customUpstream(): VideoUpstreamConfig | undefined {
@@ -251,7 +308,11 @@ export default function VideoStudioPage() {
   async function loadJobs(p: number, append: boolean) {
     try {
       const { jobs: rows, has_more } = await listVideoJobs(p)
-      setJobs((prev) => (append ? [...prev, ...rows] : rows))
+      setJobs((prev) => {
+        const localJobs = prev.filter(isLocalVideoJob)
+        const serverJobs = prev.filter((job) => !isLocalVideoJob(job))
+        return append ? [...localJobs, ...serverJobs, ...rows] : [...localJobs, ...rows]
+      })
       setHasMore(has_more)
       setPage(p)
     } catch (e) {
@@ -288,7 +349,12 @@ export default function VideoStudioPage() {
     setRefImageUploading(true)
     setError(null)
     try {
+      if (videoMode === "byok") {
+        setLocalReferenceImage(f)
+        return
+      }
       const path = await uploadRefImage(f)
+      clearReferenceImage()
       setRefImage(path)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -309,9 +375,25 @@ export default function VideoStudioPage() {
         : computeVideoCost(activeModel, seconds, size)
       : null
 
-  async function enqueueVideoJob(request: CreateVideoJobReq, upstream?: VideoUpstreamConfig) {
-    const { token } = await createVideoJob(request, upstream)
-    const job = await getVideoJob(token, upstream)
+  function rememberLocalVideo(job: VideoJob) {
+    if (isLocalVideoJob(job) && job.video_path?.startsWith("blob:")) {
+      localVideoUrlsRef.current.add(job.video_path)
+    }
+  }
+
+  async function enqueueVideoJob(
+    request: CreateVideoJobReq,
+    upstream?: VideoUpstreamConfig,
+    inputReference?: File
+  ) {
+    if (upstream) {
+      const job = await createLocalVideoJob(request, upstream, inputReference)
+      if (inputReference) localJobFilesRef.current.set(job.token, inputReference)
+      setJobs((prev) => [job, ...prev.filter((item) => item.token !== job.token)])
+      return
+    }
+    const { token } = await createVideoJob(request)
+    const job = await getVideoJob(token)
     setJobs((prev) => [job, ...prev.filter((item) => item.token !== job.token)])
   }
 
@@ -332,8 +414,8 @@ export default function VideoStudioPage() {
         prompt: p,
         seconds,
         size,
-        input_image_path: refImage ?? undefined,
-      }, upstream)
+        input_image_path: videoMode === "platform" ? refImage ?? undefined : undefined,
+      }, upstream, videoMode === "byok" ? refImageFile ?? undefined : undefined)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -350,18 +432,31 @@ export default function VideoStudioPage() {
       void (async () => {
         for (const j of inFlight) {
           try {
-            const updated = await getVideoJob(j.token, customUpstream())
+            const updated = isLocalVideoJob(j)
+              ? await getLocalVideoJob(j, {
+                  baseUrl: j.local_base_url,
+                  apiKey: settingsRef.current.videoApiKey,
+                })
+              : await getVideoJob(j.token)
+            rememberLocalVideo(updated)
             setJobs((prev) => prev.map((x) => (x.token === updated.token ? updated : x)))
-          } catch {
-            /* non-fatal: keep polling other jobs, retry this one next tick */
+          } catch (pollError) {
+            if (isLocalVideoJob(j)) {
+              const message = pollError instanceof Error ? pollError.message : String(pollError)
+              setJobs((prev) => {
+                const current = prev.find((item) => item.token === j.token)
+                if (current?.error === message) return prev
+                return prev.map((item) =>
+                  item.token === j.token ? { ...item, error: message } : item
+                )
+              })
+            }
+            // Polling failures are transient; retry this job on the next tick.
           }
         }
       })()
     }, POLL_MS)
     return () => window.clearInterval(id)
-    // The active mode/base URL are intentionally read at poll time so a user
-    // can rotate a local API key without recreating the page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs])
 
   async function regenerate(job: VideoJob) {
@@ -374,27 +469,47 @@ export default function VideoStudioPage() {
     setSeconds(job.seconds)
     setSize(job.size)
     setPrompt(job.prompt)
-    setRefImage(job.input_image_path)
+    clearReferenceImage()
+
+    if (isLocalVideoJob(job)) {
+      updateVideoSetting("videoMode", "byok")
+      updateVideoSetting("videoBaseUrl", job.local_base_url)
+      updateVideoSetting("videoModel", job.model)
+      const inputReference = localJobFilesRef.current.get(job.token)
+      if (inputReference) setLocalReferenceImage(inputReference)
+    } else {
+      setRefImage(job.input_image_path)
+    }
 
     setRegeneratingToken(job.token)
     setError(null)
     try {
-      const upstream = customUpstream()
-      if (videoMode === "byok" && !upstream) {
+      const localJob = isLocalVideoJob(job)
+      const upstream = localJob
+        ? { baseUrl: job.local_base_url, apiKey: settingsRef.current.videoApiKey }
+        : customUpstream()
+      if ((localJob || videoMode === "byok") && !upstream) {
         throw new Error("请先填写自定义视频 API Base URL")
+      }
+      const inputReference = localJob
+        ? localJobFilesRef.current.get(job.token)
+        : videoMode === "byok" && job.input_image_path
+          ? await downloadRefImage(job.input_image_path)
+          : undefined
+      if (!localJob && inputReference) setLocalReferenceImage(inputReference)
+      if (localJob && job.local_reference_name && !inputReference) {
+        throw new Error("本地参考图未保留，请重新选择参考图后再生成")
       }
       await enqueueVideoJob({
         model: job.model,
         prompt: job.prompt,
         seconds: job.seconds,
         size: job.size,
-        input_image_path: job.input_image_path ?? undefined,
-      }, upstream)
+        input_image_path: upstream ? undefined : job.input_image_path ?? undefined,
+      }, upstream, inputReference)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      // create_job records and refunds immediate upstream failures before it
-      // returns an error. Refresh so that failed retry is visible as well.
-      await loadJobs(0, false)
+      if (!isLocalVideoJob(job)) await loadJobs(0, false)
       setError(message)
     } finally {
       setRegeneratingToken(null)
@@ -404,14 +519,24 @@ export default function VideoStudioPage() {
   async function removeJob(job: VideoJob) {
     const ok = await confirm({
       title: "删除这条视频记录？",
-      description: "此操作不可撤销。",
+      description: isLocalVideoJob(job)
+        ? "只会删除当前浏览器中的记录。"
+        : "此操作不可撤销。",
       confirmText: "删除",
       destructive: true,
     })
     if (!ok) return
     setDeletingToken(job.token)
     try {
-      await deleteVideoJob(job.token)
+      if (isLocalVideoJob(job)) {
+        if (job.video_path?.startsWith("blob:")) {
+          URL.revokeObjectURL(job.video_path)
+          localVideoUrlsRef.current.delete(job.video_path)
+        }
+        localJobFilesRef.current.delete(job.token)
+      } else {
+        await deleteVideoJob(job.token)
+      }
       setJobs((prev) => prev.filter((x) => x.token !== job.token))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -459,10 +584,12 @@ export default function VideoStudioPage() {
                   key={next}
                   type="button"
                   onClick={() => {
+                    if (next === videoMode) return
                     if (next === "platform" && !user) {
                       setError("登录后才能使用云端积分模式")
                       return
                     }
+                    clearReferenceImage()
                     updateVideoSetting("videoMode", next)
                     setModels([])
                     setModel(next === "byok" ? videoModel : "")
@@ -474,14 +601,14 @@ export default function VideoStudioPage() {
                       : "border-border bg-background hover:bg-accent"
                   )}
                 >
-                  {next === "platform" ? "云端积分" : "自定义 API"}
+                  {next === "platform" ? "云端积分" : "本地 API"}
                 </button>
               ))}
             </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               {videoMode === "platform"
                 ? "使用管理员配置的 OpenAI 兼容视频渠道，按定价规则扣积分。"
-                : "请求你的 OpenAI 兼容视频服务，不扣平台积分；Key 只保存在当前浏览器。"}
+                : "当前浏览器直接请求本地视频服务，不经过 NovaChat 服务器。"}
             </p>
             {videoMode === "byok" && (
               <div className="mt-1 flex flex-col gap-2">
@@ -532,7 +659,7 @@ export default function VideoStudioPage() {
                   </Button>
                 </div>
                 <p className="text-[10px] leading-relaxed text-muted-foreground">
-                  服务端需提供 <code>/v1/videos</code>；模型列表不可用时仍可手动填写模型并测试。原生 ComfyUI 需先配置 OpenAI 兼容层，并在 NovaChat 自托管环境开启私网视频上游。
+                  本地服务需提供 <code>/v1/videos</code> 并允许当前站点跨域访问；模型列表不可用时可手动填写模型。原生 ComfyUI 需先配置 OpenAI 兼容层。
                 </p>
               </div>
             )}
@@ -541,7 +668,7 @@ export default function VideoStudioPage() {
           {models.length === 0 && !modelsLoading && (
             <p className="mb-3 rounded-md border border-dashed border-border bg-muted/30 px-3 py-4 text-center text-xs text-muted-foreground">
               {videoMode === "byok"
-                ? "没有可用的自定义模型，请手动填写模型 ID"
+                ? "没有可用的本地模型，请手动填写模型 ID"
                 : "管理员尚未配置视频模型"}
             </p>
           )}
@@ -677,7 +804,7 @@ export default function VideoStudioPage() {
                 />
                 <button
                   type="button"
-                  onClick={() => setRefImage(null)}
+                  onClick={clearReferenceImage}
                   aria-label="移除参考图"
                   className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-background/90 text-foreground shadow ring-1 ring-border hover:bg-destructive hover:text-destructive-foreground"
                 >
@@ -698,7 +825,11 @@ export default function VideoStudioPage() {
                 ) : (
                   <ImagePlus className="size-4" />
                 )}
-                {refImageUploading ? "上传中…" : "上传参考图"}
+                {refImageUploading
+                  ? "上传中…"
+                  : videoMode === "byok"
+                    ? "选择参考图"
+                    : "上传参考图"}
               </Button>
             )}
             <input
@@ -736,7 +867,7 @@ export default function VideoStudioPage() {
               <>
                 <Clapperboard className="size-4" />
             {videoMode === "byok"
-              ? "生成视频（自定义 API）"
+              ? "生成视频（本地 API）"
               : cost != null
                 ? `生成视频（消耗 ${cost} 积分）`
                 : "生成视频"}
@@ -905,8 +1036,13 @@ function VideoJobCard({
           {statusLabel(job)} · 进度 {job.progress}%
         </p>
         <p className="line-clamp-2 text-xs text-muted-foreground">{job.prompt}</p>
+        {job.error && (
+          <p className="line-clamp-2 text-[11px] text-destructive">{job.error}</p>
+        )}
         <p className="text-[11px] text-muted-foreground">
-          可离开页面，任务将在后台继续，稍后回来查看
+          {isLocalVideoJob(job)
+            ? "本地服务会继续生成；保持此页面打开可自动获取结果"
+            : "可离开页面，任务将在后台继续，稍后回来查看"}
         </p>
       </div>
     )
@@ -928,7 +1064,11 @@ function VideoJobCard({
         <span className="rounded bg-muted px-1.5 py-0.5">{job.seconds} 秒</span>
         <span className="rounded bg-muted px-1.5 py-0.5">{job.size}</span>
         <span className="rounded bg-muted px-1.5 py-0.5">
-          {job.cost_credits > 0 ? `消耗 ${job.cost_credits} 积分` : "自定义 API"}
+          {isLocalVideoJob(job)
+            ? "本地 API"
+            : job.cost_credits > 0
+              ? `消耗 ${job.cost_credits} 积分`
+              : "云端任务"}
         </span>
       </div>
       <div className="mt-1 flex flex-wrap gap-2">

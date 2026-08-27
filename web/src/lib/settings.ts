@@ -26,6 +26,13 @@ export type UpstreamSettings = {
   imageModel: string
   imageUseProxy: boolean
 
+  // video generation — local-only custom upstream configuration. Video jobs
+  // send these credentials per request and never persist them server-side.
+  videoMode: UpstreamMode
+  videoBaseUrl: string
+  videoApiKey: string
+  videoModel: string
+
   cloudSync: boolean
 }
 
@@ -92,6 +99,10 @@ const EMPTY: UpstreamSettings = {
   imageApiKey: "",
   imageModel: "",
   imageUseProxy: true,
+  videoMode: "platform",
+  videoBaseUrl: "",
+  videoApiKey: "",
+  videoModel: "",
   cloudSync: false,
 }
 
@@ -99,6 +110,7 @@ const GUEST_EMPTY: UpstreamSettings = {
   ...EMPTY,
   chatMode: "byok",
   imageMode: "byok",
+  videoMode: "byok",
 }
 
 function keyFor(userId: number | string) {
@@ -225,6 +237,11 @@ function fromCloud(p: CloudPayload): Omit<UpstreamSettings, "cloudSync"> {
     imageApiKey: p.image_api_key ?? "",
     imageModel: p.image_model ?? "",
     imageUseProxy: p.image_use_proxy == null ? true : Boolean(p.image_use_proxy),
+    // Video custom API credentials intentionally remain local to this device.
+    videoMode: "platform",
+    videoBaseUrl: "",
+    videoApiKey: "",
+    videoModel: "",
     webSearch: false,
   }
 }
@@ -275,6 +292,10 @@ export async function loadEffectiveSettings(
       chatMode: local.chatMode,
       imageMode: local.imageMode,
       webSearch: local.webSearch,
+      videoMode: local.videoMode,
+      videoBaseUrl: local.videoBaseUrl,
+      videoApiKey: local.videoApiKey,
+      videoModel: local.videoModel,
       cloudSync: true,
     }
     saveSettings(userId, merged)

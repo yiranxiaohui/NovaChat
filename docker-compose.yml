@@ -24,6 +24,9 @@ services:
     environment:
       NOVACHAT_BIND: 0.0.0.0:3000
       NOVACHAT_DATA_DIR: /data
+      # Optional for self-hosted video testing (for example ComfyUI on the
+      # same host/LAN). Leave disabled on public deployments.
+      # NOVACHAT_ALLOW_PRIVATE_VIDEO_UPSTREAM: "1"
       # Configure S3-compatible media storage in 管理后台 → 媒体存储.
       # Uncomment for MySQL profile:
       # NOVACHAT_DATABASE_URL: mysql://novachat:novachat@mysql:3306/novachat

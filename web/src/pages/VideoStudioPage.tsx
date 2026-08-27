@@ -14,6 +14,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -34,7 +35,17 @@ import {
   type CreateVideoJobReq,
   type VideoJob,
   type VideoModel,
+  type VideoUpstreamConfig,
 } from "@/lib/video-gen"
+import {
+  GUEST_SETTINGS_ID,
+  loadEffectiveSettings,
+  loadSettings,
+  saveSettings,
+  type UpstreamMode,
+  type UpstreamSettings,
+} from "@/lib/settings"
+import { useAuth } from "@/lib/auth-context"
 import {
   consecutiveSecondsRange,
   videoSizeLabel,
@@ -82,6 +93,22 @@ function firstSecondsAndSize(m: VideoModel): { seconds: number | null; size: str
   }
 }
 
+function customModel(model: string): VideoModel {
+  return {
+    model,
+    display_name: null,
+    base_credits: 0,
+    per_second: 0,
+    allowed_seconds: Array.from({ length: 15 }, (_, index) => index + 1),
+    size_rules: [
+      { size: "1280x720", multiplier: 100 },
+      { size: "720x1280", multiplier: 100 },
+      { size: "1920x1080", multiplier: 100 },
+      { size: "1080x1920", multiplier: 100 },
+    ],
+  }
+}
+
 function statusLabel(job: VideoJob): string {
   switch (job.status) {
     case "pending":
@@ -99,6 +126,16 @@ function statusLabel(job: VideoJob): string {
 
 export default function VideoStudioPage() {
   const { confirm } = useConfirm()
+  const auth = useAuth()
+  const user = auth.state.status === "authed" ? auth.state.user : null
+  const settingsOwner = user?.id ?? GUEST_SETTINGS_ID
+  const initialVideoSettings = loadSettings(GUEST_SETTINGS_ID)
+  const settingsRef = useRef<UpstreamSettings>(initialVideoSettings)
+  const [settingsReady, setSettingsReady] = useState(false)
+  const [videoMode, setVideoMode] = useState<UpstreamMode>(initialVideoSettings.videoMode)
+  const [videoBaseUrl, setVideoBaseUrl] = useState(initialVideoSettings.videoBaseUrl)
+  const [videoApiKey, setVideoApiKey] = useState(initialVideoSettings.videoApiKey)
+  const [videoModel, setVideoModel] = useState(initialVideoSettings.videoModel)
 
   const [models, setModels] = useState<VideoModel[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -122,10 +159,50 @@ export default function VideoStudioPage() {
   const [deletingToken, setDeletingToken] = useState<string | null>(null)
   const [regeneratingToken, setRegeneratingToken] = useState<string | null>(null)
 
+  useEffect(() => {
+    let cancelled = false
+    void loadEffectiveSettings(settingsOwner).then((settings) => {
+      if (cancelled) return
+      settingsRef.current = settings
+      setVideoMode(settings.videoMode)
+      setVideoBaseUrl(settings.videoBaseUrl)
+      setVideoApiKey(settings.videoApiKey)
+      setVideoModel(settings.videoModel)
+      setSettingsReady(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [settingsOwner])
+
+  function updateVideoSetting<K extends keyof Pick<UpstreamSettings, "videoMode" | "videoBaseUrl" | "videoApiKey" | "videoModel">>(
+    key: K,
+    value: UpstreamSettings[K]
+  ) {
+    const next = { ...settingsRef.current, [key]: value }
+    settingsRef.current = next
+    saveSettings(settingsOwner, next)
+    if (key === "videoMode") setVideoMode(value as UpstreamMode)
+    if (key === "videoBaseUrl") setVideoBaseUrl(value as string)
+    if (key === "videoApiKey") setVideoApiKey(value as string)
+    if (key === "videoModel") setVideoModel(value as string)
+  }
+
+  function customUpstream(): VideoUpstreamConfig | undefined {
+    if (videoMode !== "byok" || !videoBaseUrl.trim()) return undefined
+    return {
+      baseUrl: videoBaseUrl,
+      apiKey: videoApiKey,
+    }
+  }
+
   async function reloadModels() {
     setModelsLoading(true)
+    setError(null)
     try {
-      const list = await listVideoModels()
+      const upstream = customUpstream()
+      const list =
+        videoMode === "byok" && !upstream ? [] : await listVideoModels(upstream)
       setModels(list)
       if (list.length > 0) {
         const selected = list.find((item) => item.model === model) ?? list[0]!
@@ -143,11 +220,28 @@ export default function VideoStudioPage() {
             : defaults.size
         )
       } else {
-        setModel("")
-        setSeconds(null)
-        setSize(null)
+        if (videoMode === "byok" && videoModel.trim()) {
+          const fallback = customModel(videoModel.trim())
+          setModels([fallback])
+          setModel(fallback.model)
+          const defaults = firstSecondsAndSize(fallback)
+          setSeconds(defaults.seconds)
+          setSize(defaults.size)
+        } else {
+          setModel("")
+          setSeconds(null)
+          setSize(null)
+        }
       }
     } catch (e) {
+      if (videoMode === "byok" && videoModel.trim()) {
+        const fallback = customModel(videoModel.trim())
+        setModels([fallback])
+        setModel(fallback.model)
+        const defaults = firstSecondsAndSize(fallback)
+        setSeconds(defaults.seconds)
+        setSize(defaults.size)
+      }
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setModelsLoading(false)
@@ -166,14 +260,19 @@ export default function VideoStudioPage() {
   }
 
   useEffect(() => {
+    if (!settingsReady) return
+    // Initial model/job loading is an external synchronization kicked off
+    // after the authenticated settings have hydrated.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reloadModels()
     void loadJobs(0, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [settingsReady])
 
   // 切换模型时把时长/分辨率重置为该模型规则里的第一项。
   function handleModelChange(next: string) {
     setModel(next)
+    if (videoMode === "byok") updateVideoSetting("videoModel", next)
     const m = models.find((x) => x.model === next)
     if (m) {
       const { seconds: s, size: sz } = firstSecondsAndSize(m)
@@ -198,23 +297,31 @@ export default function VideoStudioPage() {
     }
   }
 
-  const activeModel = models.find((m) => m.model === model)
+  const activeModel = models.find((m) => m.model === model) ??
+    (videoMode === "byok" && model.trim() ? customModel(model.trim()) : undefined)
   const durationRange = activeModel
     ? consecutiveSecondsRange(activeModel.allowed_seconds)
     : null
   const cost =
-    activeModel && seconds != null && size != null
-      ? computeVideoCost(activeModel, seconds, size)
+    activeModel && seconds != null && size?.trim()
+      ? videoMode === "byok"
+        ? 0
+        : computeVideoCost(activeModel, seconds, size)
       : null
 
-  async function enqueueVideoJob(request: CreateVideoJobReq) {
-    const { token } = await createVideoJob(request)
-    const job = await getVideoJob(token)
+  async function enqueueVideoJob(request: CreateVideoJobReq, upstream?: VideoUpstreamConfig) {
+    const { token } = await createVideoJob(request, upstream)
+    const job = await getVideoJob(token, upstream)
     setJobs((prev) => [job, ...prev.filter((item) => item.token !== job.token)])
   }
 
   async function handleSubmit() {
     if (!activeModel || seconds == null || size == null) return
+    const upstream = customUpstream()
+    if (videoMode === "byok" && !upstream) {
+      setError("请先填写自定义视频 API Base URL")
+      return
+    }
     const p = prompt.trim()
     if (!p) return
     setSubmitting(true)
@@ -226,7 +333,7 @@ export default function VideoStudioPage() {
         seconds,
         size,
         input_image_path: refImage ?? undefined,
-      })
+      }, upstream)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -243,7 +350,7 @@ export default function VideoStudioPage() {
       void (async () => {
         for (const j of inFlight) {
           try {
-            const updated = await getVideoJob(j.token)
+            const updated = await getVideoJob(j.token, customUpstream())
             setJobs((prev) => prev.map((x) => (x.token === updated.token ? updated : x)))
           } catch {
             /* non-fatal: keep polling other jobs, retry this one next tick */
@@ -252,6 +359,9 @@ export default function VideoStudioPage() {
       })()
     }, POLL_MS)
     return () => window.clearInterval(id)
+    // The active mode/base URL are intentionally read at poll time so a user
+    // can rotate a local API key without recreating the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs])
 
   async function regenerate(job: VideoJob) {
@@ -269,13 +379,17 @@ export default function VideoStudioPage() {
     setRegeneratingToken(job.token)
     setError(null)
     try {
+      const upstream = customUpstream()
+      if (videoMode === "byok" && !upstream) {
+        throw new Error("请先填写自定义视频 API Base URL")
+      }
       await enqueueVideoJob({
         model: job.model,
         prompt: job.prompt,
         seconds: job.seconds,
         size: job.size,
         input_image_path: job.input_image_path ?? undefined,
-      })
+      }, upstream)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       // create_job records and refunds immediate upstream failures before it
@@ -337,9 +451,98 @@ export default function VideoStudioPage() {
             <Clapperboard className="size-4 text-primary" /> 生成参数
           </h2>
 
+          <div className="mb-4 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3">
+            <Label className="text-xs">生成来源</Label>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(["platform", "byok"] as const).map((next) => (
+                <button
+                  key={next}
+                  type="button"
+                  onClick={() => {
+                    if (next === "platform" && !user) {
+                      setError("登录后才能使用云端积分模式")
+                      return
+                    }
+                    updateVideoSetting("videoMode", next)
+                    setModels([])
+                    setModel(next === "byok" ? videoModel : "")
+                  }}
+                  className={cn(
+                    "rounded-md border px-2 py-1.5 text-xs transition-colors",
+                    videoMode === next
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-background hover:bg-accent"
+                  )}
+                >
+                  {next === "platform" ? "云端积分" : "自定义 API"}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {videoMode === "platform"
+                ? "使用管理员配置的 OpenAI 兼容视频渠道，按定价规则扣积分。"
+                : "请求你的 OpenAI 兼容视频服务，不扣平台积分；Key 只保存在当前浏览器。"}
+            </p>
+            {videoMode === "byok" && (
+              <div className="mt-1 flex flex-col gap-2">
+                <Input
+                  aria-label="自定义视频 API Base URL"
+                  placeholder="http://127.0.0.1:8000"
+                  value={videoBaseUrl}
+                  onChange={(e) => updateVideoSetting("videoBaseUrl", e.target.value)}
+                  className="h-8 text-xs"
+                />
+                <Input
+                  aria-label="自定义视频 API Key"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="API Key（本地服务可留空）"
+                  value={videoApiKey}
+                  onChange={(e) => updateVideoSetting("videoApiKey", e.target.value)}
+                  className="h-8 text-xs"
+                />
+                <div className="flex gap-1.5">
+                  <Input
+                    aria-label="自定义视频模型"
+                    placeholder="模型 ID，例如 wan2.1"
+                    value={videoModel}
+                    onChange={(e) => {
+                      const nextModel = e.target.value
+                      updateVideoSetting("videoModel", nextModel)
+                      setModel(nextModel)
+                      if (nextModel.trim()) {
+                        const defaults = firstSecondsAndSize(customModel(nextModel.trim()))
+                        setSeconds((previous) => previous ?? defaults.seconds)
+                        setSize((previous) => previous ?? defaults.size)
+                      }
+                    }}
+                    className="h-8 min-w-0 flex-1 text-xs"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void reloadModels()}
+                    disabled={modelsLoading || !videoBaseUrl.trim()}
+                    className="h-8 shrink-0 px-2 text-xs"
+                  >
+                    <RefreshCw className={cn("size-3", modelsLoading && "animate-spin")} />
+                    加载模型
+                  </Button>
+                </div>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  服务端需提供 <code>/v1/videos</code>；模型列表不可用时仍可手动填写模型并测试。原生 ComfyUI 需先配置 OpenAI 兼容层，并在 NovaChat 自托管环境开启私网视频上游。
+                </p>
+              </div>
+            )}
+          </div>
+
           {models.length === 0 && !modelsLoading && (
             <p className="mb-3 rounded-md border border-dashed border-border bg-muted/30 px-3 py-4 text-center text-xs text-muted-foreground">
-              管理员尚未配置视频模型
+              {videoMode === "byok"
+                ? "没有可用的自定义模型，请手动填写模型 ID"
+                : "管理员尚未配置视频模型"}
             </p>
           )}
 
@@ -381,7 +584,21 @@ export default function VideoStudioPage() {
                     </span>
                   )}
                 </div>
-                {durationRange ? (
+                {videoMode === "byok" ? (
+                  <Input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    step={1}
+                    value={seconds ?? ""}
+                    onChange={(e) => {
+                      const value = Number(e.target.value)
+                      setSeconds(Number.isFinite(value) ? value : null)
+                    }}
+                    aria-label="视频时长（秒）"
+                    placeholder="1 到 3600 秒"
+                  />
+                ) : durationRange ? (
                   <>
                     <input
                       type="range"
@@ -418,22 +635,31 @@ export default function VideoStudioPage() {
 
               <div className="mb-3 flex flex-col gap-1.5">
                 <Label className="text-xs">分辨率</Label>
-                <Select
-                  value={size ?? undefined}
-                  onValueChange={setSize}
-                  disabled={activeModel.size_rules.length === 0}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="选择分辨率" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {activeModel.size_rules.map((r) => (
-                      <SelectItem key={r.size} value={r.size}>
-                        {videoSizeLabel(activeModel.model, r.size)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {videoMode === "byok" ? (
+                  <Input
+                    value={size ?? ""}
+                    onChange={(e) => setSize(e.target.value)}
+                    placeholder="例如 1280x720 或 512x512"
+                    aria-label="视频分辨率"
+                  />
+                ) : (
+                  <Select
+                    value={size ?? undefined}
+                    onValueChange={setSize}
+                    disabled={activeModel.size_rules.length === 0}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="选择分辨率" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeModel.size_rules.map((r) => (
+                        <SelectItem key={r.size} value={r.size}>
+                          {videoSizeLabel(activeModel.model, r.size)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </>
           )}
@@ -509,7 +735,11 @@ export default function VideoStudioPage() {
             ) : (
               <>
                 <Clapperboard className="size-4" />
-                {cost != null ? `生成视频（消耗 ${cost} 积分）` : "生成视频"}
+            {videoMode === "byok"
+              ? "生成视频（自定义 API）"
+              : cost != null
+                ? `生成视频（消耗 ${cost} 积分）`
+                : "生成视频"}
               </>
             )}
           </Button>
@@ -698,7 +928,7 @@ function VideoJobCard({
         <span className="rounded bg-muted px-1.5 py-0.5">{job.seconds} 秒</span>
         <span className="rounded bg-muted px-1.5 py-0.5">{job.size}</span>
         <span className="rounded bg-muted px-1.5 py-0.5">
-          消耗 {job.cost_credits} 积分
+          {job.cost_credits > 0 ? `消耗 ${job.cost_credits} 积分` : "自定义 API"}
         </span>
       </div>
       <div className="mt-1 flex flex-wrap gap-2">

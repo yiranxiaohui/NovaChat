@@ -65,6 +65,23 @@ cd web && bun run dev    # 前端 :5173 → /api 走 vite proxy
 `NOVACHAT_MEDIA_CONCURRENCY` 控制全局并发媒体处理数（默认 `2`，范围 `1～8`），
 `NOVACHAT_MEDIA_TIMEOUT_SECONDS` 控制单次处理超时（默认 `7200` 秒）。
 
+### 自定义视频 API
+
+视频工作室支持切换到「自定义 API」模式，填写 OpenAI 兼容服务的 Base URL、
+API Key（可选）和模型。服务端会调用 `/v1/videos`，创建、轮询和 MP4 下载仍会
+进入个人视频库；自定义任务不扣平台积分，凭据只保存在浏览器并随请求转发，
+不会写入数据库或云端同步。服务提供 `/v1/models` 时可在页面加载模型列表，
+否则可以手动填写模型、时长和分辨率。
+
+为避免用户输入的地址被滥用，默认只允许公网 HTTP(S) 上游。自托管 NovaChat
+并在同机运行提供 OpenAI 兼容层的 ComfyUI 或其他本地服务时，可显式设置
+`NOVACHAT_ALLOW_PRIVATE_VIDEO_UPSTREAM=1`（Docker Compose 中默认注释）后使用
+私网地址；公网部署不应开启此开关。
+
+当前自定义模式对接的是 OpenAI 兼容的三段式视频接口；原生 ComfyUI 的
+`/prompt` 工作流协议尚未直接接入，需要先使用兼容层或适配器暴露
+`/v1/videos`、`/v1/models`。
+
 ## 在线视频剪辑
 
 `/editor` 提供面向桌面的多轨精细剪辑台：视频、音频和文字轨道支持按帧吸附、

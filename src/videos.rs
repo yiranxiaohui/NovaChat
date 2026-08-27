@@ -8,25 +8,29 @@
 //! `GET /videos/models` listing consumed by the frontend to compute price
 //! locally before submitting a job.
 
+use std::time::Duration;
+
 use axum::{
-    Extension, Json, Router,
     body::to_bytes,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
+    Extension, Json, Router,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState, CurrentUser, InstalledState, channels,
+    channels,
     channels::{ModelPrice, SizeRule},
     credits,
     credits::LedgerMeta,
     db::{self, DbKind, Pool},
+    net_guard,
     storage::{MediaKind, MediaStorage},
+    AppState, CurrentUser, InstalledState,
 };
 
 const GROK_VIDEO_MAX_SECONDS: i64 = 15;
@@ -60,7 +64,12 @@ pub fn compute_cost(p: &ModelPrice, seconds: i64, size: &str) -> Option<i64> {
     if !supports_seconds(p, seconds) {
         return None;
     }
-    let mult = p.size_rules.as_deref()?.iter().find(|r| r.size == size)?.multiplier;
+    let mult = p
+        .size_rules
+        .as_deref()?
+        .iter()
+        .find(|r| r.size == size)?
+        .multiplier;
     let raw = (p.base_credits + p.per_second * seconds) * mult;
     Some((raw + 50) / 100) // round half up on the percent multiplier
 }
@@ -116,6 +125,61 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": msg.into() }))).into_response()
 }
 
+/// User-provided video upstream credentials. The key is kept in request
+/// memory only; it is never copied into a video job row.
+fn custom_upstream(headers: &HeaderMap) -> Option<(String, String)> {
+    let base = headers
+        .get("x-upstream-url")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?
+        .trim_end_matches('/')
+        .to_string();
+    let key = headers
+        .get("x-upstream-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    Some((base, key))
+}
+
+fn bearer_if_present(builder: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
+    if key.is_empty() {
+        builder
+    } else {
+        builder.bearer_auth(key)
+    }
+}
+
+fn parse_custom_models(body: &serde_json::Value) -> Vec<String> {
+    let mut models: Vec<String> = body
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .collect();
+    if models.is_empty() {
+        models = body
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    models.sort_unstable();
+    models.dedup();
+    models
+}
+
 // ---------------------------------------------------------------------------
 // user-facing routes
 // ---------------------------------------------------------------------------
@@ -159,6 +223,44 @@ async fn user_list_models(Extension(s): Extension<InstalledState>) -> Response {
         })
         .collect();
     Json(out).into_response()
+}
+
+/// List models from a user's OpenAI-compatible video service. This endpoint is
+/// intentionally separate from the platform catalogue: a custom service may
+/// expose models without any platform pricing row, and its API key stays in
+/// the request only.
+async fn custom_list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some((base, key)) = custom_upstream(&headers) else {
+        return err(StatusCode::BAD_REQUEST, "请先填写自定义视频 API Base URL");
+    };
+    if base.len() > 512 || key.len() > 512 {
+        return err(StatusCode::BAD_REQUEST, "自定义视频 API 配置过长");
+    }
+    let client =
+        match net_guard::client_for_video_upstream(&state.http, &base, Duration::from_secs(30))
+            .await
+        {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+    let response = match bearer_if_present(client.get(format!("{base}/v1/models")), &key)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return err(StatusCode::BAD_GATEWAY, "自定义视频 API 暂时不可用"),
+    };
+    if !response.status().is_success() {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("自定义视频 API 返回 {}", response.status()),
+        );
+    }
+    let body: serde_json::Value = match response.json().await {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::BAD_GATEWAY, "自定义视频 API 响应不是有效 JSON"),
+    };
+    Json(parse_custom_models(&body)).into_response()
 }
 
 fn random_hex(n: usize) -> String {
@@ -211,6 +313,7 @@ pub(crate) async fn start_workflow_video(
         State(state),
         Extension(installed),
         Extension(CurrentUser { id: user_id }),
+        HeaderMap::new(),
         Json(CreateJobReq {
             model: request.model,
             prompt: request.prompt,
@@ -227,12 +330,22 @@ pub(crate) async fn start_workflow_video(
     if !status.is_success() {
         let parsed = serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
-            .and_then(|value| value.get("error").and_then(|v| v.as_str()).map(str::to_string));
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
         return Err(parsed.unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string()));
     }
     serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|value| value.get("token").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("token")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
         .ok_or_else(|| "视频任务响应缺少 token".to_string())
 }
 
@@ -248,6 +361,7 @@ pub(crate) async fn workflow_video_state(
         installed.kind,
         &state.storage,
         token,
+        None,
     )
     .await;
     let row = fetch_job(&installed.pool, installed.kind, token)
@@ -291,7 +405,15 @@ pub(crate) async fn refund_job(
         return; // already refunded (or DB error — err on not double-granting)
     }
     let reason = format!("refund_video_{model}_{suffix}");
-    let _ = credits::grant(pool, kind, user_id, cost, &reason, &LedgerMeta::refund_video(model)).await;
+    let _ = credits::grant(
+        pool,
+        kind,
+        user_id,
+        cost,
+        &reason,
+        &LedgerMeta::refund_video(model),
+    )
+    .await;
 }
 
 /// Insert a new video_jobs row, returning its id. Three-dialect id-return
@@ -306,7 +428,7 @@ async fn insert_job(
     seconds: i64,
     size: &str,
     input_image_path: Option<&str>,
-    channel_id: i64,
+    channel_id: Option<i64>,
     cost: i64,
 ) -> Result<i64, sqlx::Error> {
     let returning = db::returning_id(kind);
@@ -361,13 +483,18 @@ async fn mark_job_failed(pool: &Pool, kind: DbKind, job_id: i64, error: &str) {
             "UPDATE video_jobs SET status = 'failed', error = ?, finished_at = {now} WHERE id = ?"
         ),
     );
-    let _ = sqlx::query(&sql).bind(&trimmed).bind(job_id).execute(pool).await;
+    let _ = sqlx::query(&sql)
+        .bind(&trimmed)
+        .bind(job_id)
+        .execute(pool)
+        .await;
 }
 
 async fn create_job(
     State(state): State<AppState>,
     Extension(s): Extension<InstalledState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
     Json(req): Json<CreateJobReq>,
 ) -> Response {
     let pool = &s.pool;
@@ -378,19 +505,8 @@ async fn create_job(
         return err(StatusCode::BAD_REQUEST, "prompt 不能为空");
     }
 
-    let pricing = match channels::get_price(pool, kind, &req.model).await {
-        Ok(Some(p)) if p.enabled && p.kind == "video" => p,
-        Ok(_) => return err(StatusCode::BAD_REQUEST, "模型不存在或未启用"),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
-
-    let cost = match compute_cost(&pricing, req.seconds, &req.size) {
-        Some(c) => c,
-        None => return err(StatusCode::BAD_REQUEST, "该模型不支持所选时长或分辨率"),
-    };
-
-    // Load the optional reference image up-front so a bad path fails before
-    // any credits move.
+    // Load the optional reference image before validation/credits so malformed
+    // image paths never consume a platform balance.
     let mut image_bytes: Option<Vec<u8>> = None;
     let mut image_name: String = String::new();
     let mut image_mime: String = "application/octet-stream".to_string();
@@ -415,67 +531,115 @@ async fn create_job(
         }
     }
 
-    let model = req.model.clone();
+    let custom = custom_upstream(&headers);
+    let is_custom = custom.is_some();
+    let model = req.model.trim().to_string();
+    if model.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "model 不能为空");
+    }
+    if custom.is_some() {
+        // Custom providers do not have a platform pricing row. Keep the input
+        // bounded, while leaving duration/resolution semantics to the provider.
+        if req.seconds <= 0 || req.seconds > 3600 {
+            return err(StatusCode::BAD_REQUEST, "视频时长必须在 1 到 3600 秒之间");
+        }
+        if req.size.trim().is_empty() || req.size.len() > 64 {
+            return err(StatusCode::BAD_REQUEST, "视频分辨率无效");
+        }
+    }
 
-    // Deduct first, then attempt upstream — refunds happen on any failure past this point.
-    let _new_balance = match credits::try_deduct(
-        pool,
-        kind,
-        user.id,
-        cost,
-        &format!("video_{model}"),
-        &LedgerMeta::video(&model),
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(balance) => {
-            return err(
-                StatusCode::PAYMENT_REQUIRED,
-                format!("积分不足：需要 {cost}，当前余额 {balance}"),
-            );
-        }
-    };
+    let mut cost = 0;
+    let mut choice = None;
+    if custom.is_none() {
+        let pricing = match channels::get_price(pool, kind, &model).await {
+            Ok(Some(p)) if p.enabled && p.kind == "video" => p,
+            Ok(_) => return err(StatusCode::BAD_REQUEST, "模型不存在或未启用"),
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        };
+        cost = match compute_cost(&pricing, req.seconds, &req.size) {
+            Some(c) => c,
+            None => return err(StatusCode::BAD_REQUEST, "该模型不支持所选时长或分辨率"),
+        };
 
-    let choice = match channels::select_one_by_advertised_model(
-        &state.http,
-        pool,
-        kind,
-        &model,
-    )
-    .await
-    {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            let _ = credits::grant(
-                pool,
-                kind,
-                user.id,
-                cost,
-                &format!("refund_video_{model}_no_channel"),
-                &LedgerMeta::refund_video(&model),
-            )
-            .await;
-            return err(
-                StatusCode::BAD_REQUEST,
-                "暂无支持该模型的可用视频渠道，请联系管理员",
-            );
+        // Deduct first, then attempt upstream — refunds happen on any failure past this point.
+        match credits::try_deduct(
+            pool,
+            kind,
+            user.id,
+            cost,
+            &format!("video_{model}"),
+            &LedgerMeta::video(&model),
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(balance) => {
+                return err(
+                    StatusCode::PAYMENT_REQUIRED,
+                    format!("积分不足：需要 {cost}，当前余额 {balance}"),
+                );
+            }
         }
-        Err(e) => {
-            let _ = credits::grant(
-                pool,
-                kind,
-                user.id,
-                cost,
-                &format!("refund_video_{model}_no_channel"),
-                &LedgerMeta::refund_video(&model),
-            )
-            .await;
-            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
-        }
-    };
+
+        choice =
+            match channels::select_one_by_advertised_model(&state.http, pool, kind, &model).await {
+                Ok(Some(c)) => Some(c),
+                Ok(None) => {
+                    let _ = credits::grant(
+                        pool,
+                        kind,
+                        user.id,
+                        cost,
+                        &format!("refund_video_{model}_no_channel"),
+                        &LedgerMeta::refund_video(&model),
+                    )
+                    .await;
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        "暂无支持该模型的可用视频渠道，请联系管理员",
+                    );
+                }
+                Err(e) => {
+                    let _ = credits::grant(
+                        pool,
+                        kind,
+                        user.id,
+                        cost,
+                        &format!("refund_video_{model}_no_channel"),
+                        &LedgerMeta::refund_video(&model),
+                    )
+                    .await;
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+                }
+            };
+    }
 
     let token = random_hex(16);
+    let (channel_id, upstream_model, base, key, http_client) = if let Some((base, key)) = custom {
+        if base.len() > 512 || key.len() > 512 {
+            return err(StatusCode::BAD_REQUEST, "自定义视频 API 配置过长");
+        }
+        let client = match net_guard::client_for_video_upstream(
+            &state.http,
+            &base,
+            Duration::from_secs(180),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        (None, model.clone(), base, key, client)
+    } else {
+        let choice = choice.expect("platform video route should have a channel");
+        (
+            Some(choice.channel.id),
+            choice.upstream_model,
+            choice.channel.base_url.trim_end_matches('/').to_string(),
+            choice.channel.api_key,
+            state.http.clone(),
+        )
+    };
     let job_id = match insert_job(
         pool,
         kind,
@@ -486,7 +650,7 @@ async fn create_job(
         req.seconds,
         &req.size,
         req.input_image_path.as_deref(),
-        choice.channel.id,
+        channel_id,
         cost,
     )
     .await
@@ -506,9 +670,8 @@ async fn create_job(
         }
     };
 
-    let base = choice.channel.base_url.trim_end_matches('/');
     let mut form = reqwest::multipart::Form::new()
-        .text("model", choice.upstream_model.clone())
+        .text("model", upstream_model)
         .text("prompt", prompt.clone())
         .text("seconds", req.seconds.to_string())
         .text("size", req.size.clone());
@@ -527,10 +690,7 @@ async fn create_job(
         }
     }
 
-    let res = state
-        .http
-        .post(format!("{base}/v1/videos"))
-        .bearer_auth(&choice.channel.api_key)
+    let res = bearer_if_present(http_client.post(format!("{base}/v1/videos")), &key)
         .multipart(form)
         .send()
         .await;
@@ -549,7 +709,11 @@ async fn create_job(
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let truncated: String = body.chars().take(500).collect();
-        let msg = format!("上游返回 {status}: {truncated}");
+        let msg = if is_custom {
+            format!("自定义视频 API 返回 {status}")
+        } else {
+            format!("上游返回 {status}: {truncated}")
+        };
         mark_job_failed(pool, kind, job_id, &msg).await;
         refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
         return err(StatusCode::BAD_GATEWAY, msg);
@@ -568,7 +732,11 @@ async fn create_job(
     let upstream_id = match body.get("id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
-            let msg = format!("上游响应缺少 id: {body}");
+            let msg = if is_custom {
+                "自定义视频 API 响应缺少 id".to_string()
+            } else {
+                format!("上游响应缺少 id: {body}")
+            };
             mark_job_failed(pool, kind, job_id, &msg).await;
             refund_job(pool, kind, job_id, user.id, &model, cost, "create_error").await;
             return err(StatusCode::BAD_GATEWAY, msg);
@@ -636,7 +804,10 @@ pub(crate) async fn channel_by_id(
     kind: DbKind,
     id: i64,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
-    let sql = db::q(kind, "SELECT base_url, api_key FROM upstream_channels WHERE id = ?");
+    let sql = db::q(
+        kind,
+        "SELECT base_url, api_key FROM upstream_channels WHERE id = ?",
+    );
     let row: Option<(String, String)> = sqlx::query_as(&sql).bind(id).fetch_optional(pool).await?;
     Ok(row)
 }
@@ -777,14 +948,28 @@ impl From<&JobRow> for JobView {
 
 async fn fetch_job(pool: &Pool, kind: DbKind, token: &str) -> Option<JobRow> {
     let cols = job_cols(kind);
-    let sql = db::q(kind, &format!("SELECT {cols} FROM video_jobs WHERE token = ?"));
-    let row: Option<JobRowRaw> = sqlx::query_as(&sql).bind(token).fetch_optional(pool).await.ok()?;
+    let sql = db::q(
+        kind,
+        &format!("SELECT {cols} FROM video_jobs WHERE token = ?"),
+    );
+    let row: Option<JobRowRaw> = sqlx::query_as(&sql)
+        .bind(token)
+        .fetch_optional(pool)
+        .await
+        .ok()?;
     row.map(JobRow::from)
 }
 
 async fn release_lock(pool: &Pool, kind: DbKind, token: &str) {
-    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) { "0" } else { "FALSE" };
-    let sql = db::q(kind, &format!("UPDATE video_jobs SET polling = {bf} WHERE token = ?"));
+    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) {
+        "0"
+    } else {
+        "FALSE"
+    };
+    let sql = db::q(
+        kind,
+        &format!("UPDATE video_jobs SET polling = {bf} WHERE token = ?"),
+    );
     let _ = sqlx::query(&sql).bind(token).execute(pool).await;
 }
 
@@ -797,8 +982,11 @@ pub async fn advance_job(
     kind: DbKind,
     storage: &MediaStorage,
     token: &str,
+    custom: Option<(&str, &str)>,
 ) {
-    let Some(job) = fetch_job(pool, kind, token).await else { return };
+    let Some(job) = fetch_job(pool, kind, token).await else {
+        return;
+    };
     if job.status == "completed" || job.status == "failed" {
         return;
     }
@@ -830,7 +1018,7 @@ pub async fn advance_job(
     // and orphan the previous mp4 / miscount download_retries.
     match fetch_job(pool, kind, token).await {
         Some(job) if job.status != "completed" && job.status != "failed" => {
-            poll_upstream_once(http, pool, kind, storage, &job).await;
+            poll_upstream_once(http, pool, kind, storage, &job, custom).await;
         }
         _ => {}
     }
@@ -842,7 +1030,11 @@ pub async fn advance_job(
 /// 3) advance orphaned jobs nobody is actively polling.
 pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, storage: &MediaStorage) {
     let bt = db::bool_true(kind);
-    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) { "0" } else { "FALSE" };
+    let bf = if matches!(kind, DbKind::Sqlite | DbKind::Mysql) {
+        "0"
+    } else {
+        "FALSE"
+    };
 
     // 1. Repair hung polling locks (crashed mid-poll > 5 min ago).
     let sql = db::q(
@@ -865,7 +1057,10 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, storage: &
                 minutes_ago_expr(kind, 120)
             ),
         );
-        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
+        sqlx::query_as(&sql)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
     };
     for (id, user_id, model, cost) in stale {
         let now = db::now_expr(kind);
@@ -899,6 +1094,7 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, storage: &
             &format!(
                 "SELECT token FROM video_jobs \
                  WHERE status IN ('pending','running') \
+                   AND channel_id IS NOT NULL \
                    AND (last_polled_at IS NULL OR last_polled_at < {}) \
                    AND (upstream_video_id IS NOT NULL OR created_at < {}) \
                  ORDER BY created_at ASC LIMIT 20",
@@ -906,10 +1102,13 @@ pub async fn sweep(http: &reqwest::Client, pool: &Pool, kind: DbKind, storage: &
                 minutes_ago_expr(kind, 2)
             ),
         );
-        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default()
+        sqlx::query_as(&sql)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
     };
     for (token,) in orphans {
-        advance_job(http, pool, kind, storage, &token).await;
+        advance_job(http, pool, kind, storage, &token, None).await;
     }
 }
 
@@ -919,39 +1118,83 @@ async fn poll_upstream_once(
     kind: DbKind,
     storage: &MediaStorage,
     job: &JobRow,
+    custom: Option<(&str, &str)>,
 ) {
     let Some(upstream_video_id) = job.upstream_video_id.as_deref() else {
         // create_job never got a usable upstream id — nothing to poll.
         mark_job_failed(pool, kind, job.id, "任务未成功创建").await;
-        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "create_error").await;
+        refund_job(
+            pool,
+            kind,
+            job.id,
+            job.user_id,
+            &job.model,
+            job.cost_credits,
+            "create_error",
+        )
+        .await;
         return;
     };
 
-    let Some(channel_id) = job.channel_id else {
-        mark_job_failed(pool, kind, job.id, "渠道已删除").await;
-        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
-        return;
-    };
-
-    let (base, key) = match channel_by_id(pool, kind, channel_id).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            mark_job_failed(pool, kind, job.id, "渠道已删除").await;
-            refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
+    let (base, key, client) =
+        if let Some(channel_id) = job.channel_id {
+            let (base, key) = match channel_by_id(pool, kind, channel_id).await {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    mark_job_failed(pool, kind, job.id, "渠道已删除").await;
+                    refund_job(
+                        pool,
+                        kind,
+                        job.id,
+                        job.user_id,
+                        &job.model,
+                        job.cost_credits,
+                        "upstream_failed",
+                    )
+                    .await;
+                    return;
+                }
+                Err(e) => {
+                    mark_error_only(pool, kind, job.id, &e.to_string()).await;
+                    return;
+                }
+            };
+            (base.trim_end_matches('/').to_string(), key, http.clone())
+        } else if let Some((base, key)) = custom {
+            let client =
+                match net_guard::client_for_video_upstream(http, base, Duration::from_secs(180))
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(_) => {
+                        mark_error_only(pool, kind, job.id, "自定义视频 API URL 被拒绝").await;
+                        return;
+                    }
+                };
+            (
+                base.trim_end_matches('/').to_string(),
+                key.to_string(),
+                client,
+            )
+        } else {
+            // Custom jobs deliberately do not fail when the browser is closed or
+            // settings were cleared. A later poll with credentials can continue.
+            mark_error_only(
+                pool,
+                kind,
+                job.id,
+                "请重新提供自定义视频 API 配置后继续轮询",
+            )
+            .await;
             return;
-        }
-        Err(e) => {
-            let _ = mark_error_only(pool, kind, job.id, &e.to_string()).await;
-            return;
-        }
-    };
-    let base = base.trim_end_matches('/');
+        };
 
-    let resp = match http
-        .get(format!("{base}/v1/videos/{upstream_video_id}"))
-        .bearer_auth(&key)
-        .send()
-        .await
+    let resp = match bearer_if_present(
+        client.get(format!("{base}/v1/videos/{upstream_video_id}")),
+        &key,
+    )
+    .send()
+    .await
     {
         Ok(r) => r,
         Err(e) => {
@@ -974,19 +1217,45 @@ async fn poll_upstream_once(
         "queued" | "in_progress" => {
             let progress = body.get("progress").and_then(|v| v.as_i64()).unwrap_or(0);
             let sql = db::q(kind, "UPDATE video_jobs SET progress = ? WHERE id = ?");
-            let _ = sqlx::query(&sql).bind(progress).bind(job.id).execute(pool).await;
+            let _ = sqlx::query(&sql)
+                .bind(progress)
+                .bind(job.id)
+                .execute(pool)
+                .await;
         }
         "failed" => {
-            let msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("上游生成失败");
+            let msg = if job.channel_id.is_none() {
+                "自定义视频 API 生成失败"
+            } else {
+                body.get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("上游生成失败")
+            };
             mark_job_failed(pool, kind, job.id, msg).await;
-            refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "upstream_failed").await;
+            refund_job(
+                pool,
+                kind,
+                job.id,
+                job.user_id,
+                &job.model,
+                job.cost_credits,
+                "upstream_failed",
+            )
+            .await;
         }
         "completed" => {
-            download_completed_video(http, pool, kind, storage, job, base, upstream_video_id, &key).await;
+            download_completed_video(
+                &client,
+                pool,
+                kind,
+                storage,
+                job,
+                &base,
+                upstream_video_id,
+                &key,
+            )
+            .await;
         }
         _ => {
             mark_error_only(pool, kind, job.id, &format!("未知上游状态: {status}")).await;
@@ -997,7 +1266,11 @@ async fn poll_upstream_once(
 async fn mark_error_only(pool: &Pool, kind: DbKind, job_id: i64, error: &str) {
     let trimmed: String = error.chars().take(500).collect();
     let sql = db::q(kind, "UPDATE video_jobs SET error = ? WHERE id = ?");
-    let _ = sqlx::query(&sql).bind(&trimmed).bind(job_id).execute(pool).await;
+    let _ = sqlx::query(&sql)
+        .bind(&trimmed)
+        .bind(job_id)
+        .execute(pool)
+        .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1012,16 +1285,18 @@ async fn download_completed_video(
     key: &str,
 ) {
     let result: Result<Vec<u8>, String> = async {
-        let resp = http
-            .get(format!("{base}/v1/videos/{upstream_video_id}/content"))
-            .bearer_auth(key)
+        let request = http.get(format!("{base}/v1/videos/{upstream_video_id}/content"));
+        let resp = bearer_if_present(request, key)
             .send()
             .await
             .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("上游返回 {}", resp.status()));
         }
-        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| e.to_string())
     }
     .await;
 
@@ -1072,7 +1347,12 @@ async fn handle_download_failure(pool: &Pool, kind: DbKind, job: &JobRow, msg: &
             kind,
             "UPDATE video_jobs SET download_retries = ?, error = ? WHERE id = ?",
         );
-        let _ = sqlx::query(&sql).bind(retries).bind(&trimmed).bind(job.id).execute(pool).await;
+        let _ = sqlx::query(&sql)
+            .bind(retries)
+            .bind(&trimmed)
+            .bind(job.id)
+            .execute(pool)
+            .await;
     } else {
         let now = db::now_expr(kind);
         let sql = db::q(
@@ -1082,8 +1362,22 @@ async fn handle_download_failure(pool: &Pool, kind: DbKind, job: &JobRow, msg: &
                  finished_at = {now} WHERE id = ?"
             ),
         );
-        let _ = sqlx::query(&sql).bind(retries).bind(&trimmed).bind(job.id).execute(pool).await;
-        refund_job(pool, kind, job.id, job.user_id, &job.model, job.cost_credits, "download_failed").await;
+        let _ = sqlx::query(&sql)
+            .bind(retries)
+            .bind(&trimmed)
+            .bind(job.id)
+            .execute(pool)
+            .await;
+        refund_job(
+            pool,
+            kind,
+            job.id,
+            job.user_id,
+            &job.model,
+            job.cost_credits,
+            "download_failed",
+        )
+        .await;
     }
 }
 
@@ -1095,6 +1389,7 @@ async fn get_job(
     State(state): State<AppState>,
     Extension(s): Extension<InstalledState>,
     Extension(user): Extension<CurrentUser>,
+    headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Response {
     let pool = &s.pool;
@@ -1106,7 +1401,18 @@ async fn get_job(
         _ => return err(StatusCode::NOT_FOUND, "任务不存在"),
     }
 
-    advance_job(&state.http, pool, kind, &state.storage, &token).await;
+    let custom = custom_upstream(&headers);
+    advance_job(
+        &state.http,
+        pool,
+        kind,
+        &state.storage,
+        &token,
+        custom
+            .as_ref()
+            .map(|(base, key)| (base.as_str(), key.as_str())),
+    )
+    .await;
 
     match fetch_job(pool, kind, &token).await {
         Some(j) if j.user_id == user.id => Json(JobView::from(&j)).into_response(),
@@ -1139,9 +1445,16 @@ async fn list_jobs(
     let cols = job_cols(kind);
     let sql = db::q(
         kind,
-        &format!("SELECT {cols} FROM video_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 25 OFFSET ?"),
+        &format!(
+            "SELECT {cols} FROM video_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 25 OFFSET ?"
+        ),
     );
-    let rows: Vec<JobRowRaw> = match sqlx::query_as(&sql).bind(user.id).bind(offset).fetch_all(pool).await {
+    let rows: Vec<JobRowRaw> = match sqlx::query_as(&sql)
+        .bind(user.id)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+    {
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -1151,7 +1464,11 @@ async fn list_jobs(
     let has_more = jobs.len() > 24;
     jobs.truncate(24);
     let views: Vec<JobView> = jobs.iter().map(JobView::from).collect();
-    Json(ListJobsResp { jobs: views, has_more }).into_response()
+    Json(ListJobsResp {
+        jobs: views,
+        has_more,
+    })
+    .into_response()
 }
 
 async fn delete_job(
@@ -1296,13 +1613,43 @@ pub fn public_routes() -> Router<AppState> {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/videos/models", get(user_list_models))
+        .route("/videos/custom-models", get(custom_list_models))
         .route("/videos/jobs", post(create_job).get(list_jobs))
         .route("/videos/jobs/{token}", get(get_job).delete(delete_job))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_video_range, JobRow, JobView};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::{custom_upstream, parse_custom_models, parse_video_range, JobRow, JobView};
+
+    #[test]
+    fn custom_upstream_accepts_a_keyless_local_style_configuration() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-upstream-url",
+            HeaderValue::from_static("https://video.example///"),
+        );
+        assert_eq!(
+            custom_upstream(&headers),
+            Some(("https://video.example".to_string(), String::new()))
+        );
+    }
+
+    #[test]
+    fn custom_models_accept_openai_and_simple_catalogue_shapes() {
+        assert_eq!(
+            parse_custom_models(&serde_json::json!({
+                "data": [{"id": "wan"}, {"id": "wan"}, {"id": "svd"}]
+            })),
+            vec!["svd".to_string(), "wan".to_string()]
+        );
+        assert_eq!(
+            parse_custom_models(&serde_json::json!({"models": ["local-video", ""]})),
+            vec!["local-video".to_string()]
+        );
+    }
 
     #[test]
     fn parses_http_byte_ranges() {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Check, Cloud, Copy, ImageIcon, KeyRound, MessageSquare, RefreshCw, Trash2 } from "lucide-react"
+import { Check, Cloud, Copy, Film, ImageIcon, KeyRound, MessageSquare, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -35,7 +35,7 @@ type Props = {
   onSave: (s: UpstreamSettings) => void
 }
 
-type Tab = "chat" | "image" | "worker"
+type Tab = "chat" | "image" | "video" | "worker"
 
 const PROTOCOL_OPTIONS: Protocol[] = ["openai", "claude", "gemini"]
 const IMAGE_PROTOCOL_OPTIONS: ImageProtocol[] = ["openai", "gemini"]
@@ -66,6 +66,12 @@ export function SettingsDialog({
   const [imageApiKey, setImageApiKey] = useState(initial.imageApiKey)
   const [imageModel, setImageModel] = useState(initial.imageModel)
   const [imageUseProxy, setImageUseProxy] = useState(initial.imageUseProxy)
+
+  // --- Video state ---
+  const [videoMode, setVideoMode] = useState<UpstreamMode>(initial.videoMode)
+  const [videoBaseUrl, setVideoBaseUrl] = useState(initial.videoBaseUrl)
+  const [videoApiKey, setVideoApiKey] = useState(initial.videoApiKey)
+  const [videoModel, setVideoModel] = useState(initial.videoModel)
 
   const [cloudSync, setCloudSync] = useState(initial.cloudSync)
   const [tab, setTab] = useState<Tab>("chat")
@@ -100,6 +106,10 @@ export function SettingsDialog({
       setImageApiKey(initial.imageApiKey)
       setImageModel(initial.imageModel)
       setImageUseProxy(initial.imageUseProxy)
+      setVideoMode(initial.videoMode)
+      setVideoBaseUrl(initial.videoBaseUrl)
+      setVideoApiKey(initial.videoApiKey)
+      setVideoModel(initial.videoModel)
       setCloudSync(initial.cloudSync)
       setTab("chat")
       setChatModels([])
@@ -290,14 +300,14 @@ export function SettingsDialog({
           <DialogTitle>模型设置</DialogTitle>
           <DialogDescription className="mt-1">
             {cloudSync
-              ? "☁️ 已开启云端同步：所有字段会保存到服务器，登录后自动恢复。"
+              ? "☁️ 已开启云端同步：对话和图像配置会保存到服务器；视频自定义 API 始终只保存在当前浏览器。"
               : "仅保存在当前浏览器 (localStorage)，不会上传到服务器。"}
           </DialogDescription>
         </DialogHeader>
 
         <Tabs
           value={tab}
-          onValueChange={(v) => setTab(v as "chat" | "image" | "worker")}
+          onValueChange={(v) => setTab(v as Tab)}
           className="mt-4"
         >
           <TabsList>
@@ -306,6 +316,9 @@ export function SettingsDialog({
             </TabsTrigger>
             <TabsTrigger value="image">
               <ImageIcon className="size-3.5" /> 图像
+            </TabsTrigger>
+            <TabsTrigger value="video">
+              <Film className="size-3.5" /> 视频
             </TabsTrigger>
             <TabsTrigger value="worker" disabled={!isAuthenticated}>
               工蜂
@@ -586,6 +599,70 @@ export function SettingsDialog({
           </div>
           </TabsContent>
 
+          <TabsContent value="video">
+            <div className="mt-4 flex flex-col gap-3">
+              <ModeToggle
+                mode={videoMode}
+                onChange={(next) => {
+                  if (next === "platform" && !isAuthenticated) {
+                    onLoginRequired()
+                    return
+                  }
+                  setVideoMode(next)
+                }}
+                platformLabel={isAuthenticated ? "云端积分" : "云端积分（需登录）"}
+                byokLabel="自定义 API"
+              />
+
+              {videoMode === "platform" ? (
+                <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                  视频页会显示管理员配置的模型、时长和分辨率。切换到“自定义 API”后，可使用自己的 OpenAI 兼容视频服务，不消耗平台积分。
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="videoBaseUrl">视频 Base URL</Label>
+                    <Input
+                      id="videoBaseUrl"
+                      placeholder="http://127.0.0.1:8000"
+                      value={videoBaseUrl}
+                      onChange={(e) => setVideoBaseUrl(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      只填主机或 API 根路径，系统会请求 <code>/v1/videos</code> 和 <code>/v1/models</code>；原生 ComfyUI 需先配置兼容层。
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="videoApiKey">视频 API Key</Label>
+                    <Input
+                      id="videoApiKey"
+                      type="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="没有 Key 的本地服务可留空"
+                      value={videoApiKey}
+                      onChange={(e) => setVideoApiKey(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="videoModel">视频模型（可选）</Label>
+                    <Input
+                      id="videoModel"
+                      placeholder="例如 wan2.1 或自建模型 ID"
+                      value={videoModel}
+                      onChange={(e) => setVideoModel(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      视频页也可以刷新模型列表；填写后会优先使用这里的模型。
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          </TabsContent>
+
           <TabsContent value="worker">
             <div className="mt-4">
               <WorkerSettings />
@@ -603,7 +680,7 @@ export function SettingsDialog({
           />
           <span>
             {isAuthenticated
-              ? "云端同步 API Key / Base URL / 模型（保存到服务器账户，换设备登录后自动恢复；关闭后将从服务器删除）"
+              ? "云端同步对话/图像 API Key、Base URL 和模型（视频自定义 API 始终只保存在当前浏览器）"
               : "登录后可开启模型设置云端同步"}
           </span>
         </label>
@@ -628,6 +705,10 @@ export function SettingsDialog({
                 imageApiKey: imageApiKey.trim(),
                 imageModel: imageModel.trim(),
                 imageUseProxy,
+                videoMode,
+                videoBaseUrl: videoBaseUrl.trim(),
+                videoApiKey: videoApiKey.trim(),
+                videoModel: videoModel.trim(),
                 cloudSync: isAuthenticated && cloudSync,
               })
             }

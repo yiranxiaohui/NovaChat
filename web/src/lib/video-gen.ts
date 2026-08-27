@@ -1,5 +1,6 @@
-// Video generation API client. Platform-credits only (no BYOK) — all calls
-// ride the session cookie; no X-Upstream-* headers.
+// Video generation API client. Platform mode uses server-configured channels;
+// custom mode forwards the user's upstream settings per request. The server
+// never persists custom credentials in a video job.
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -45,6 +46,39 @@ export type CreateVideoJobReq = {
   input_image_path?: string
 }
 
+export type VideoUpstreamConfig = {
+  baseUrl: string
+  apiKey?: string
+}
+
+const CUSTOM_VIDEO_SECONDS = Array.from({ length: 15 }, (_, index) => index + 1)
+const CUSTOM_VIDEO_SIZES: SizeRule[] = [
+  { size: "1280x720", multiplier: 100 },
+  { size: "720x1280", multiplier: 100 },
+  { size: "1920x1080", multiplier: 100 },
+  { size: "1080x1920", multiplier: 100 },
+]
+
+function upstreamHeaders(upstream?: VideoUpstreamConfig): Record<string, string> {
+  if (!upstream?.baseUrl.trim()) return {}
+  const headers: Record<string, string> = {
+    "X-Upstream-Url": upstream.baseUrl.trim().replace(/\/+$/, ""),
+  }
+  if (upstream.apiKey?.trim()) headers["X-Upstream-Key"] = upstream.apiKey.trim()
+  return headers
+}
+
+function customModels(models: string[]): VideoModel[] {
+  return models.filter(Boolean).map((model) => ({
+    model,
+    display_name: null,
+    base_credits: 0,
+    per_second: 0,
+    allowed_seconds: CUSTOM_VIDEO_SECONDS,
+    size_rules: CUSTOM_VIDEO_SIZES,
+  }))
+}
+
 /** 与后端 videos::compute_cost 同式：(base + per_second*s) * multiplier / 100，四舍五入。 */
 export function computeVideoCost(m: VideoModel, seconds: number, size: string): number | null {
   if (!m.allowed_seconds.includes(seconds)) return null
@@ -53,24 +87,35 @@ export function computeVideoCost(m: VideoModel, seconds: number, size: string): 
   return Math.round(((m.base_credits + m.per_second * seconds) * rule.multiplier) / 100)
 }
 
-export async function listVideoModels(): Promise<VideoModel[]> {
-  const res = await fetch("/api/videos/models", { credentials: "same-origin" })
-  return jsonOrThrow(res)
+export async function listVideoModels(upstream?: VideoUpstreamConfig): Promise<VideoModel[]> {
+  const custom = Boolean(upstream?.baseUrl.trim())
+  const res = await fetch(custom ? "/api/videos/custom-models" : "/api/videos/models", {
+    credentials: "same-origin",
+    headers: upstreamHeaders(upstream),
+  })
+  if (!res.ok) return jsonOrThrow(res)
+  if (!custom) return res.json() as Promise<VideoModel[]>
+  const models = (await res.json()) as string[]
+  return customModels(models)
 }
 
-export async function createVideoJob(req: CreateVideoJobReq): Promise<{ token: string; cost: number }> {
+export async function createVideoJob(
+  req: CreateVideoJobReq,
+  upstream?: VideoUpstreamConfig
+): Promise<{ token: string; cost: number }> {
   const res = await fetch("/api/videos/jobs", {
     method: "POST",
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...upstreamHeaders(upstream) },
     body: JSON.stringify(req),
   })
   return jsonOrThrow(res)
 }
 
-export async function getVideoJob(token: string): Promise<VideoJob> {
+export async function getVideoJob(token: string, upstream?: VideoUpstreamConfig): Promise<VideoJob> {
   const res = await fetch(`/api/videos/jobs/${encodeURIComponent(token)}`, {
     credentials: "same-origin",
+    headers: upstreamHeaders(upstream),
   })
   return jsonOrThrow(res)
 }

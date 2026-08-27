@@ -160,3 +160,26 @@ pub async fn client_for_upstream_with_timeout(
     let (_parsed, host, addrs) = validate_upstream_url(url).await?;
     guarded_client_with_timeout(&host, &addrs, timeout)
 }
+
+/// Build a client for the optional local video test mode. Private addresses
+/// stay blocked by default because the URL is user-controlled; self-hosted
+/// installations can explicitly opt in when their ComfyUI/OpenAI-compatible
+/// service runs on the same machine or LAN.
+pub async fn client_for_video_upstream(
+    shared_client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<Client, Response> {
+    if std::env::var("NOVACHAT_ALLOW_PRIVATE_VIDEO_UPSTREAM")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| bad(format!("HTTP 客户端构建失败：{e}")));
+    }
+    client_for_upstream_with_timeout(shared_client, url, false, timeout).await
+}
